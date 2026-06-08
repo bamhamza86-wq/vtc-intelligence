@@ -3,6 +3,7 @@ import express, { Response, NextFunction } from 'express';
 import type { Request } from 'express';
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
+import { registerAuth, requireAuth, revokeAllSessions } from "./auth";
 import { createServer } from "node:http";
 
 const app = express();
@@ -23,6 +24,13 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false }));
+
+// Auth — doit être enregistré AVANT les routes protégées
+registerAuth(app);
+
+// Révocation immédiate de toutes sessions existantes au démarrage
+// (garantit déconnexion totale à chaque redeploiement)
+revokeAllSessions();
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -62,6 +70,9 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Toutes les routes /api/* et les pages protégées nécessitent une session valide
+  app.use("/api", requireAuth);
+
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
