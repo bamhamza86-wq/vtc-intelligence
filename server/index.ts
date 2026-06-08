@@ -4,6 +4,7 @@ import type { Request } from 'express';
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { registerAuth, requireAuth, revokeAllSessions } from "./auth";
+// Note: pas de session middleware — auth par token Bearer en mémoire
 import { createServer } from "node:http";
 
 const app = express();
@@ -70,8 +71,12 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  // Toutes les routes /api/* et les pages protégées nécessitent une session valide
-  app.use("/api", requireAuth);
+  // Toutes les routes /api/* nécessitent une session valide
+  // Sauf /api/auth/* (login, logout, me) qui sont publiques
+  app.use("/api", (req, res, next) => {
+    if (req.path.startsWith("/auth/")) return next();
+    return requireAuth(req, res, next);
+  });
 
   await registerRoutes(httpServer, app);
 

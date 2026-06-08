@@ -1,8 +1,10 @@
 import { Link, useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiRequest, getAuthToken, setAuthToken } from "@/lib/queryClient";
 import { useTheme } from "./ThemeProvider";
-import { Bell, Map, Calculator, Database, User, Sun, Moon } from "lucide-react";
+import { Bell, Map, Calculator, Database, User, Sun, Moon, LogOut } from "lucide-react";
+
+const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
 const navItems = [
   { path: "/", label: "Carte", icon: Map },
@@ -15,6 +17,20 @@ const navItems = [
 export default function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const { theme, toggle } = useTheme();
+  const qc = useQueryClient();
+
+  const handleLogout = async () => {
+    const token = getAuthToken();
+    if (token) {
+      await fetch(`${API_BASE}/api/auth/logout`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}`, "X-Auth-Token": token },
+      });
+    }
+    setAuthToken(null);
+    qc.setQueryData(["auth-me"], { authenticated: false });
+    qc.invalidateQueries({ queryKey: ["auth-me"] });
+  };
   const { data: alerts = [] } = useQuery({
     queryKey: ["/api/alerts"],
     queryFn: () => apiRequest("GET", "/api/alerts").then(r => r.json()),
@@ -41,9 +57,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <p className="text-xs text-muted-foreground leading-none mt-0.5">Aide à la décision</p>
             </div>
           </div>
-          <button onClick={toggle} data-testid="button-theme-toggle" className="p-2 rounded-md hover:bg-accent transition-colors" aria-label="Basculer le thème">
-            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
+          <div className="flex items-center gap-1">
+            <button onClick={toggle} data-testid="button-theme-toggle" className="p-2 rounded-md hover:bg-accent transition-colors" aria-label="Basculer le thème">
+              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+            <button onClick={handleLogout} className="p-2 rounded-md hover:bg-destructive/20 hover:text-destructive transition-colors" aria-label="Déconnexion" title="Déconnexion">
+              <LogOut size={16} />
+            </button>
+          </div>
         </div>
       </header>
       <main className="flex-1 overflow-auto">{children}</main>
