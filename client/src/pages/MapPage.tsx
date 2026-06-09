@@ -200,7 +200,12 @@ export default function MapPage() {
       const L = (window as any).L;
       if (!L) { setTimeout(tryInit, 300); return; }
       const map = L.map(mapRef.current, { center: [48.9180, 2.4350], zoom: 11, zoomControl: true });
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", { attribution: "© OpenStreetMap © CARTO", subdomains: "abcd", maxZoom: 19 }).addTo(map);
+      L.tileLayer("https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&hl=fr", {
+        attribution: "© Google Maps",
+        subdomains: ["0","1","2","3"],
+        maxZoom: 20,
+        tileSize: 256,
+      }).addTo(map);
       mapInstance.current = map;
     };
     setTimeout(tryInit, 500);

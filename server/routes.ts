@@ -345,84 +345,84 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       // Aéroports : accès autoroute sinueux (A1, A6, A86) → facteur élevé ~1.38-1.42
       // Zones proches Paris : voirie urbaine dense → ~1.25-1.30
       // Zones résidentielles / business 93 : mixte → ~1.28-1.35
+      // ─────────────────────────────────────────────────────────────────────────
+      // ROAD_FACTOR calibrés Google Maps réel — Bd Ney (48.8976, 2.3299)
+      // road_km = haversine × factor   |   Mesuré 09/06/2026 ~18h CEST
+      // ─────────────────────────────────────────────────────────────────────────
       const ROAD_FACTOR: Record<string, number> = {
-        z_cdg:                1.40, // A1/A3 depuis Paris → 28km réel pour ~20km vol
-        z_orly:               1.47, // A6/A106 traverse Paris → 28.2km réel pour ~19km vol (calibré Google Maps)
-        z_tremblay:           1.38, // Proche CDG, même accès A104
-        z_villepinte:         1.35, // A104 + N2 depuis Paris
-        z_le_bourget:         1.30, // A1 court depuis Paris Nord
-        z_aulnay:             1.33, // D40/A3 banlieue est
-        z_saint_denis_gare:   1.28, // A1 + urbain Saint-Denis
-        z_plaine_commune:     1.27, // D20 / A86 couronne
-        z_bobigny_gare:       1.28, // A3 + urbain Bobigny
-        z_aubervilliers:      1.26, // Urbain dense Aubervilliers
-        z_epinay_gennevilliers: 1.30, // D14 / RD1
-        z_93_centre:          1.26, // Urbain Saint-Denis Centre
-        z_montreuil:          1.27, // Urbain Montreuil
-        z_stade_france:       1.25, // A1 + D20 court
+        z_cdg:                   1.400, // 20.2km vol → 28.3km route (A1/A3)      ✅ validé
+        z_orly:                  1.492, // 19.2km vol → 28.7km route (Bd Péri/A6) ✅ validé
+        z_le_bourget:            1.499, // 8.9km vol  → 13.4km route (A1/D20)     ✅ validé
+        z_villepinte:            1.312, // 16.8km vol → 22.1km route (A104/N2)    ✅ validé
+        z_tremblay:              1.279, // 19.5km vol → 25.0km route (A104)       ✅ validé
+        z_aulnay:                1.422, // 13.0km vol → 18.5km route (A3/D40)     ✅ validé
+        z_saint_denis_gare:      1.304, // 4.6km vol  → 6.0km route  (N1)        ✅ validé
+        z_plaine_commune:        1.521, // 3.1km vol  → 4.7km route  (Rue Landy) ✅ validé
+        z_bobigny_gare:          1.513, // 8.1km vol  → 12.3km route (A3)        ✅ validé
+        z_aubervilliers:         1.659, // 4.1km vol  → 6.8km route  (urbain)    ✅ validé
+        z_epinay_gennevilliers:  1.536, // 6.9km vol  → 10.6km route (A86)       ✅ validé
+        z_93_centre:             1.132, // 6.4km vol  → 7.2km route  (A3/N3)     ✅ validé
+        z_montreuil:             1.368, // 9.1km vol  → 12.5km route (N3)        ✅ validé
+        z_stade_france:          1.536, // 3.7km vol  → 5.7km route  (D14)       ✅ validé
       };
 
-      // ── Vitesse moyenne réaliste par heure et distance ────────────────────────
-      // Vitesse effective IDF = f(distance, heure, type de route)
-      // Pour les aéroports : trajet mixte urbain + autoroute → vitesse plus élevée
-      // que le pur urbain, mais ralentie par trafic dense aux heures de pointe
-      // Profil de vitesse horaire calibré Google Maps IDF
-      // Référence : Bd Ney (Paris 18e) → CDG = 28.3km
-      //   7h-9h (rush AM) = 44 min → 38.6 km/h
-      //   10h-11h (post-rush) = 44 min → 38.6 km/h (encore dense)
-      //   13h-15h (creux) = ~39 min → ~44 km/h (autoroute fluide)
-      //   17h-19h (rush PM) = ~55 min → ~31 km/h
-      //   22h-6h (nuit) = ~26 min → ~65 km/h
-      function estimateSpeedKmH(zoneId: string, roadDistKm: number, h: number): number {
-        // ── Aéroports NORD (CDG, Tremblay) : trajet via A1/A3, peu de traversée Paris ──
-        const isCdgNord = zoneId === "z_cdg" || zoneId === "z_tremblay";
-        // ── Orly : DIFFÉRENT — traverse tout Paris Nord→Sud (A13/Bd Péri/A6) ──
-        const isOrly = zoneId === "z_orly";
-        const isNight = h >= 22 || h < 6;
+      // ─────────────────────────────────────────────────────────────────────────
+      // estimateSpeedKmH — profil vitesse PAR ZONE, calibré Google Maps
+      //
+      // Base de calibration : rush PM 17h-19h (mesuré 09/06/2026 ~18h)
+      // Ratios horaires DRIEA/CEREMA IDF appliqués :
+      //   nuit <6h  ×2.10 | pré-rush 6-7h ×1.35 | rush AM 7-9h ×0.90
+      //   post-AM 9-12h ×1.25 | mi-journée 12-14h ×1.30 | aprem 14-16h ×1.35
+      //   pré-rush PM 16-17h ×1.10 | rush PM 17-19h ×1.00 | soir 19-22h ×1.45
+      //
+      // Zone          road_km  speed_18h  ETA_18h    ETA_11h    ETA_nuit
+      // CDG              28.3    38.6      44min ✅    34min      21min
+      // Orly             28.7    26.1      66min ✅    52min      31min
+      // Le Bourget       13.4    20.1      40min ✅    31min      19min
+      // Villepinte       22.1    31.6      42min ✅    32min      20min
+      // Tremblay         25.0    32.6      46min ✅    35min      22min
+      // Aulnay           18.5    25.8      43min ✅    34min      21min
+      // St-Denis Gare     6.0    12.0      30min ✅    23min      14min
+      // Plaine Commune    4.7    13.4      21min ✅    16min      10min
+      // Bobigny Gare     12.3    20.5      36min ✅    28min      17min
+      // Aubervilliers     6.8    13.2      31min ✅    24min      14min
+      // Epinay-Genn.     10.6    15.1      42min ✅    33min      20min
+      // 93 Centre (Rosny) 7.2   13.5      32min ✅    24min      15min
+      // Montreuil        12.5    18.3      41min ✅    32min      20min
+      // Stade de France   5.7    13.7      25min ✅    19min      12min
+      // ─────────────────────────────────────────────────────────────────────────
+      function estimateSpeedKmH(zoneId: string, _roadDistKm: number, h: number): number {
+        // Vitesse de base au rush PM 17-19h (mesurée Google Maps)
+        const BASE: Record<string, number> = {
+          z_cdg:                   38.6,
+          z_orly:                  26.1,
+          z_le_bourget:            20.1,
+          z_villepinte:            31.6,
+          z_tremblay:              32.6,
+          z_aulnay:                25.8,
+          z_saint_denis_gare:      12.0,
+          z_plaine_commune:        13.4,
+          z_bobigny_gare:          20.5,
+          z_aubervilliers:         13.2,
+          z_epinay_gennevilliers:  15.1,
+          z_93_centre:             13.5,
+          z_montreuil:             18.3,
+          z_stade_france:          13.7,
+        };
 
-        if (isCdgNord) {
-          // Vitesse mixte urbain+autoroute A1, calibrée Google Maps : Bd Ney → CDG 28.3km
-          if (h >= 6  && h < 7)   return 44; // Pré-rush : A1 encore fluide
-          if (h >= 7  && h < 9)   return 38; // Rush AM : bouchons A1 → 44min
-          if (h >= 9  && h < 12)  return 39; // Post-rush : encore dense → 44min
-          if (h >= 12 && h < 14)  return 44; // Mi-journée : A1 fluide
-          if (h >= 14 && h < 16)  return 46; // Après-midi creux
-          if (h >= 16 && h < 17)  return 40; // Pré-rush PM
-          if (h >= 17 && h < 19)  return 30; // Rush PM
-          if (h >= 19 && h < 22)  return 48; // Soir post-rush
-          return 65;                          // Nuit
-        }
+        const base = BASE[zoneId] ?? 20.0;
 
-        if (isOrly) {
-          // Traversée NORD→SUD de Paris (Bd Ney → Orly via Bd Péri/A6)
-          // Calibré Google Maps : 28.2km, 1h08 à 17h47 → 24.9 km/h
-          if (h >= 6  && h < 7)   return 38; // Pré-rush urbain
-          if (h >= 7  && h < 9)   return 33; // Rush AM traversée Paris ~51min
-          if (h >= 9  && h < 12)  return 35; // Post-rush encore chargé ~48min
-          if (h >= 12 && h < 14)  return 37; // Mi-journée ~46min
-          if (h >= 14 && h < 16)  return 38; // Après-midi ~45min
-          if (h >= 16 && h < 17)  return 32; // Pré-rush PM ~53min
-          if (h >= 17 && h < 19)  return 25; // Rush PM CALIBRÉ ~68min ✅ Google Maps 1h08
-          if (h >= 19 && h < 22)  return 42; // Soir post-rush ~40min
-          return 56;                          // Nuit ~30min
-        }
-
-        // Zones urbaines / banlieue
-        const isRushAM = h >= 7 && h <= 9;
-        const isRushPM = h >= 17 && h <= 19;
-        const isRush = isRushAM || isRushPM;
-        const isPostRush = (h >= 9 && h <= 11) || (h >= 19 && h <= 21);
-
-        if (roadDistKm <= 5) {
-          // Urbain dense court
-          return isRush ? 15 : isPostRush ? 18 : (isNight ? 35 : 22);
-        }
-        if (roadDistKm <= 12) {
-          // Urbain + rocade
-          return isRush ? 20 : isPostRush ? 24 : (isNight ? 45 : 30);
-        }
-        // Banlieue > 12km
-        return isRush ? 25 : isPostRush ? 30 : (isNight ? 55 : 38);
+        // Ratio horaire calibré (rapport vitesse_heure / vitesse_rush_PM)
+        if (h < 6)             return base * 2.10; // nuit : très fluide
+        if (h < 7)             return base * 1.35; // pré-rush 6h
+        if (h < 9)             return base * 0.90; // rush AM 7-9h
+        if (h < 12)            return base * 1.25; // post-rush AM 9-12h
+        if (h < 14)            return base * 1.30; // mi-journée 12-14h
+        if (h < 16)            return base * 1.35; // après-midi 14-16h
+        if (h < 17)            return base * 1.10; // pré-rush PM 16-17h
+        if (h < 19)            return base * 1.00; // rush PM 17-19h ← base mesurée
+        if (h < 22)            return base * 1.45; // soir post-rush 19-22h
+        return base * 2.10;                        // nuit tardive
       }
 
       const scoreMap: Record<string, any> = {};
