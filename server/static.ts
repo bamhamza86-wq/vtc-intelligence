@@ -1,8 +1,7 @@
 import express from 'express';
-import type { Express, Request, Response, NextFunction } from 'express';
+import type { Express, Request, Response } from 'express';
 import fs from "node:fs";
 import path from "node:path";
-import { requireAuth } from "./auth";
 
 export function serveStatic(app: Express) {
   const distPath = path.resolve(__dirname, "public");
@@ -12,15 +11,22 @@ export function serveStatic(app: Express) {
     );
   }
 
-  // Assets statiques (JS, CSS, images) : accessibles sans auth
-  app.use(express.static(distPath));
+  // Static assets (JS/CSS/images) — served directly, no auth required
+  // Cache-Control: long for hashed assets, no-cache for index.html
+  app.use(express.static(distPath, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('index.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      }
+    }
+  }));
 
-  // Toutes les pages HTML nécessitent une session valide
-  app.use("/{*path}", (req: Request, res: Response, next: NextFunction) => {
-    const sess = req.session as any;
-    // requireAuth gère la redirection vers /login si non authentifié
-    requireAuth(req, res, () => {
-      res.sendFile(path.resolve(distPath, "index.html"));
-    });
+  // SPA fallback — serve index.html for all non-API routes
+  // Auth is handled client-side via AuthGuard + Bearer token
+  app.get('/{*path}', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.sendFile(path.resolve(distPath, 'index.html'));
   });
 }
