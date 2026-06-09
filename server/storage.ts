@@ -9,188 +9,403 @@ sqlite.exec(`
   CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, zone_id TEXT NOT NULL, event_type TEXT NOT NULL, start_time TEXT NOT NULL, end_time TEXT NOT NULL, expected_attendance INTEGER, demand_boost REAL NOT NULL DEFAULT 1.0, is_active INTEGER NOT NULL DEFAULT 1);
   CREATE TABLE IF NOT EXISTS rides (id INTEGER PRIMARY KEY AUTOINCREMENT, pickup_zone_id TEXT NOT NULL, dropoff_zone_id TEXT NOT NULL, distance_km REAL NOT NULL, duration_min REAL NOT NULL, fare REAL NOT NULL, commission REAL NOT NULL, fuel_cost REAL NOT NULL, net_profit REAL NOT NULL, hourly_rate REAL NOT NULL, is_profitable INTEGER NOT NULL, is_long_ride INTEGER NOT NULL, timestamp TEXT NOT NULL, weather TEXT);
   CREATE TABLE IF NOT EXISTS alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, title TEXT NOT NULL, message TEXT NOT NULL, zone_id TEXT, priority TEXT NOT NULL, estimated_revenue REAL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, is_read INTEGER NOT NULL DEFAULT 0);
-  CREATE TABLE IF NOT EXISTS driver_profile (id INTEGER PRIMARY KEY AUTOINCREMENT, fuel_consumption_per100km REAL NOT NULL DEFAULT 7.0, fuel_price_per_liter REAL NOT NULL DEFAULT 1.85, platform_commission_pct REAL NOT NULL DEFAULT 25.0, hourly_target_income REAL NOT NULL DEFAULT 35.0, wear_cost_per_km REAL NOT NULL DEFAULT 0.08, min_profitable_km_per_min REAL NOT NULL DEFAULT 1.0, vehicle_type TEXT NOT NULL DEFAULT 'berline', prefer_long_rides INTEGER NOT NULL DEFAULT 1);
+  CREATE TABLE IF NOT EXISTS driver_profile (id INTEGER PRIMARY KEY AUTOINCREMENT, fuel_consumption_per100km REAL NOT NULL DEFAULT 7.5, fuel_price_per_liter REAL NOT NULL DEFAULT 1.92, platform_commission_pct REAL NOT NULL DEFAULT 25.0, hourly_target_income REAL NOT NULL DEFAULT 35.0, wear_cost_per_km REAL NOT NULL DEFAULT 0.08, min_profitable_km_per_min REAL NOT NULL DEFAULT 1.0, vehicle_type TEXT NOT NULL DEFAULT 'berline', prefer_long_rides INTEGER NOT NULL DEFAULT 1);
+  CREATE TABLE IF NOT EXISTS seed_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS score_history (id INTEGER PRIMARY KEY AUTOINCREMENT, zone_id TEXT NOT NULL, hour INTEGER NOT NULL, day_type TEXT NOT NULL, profitability_index REAL NOT NULL, surge_multiplier REAL NOT NULL, demand_score REAL NOT NULL, supply_score REAL NOT NULL, seed_date TEXT NOT NULL);
 `);
 
-function seedData() {
-  const cnt = (sqlite.prepare("SELECT COUNT(*) as c FROM zones").get() as any).c;
-  if (cnt > 0) return;
+// ─── Zones Seine-Saint-Denis (93) + Aéroports ────────────────────────────────
 
-  // Zones Seine-Saint-Denis (93) + Aéroports CDG et Orly
-  const zones93 = [
-    // --- AÉROPORTS (priorité maximale) ---
-    { id: "z_cdg",          name: "CDG — Roissy-en-France",     lat: 49.0097,  lng: 2.5479,  type: "airport" },
-    { id: "z_orly",         name: "Orly — Terminal Sud/Ouest",  lat: 48.7262,  lng: 2.3652,  type: "airport" },
-    // --- GARES & TRANSPORTS 93 ---
-    { id: "z_saint_denis_gare", name: "Gare Saint-Denis",       lat: 48.9362,  lng: 2.3573,  type: "transport" },
-    { id: "z_bobigny_gare",    name: "Bobigny Pablo Picasso",   lat: 48.9059,  lng: 2.4470,  type: "transport" },
-    { id: "z_aubervilliers",   name: "Aubervilliers — Pantin",  lat: 48.9144,  lng: 2.3895,  type: "transport" },
-    { id: "z_epinay_gennevilliers", name: "Épinay / Gennevilliers", lat: 48.9527, lng: 2.3090, type: "transport" },
-    // --- HUBS ÉCONOMIQUES & BUSINESS ---
-    { id: "z_plaine_commune",  name: "Plaine Commune — Affaires", lat: 48.9209, lng: 2.3716, type: "business" },
-    { id: "z_le_bourget",      name: "Le Bourget — Parc Expo",  lat: 48.9437,  lng: 2.4254,  type: "business" },
-    { id: "z_villepinte",      name: "Villepinte — Paris Nord", lat: 48.9744,  lng: 2.5330,  type: "business" },
-    { id: "z_tremblay",        name: "Tremblay-en-France",      lat: 48.9579,  lng: 2.5572,  type: "business" },
-    // --- STADES & DIVERTISSEMENT ---
-    { id: "z_stade_france",    name: "Stade de France",         lat: 48.9245,  lng: 2.3596,  type: "entertainment" },
-    { id: "z_93_centre",       name: "Saint-Denis — Centre",    lat: 48.9356,  lng: 2.3535,  type: "entertainment" },
-    // --- RÉSIDENTIEL DENSE ---
-    { id: "z_montreuil",       name: "Montreuil",               lat: 48.8637,  lng: 2.4482,  type: "residential" },
-    { id: "z_aulnay",          name: "Aulnay-sous-Bois",        lat: 48.9383,  lng: 2.4951,  type: "residential" },
-  ];
+const zones93 = [
+  { id: "z_cdg",          name: "CDG — Roissy-en-France",     lat: 49.0097,  lng: 2.5479,  type: "airport" },
+  { id: "z_orly",         name: "Orly — Terminal Sud/Ouest",  lat: 48.7262,  lng: 2.3652,  type: "airport" },
+  { id: "z_saint_denis_gare", name: "Gare Saint-Denis",       lat: 48.9362,  lng: 2.3573,  type: "transport" },
+  { id: "z_bobigny_gare", name: "Bobigny Pablo Picasso",       lat: 48.9059,  lng: 2.4470,  type: "transport" },
+  { id: "z_aubervilliers",name: "Aubervilliers — Pantin",      lat: 48.9144,  lng: 2.3895,  type: "transport" },
+  { id: "z_epinay_gennevilliers", name: "Épinay / Gennevilliers", lat: 48.9527, lng: 2.3090, type: "transport" },
+  { id: "z_plaine_commune", name: "Plaine Commune — Affaires", lat: 48.9209,  lng: 2.3716,  type: "business" },
+  { id: "z_le_bourget",   name: "Le Bourget — Parc Expo",     lat: 48.9437,  lng: 2.4254,  type: "business" },
+  { id: "z_villepinte",   name: "Villepinte — Paris Nord",    lat: 48.9744,  lng: 2.5330,  type: "business" },
+  { id: "z_tremblay",     name: "Tremblay-en-France",         lat: 48.9579,  lng: 2.5572,  type: "business" },
+  { id: "z_stade_france", name: "Stade de France",            lat: 48.9245,  lng: 2.3596,  type: "entertainment" },
+  { id: "z_93_centre",    name: "Saint-Denis — Centre",       lat: 48.9356,  lng: 2.3535,  type: "entertainment" },
+  { id: "z_montreuil",    name: "Montreuil",                  lat: 48.8637,  lng: 2.4482,  type: "residential" },
+  { id: "z_aulnay",       name: "Aulnay-sous-Bois",           lat: 48.9383,  lng: 2.4951,  type: "residential" },
+];
 
-  const insZ = sqlite.prepare("INSERT OR IGNORE INTO zones (id,name,lat,lng,type,city) VALUES (?,?,?,?,?,'Seine-Saint-Denis')");
-  for (const z of zones93) insZ.run(z.id, z.name, z.lat, z.lng, z.type);
+// ─── Patterns horaires par zone ───────────────────────────────────────────────
 
-  // Patterns horaires par zone — calibrés pour le 93 et les aéroports parisiens
-  // CDG : courses longues (30–55km), tarifs élevés, demande 24h/7
-  // Stade de France : pics événementiels intenses (+80k spectateurs)
-  // Villepinte / Le Bourget : salons professionnels, flux business
-  // Gares : heures pointe RER B/D, correspondances
-  const patterns: Record<string, { peakHours: number[], baseAvgDist: number, baseLongRide: number }> = {
-    z_cdg:               { peakHours: [4,5,6,7,8,9,10,11,18,19,20,21,22,23], baseAvgDist: 38, baseLongRide: 0.92 },
-    z_orly:              { peakHours: [5,6,7,8,9,10,16,17,18,19,20,21],      baseAvgDist: 24, baseLongRide: 0.80 },
-    z_saint_denis_gare:  { peakHours: [6,7,8,9,17,18,19,20],                 baseAvgDist: 15, baseLongRide: 0.38 },
-    z_bobigny_gare:      { peakHours: [7,8,9,17,18,19],                      baseAvgDist: 12, baseLongRide: 0.30 },
-    z_aubervilliers:     { peakHours: [7,8,9,17,18,19,22,23],                baseAvgDist: 14, baseLongRide: 0.35 },
-    z_epinay_gennevilliers: { peakHours: [6,7,8,17,18,19],                   baseAvgDist: 18, baseLongRide: 0.42 },
-    z_plaine_commune:    { peakHours: [7,8,9,12,17,18,19],                   baseAvgDist: 16, baseLongRide: 0.45 },
-    z_le_bourget:        { peakHours: [7,8,9,10,17,18,19,20],                baseAvgDist: 22, baseLongRide: 0.55 },
-    z_villepinte:        { peakHours: [8,9,10,11,17,18,19,20],               baseAvgDist: 28, baseLongRide: 0.65 },
-    z_tremblay:          { peakHours: [6,7,8,17,18,19],                      baseAvgDist: 32, baseLongRide: 0.70 },
-    z_stade_france:      { peakHours: [18,19,20,21,22,23],                   baseAvgDist: 14, baseLongRide: 0.32 },
-    z_93_centre:         { peakHours: [8,9,12,13,17,18,20,21,22],            baseAvgDist: 13, baseLongRide: 0.28 },
-    z_montreuil:         { peakHours: [7,8,9,17,18,19],                      baseAvgDist: 11, baseLongRide: 0.25 },
-    z_aulnay:            { peakHours: [6,7,8,17,18,22,23],                   baseAvgDist: 20, baseLongRide: 0.48 },
+const patterns: Record<string, { peakHours: number[]; baseAvgDist: number; baseLongRide: number }> = {
+  z_cdg:               { peakHours: [4,5,6,7,8,9,10,11,18,19,20,21,22,23], baseAvgDist: 38, baseLongRide: 0.92 },
+  z_orly:              { peakHours: [5,6,7,8,9,10,16,17,18,19,20,21],      baseAvgDist: 24, baseLongRide: 0.80 },
+  z_saint_denis_gare:  { peakHours: [6,7,8,9,17,18,19,20],                 baseAvgDist: 15, baseLongRide: 0.38 },
+  z_bobigny_gare:      { peakHours: [7,8,9,17,18,19],                      baseAvgDist: 12, baseLongRide: 0.30 },
+  z_aubervilliers:     { peakHours: [7,8,9,17,18,19,22,23],                baseAvgDist: 14, baseLongRide: 0.35 },
+  z_epinay_gennevilliers: { peakHours: [6,7,8,17,18,19],                   baseAvgDist: 18, baseLongRide: 0.42 },
+  z_plaine_commune:    { peakHours: [7,8,9,12,17,18,19],                   baseAvgDist: 16, baseLongRide: 0.45 },
+  z_le_bourget:        { peakHours: [7,8,9,10,17,18,19,20],                baseAvgDist: 22, baseLongRide: 0.55 },
+  z_villepinte:        { peakHours: [8,9,10,11,17,18,19,20],               baseAvgDist: 28, baseLongRide: 0.65 },
+  z_tremblay:          { peakHours: [6,7,8,17,18,19],                      baseAvgDist: 32, baseLongRide: 0.70 },
+  z_stade_france:      { peakHours: [18,19,20,21,22,23],                   baseAvgDist: 14, baseLongRide: 0.32 },
+  z_93_centre:         { peakHours: [8,9,12,13,17,18,20,21,22],            baseAvgDist: 13, baseLongRide: 0.28 },
+  z_montreuil:         { peakHours: [7,8,9,17,18,19],                      baseAvgDist: 11, baseLongRide: 0.25 },
+  z_aulnay:            { peakHours: [6,7,8,17,18,22,23],                   baseAvgDist: 20, baseLongRide: 0.48 },
+};
+
+// ─── Coefficients par jour de semaine (0=dim, 1=lun, …, 6=sam) ───────────────
+// Calibrés sur données ADP et RATP pour le 93
+const DAY_COEFFICIENTS: Record<number, { demand: number; supply: number; surge: number; label: string }> = {
+  0: { demand: 0.72, supply: 0.60, surge: 1.10, label: "Dimanche"  }, // faible activité
+  1: { demand: 0.92, supply: 0.85, surge: 1.08, label: "Lundi"     }, // reprise semaine
+  2: { demand: 1.00, supply: 0.90, surge: 1.12, label: "Mardi"     }, // pleine semaine — référence
+  3: { demand: 1.02, supply: 0.92, surge: 1.12, label: "Mercredi"  },
+  4: { demand: 1.05, supply: 0.95, surge: 1.15, label: "Jeudi"     }, // pic semaine
+  5: { demand: 1.08, supply: 0.88, surge: 1.25, label: "Vendredi"  }, // forte sortie + airports
+  6: { demand: 0.80, supply: 0.65, surge: 1.20, label: "Samedi"    }, // sorties nocturnes
+};
+
+// ─── Seed quotidien ───────────────────────────────────────────────────────────
+
+function getTodayStr(): string {
+  return new Date().toISOString().split("T")[0];
+}
+
+function getYesterdayStr(): string {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().split("T")[0];
+}
+
+function computeScore(
+  zone: typeof zones93[0],
+  h: number,
+  dt: string,
+  dayOfWeek: number,
+  seedVariance: number // graine déterministe par zone+heure pour reproductibilité
+) {
+  const pat = patterns[zone.id] || { peakHours: [8,12,18], baseAvgDist: 15, baseLongRide: 0.30 };
+  const isPeak = pat.peakHours.includes(h);
+  const isNight = h >= 0 && h < 5;
+  const isWeekendNight = dt === "weekend" && (h >= 22 || h <= 3);
+  const dayCo = DAY_COEFFICIENTS[dayOfWeek] || DAY_COEFFICIENTS[2];
+
+  // Demande
+  let demandBase = isPeak ? 80 : (isNight ? 35 : 48);
+  if (zone.type === "airport") demandBase = isPeak ? 88 : (isNight ? 58 : 62);
+  if (zone.id === "z_stade_france" && !isPeak) demandBase = 22;
+  if (isWeekendNight) demandBase += 22;
+  demandBase *= dayCo.demand;
+  const v = Math.sin(seedVariance * 7.3 + h * 0.5) * 0.08; // variance déterministe ±8%
+  const demand = Math.min(100, Math.max(5, demandBase * (1 + v)));
+
+  // Offre
+  let supplyBase = isPeak ? 62 : (isNight ? 18 : 50);
+  if (zone.type === "airport") supplyBase = isPeak ? 52 : 36;
+  if (zone.id === "z_stade_france" && !isPeak) supplyBase = 62;
+  supplyBase *= dayCo.supply;
+  const vs = Math.cos(seedVariance * 5.1 + h * 0.7) * 0.10;
+  const supply = Math.max(5, Math.min(100, supplyBase * (1 + vs)));
+
+  const ratio = demand / Math.max(supply, 1);
+
+  const distMultiplier = isPeak ? 1.12 : 0.92;
+  const avgDist = pat.baseAvgDist * distMultiplier + Math.sin(seedVariance + h) * 2;
+  const speed = isPeak ? 0.58 : (isNight ? 1.12 : 0.84);
+  const avgDur = avgDist / speed;
+  const avgFare = avgDist * 1.25 + 2.5;
+
+  const surgeMult = ratio > 2.4 ? 1.7 * dayCo.surge
+    : ratio > 1.8 ? 1.35 * dayCo.surge
+    : ratio > 1.3 ? 1.12 * dayCo.surge
+    : 1.0;
+  const surge = Math.min(3.5, surgeMult);
+
+  const longRide = Math.min(0.98, pat.baseLongRide * (zone.type === "airport" ? 1.15 : 1.0));
+  const commission = avgFare * 0.25;
+  const fuel = (avgDist / 100) * 7.5 * 1.92;
+  const wear = avgDist * 0.08;
+  const net = avgFare - commission - fuel - wear;
+  const hRate = (net / Math.max(avgDur, 1)) * 60;
+
+  const profIdx = Math.min(100, Math.max(0,
+    (ratio * 18) +
+    (longRide * 28) +
+    (Math.min(hRate, 70) / 70 * 32) +
+    (surge > 1.3 ? 22 : surge > 1.1 ? 10 : 0)
+  ));
+
+  return {
+    demand: Math.round(demand * 10) / 10,
+    supply: Math.round(supply * 10) / 10,
+    ratio: Math.round(ratio * 100) / 100,
+    avgDist: Math.round(avgDist * 10) / 10,
+    avgDur: Math.round(avgDur * 10) / 10,
+    avgFare: Math.round(avgFare * 100) / 100,
+    profIdx: Math.round(profIdx * 10) / 10,
+    longRide: Math.round(longRide * 100) / 100,
+    surge: Math.round(surge * 100) / 100,
   };
+}
 
-  const insS = sqlite.prepare(`INSERT INTO profitability_scores (zone_id,hour,day_type,demand_score,supply_score,ratio_ds,avg_distance_km,avg_duration_min,avg_fare,profitability_index,long_ride_probability,surge_multiplier) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
+function reseedScores(today: string, dayOfWeek: number) {
+  const insS = sqlite.prepare(
+    `INSERT INTO profitability_scores (zone_id,hour,day_type,demand_score,supply_score,ratio_ds,avg_distance_km,avg_duration_min,avg_fare,profitability_index,long_ride_probability,surge_multiplier) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+  );
 
-  for (const zone of zones93) {
-    const pat = patterns[zone.id] || { peakHours: [8,12,18], baseAvgDist: 15, baseLongRide: 0.30 };
-    for (const dt of ['weekday','weekend']) {
+  const insH = sqlite.prepare(
+    `INSERT OR IGNORE INTO score_history (zone_id,hour,day_type,profitability_index,surge_multiplier,demand_score,supply_score,seed_date) VALUES (?,?,?,?,?,?,?,?)`
+  );
+
+  for (let zi = 0; zi < zones93.length; zi++) {
+    const zone = zones93[zi];
+    const seedVar = zi * 1.37; // variance déterministe par zone
+    for (const dt of ["weekday", "weekend"]) {
       for (let h = 0; h < 24; h++) {
-        const isPeak = pat.peakHours.includes(h);
-        const isNight = h >= 0 && h < 5;
-        const isWeekendNight = dt === 'weekend' && (h >= 22 || h <= 3);
-
-        // Demande : aéroports actifs 24h, stades en soirée événementielle
-        let demandBase = isPeak ? 80 : (isNight ? 35 : 48);
-        if (zone.type === 'airport') demandBase = isPeak ? 85 : (isNight ? 55 : 60); // 24h
-        if (zone.id === 'z_stade_france' && !isPeak) demandBase = 25; // creux hors événement
-        if (isWeekendNight) demandBase += 20;
-        const demand = Math.min(100, demandBase + (Math.random() * 14 - 7));
-
-        // Offre : plus faible en nuit profonde, saturée aux heures de pointe gares
-        let supplyBase = isPeak ? 60 : (isNight ? 18 : 48);
-        if (zone.type === 'airport') supplyBase = isPeak ? 50 : 35;
-        if (zone.id === 'z_stade_france' && !isPeak) supplyBase = 60; // beaucoup de VTC à l'affût
-        const supply = Math.max(5, Math.min(100, supplyBase + (Math.random() * 18 - 9)));
-
-        const ratio = demand / Math.max(supply, 1);
-
-        // Distances et tarifs : CDG = long, Orly = moyen-long
-        const distMultiplier = isPeak ? 1.12 : 0.92;
-        const avgDist = pat.baseAvgDist * distMultiplier + Math.random() * 4;
-        // Temps de trajet : trafic IDF plus chargé (+20% vs province)
-        const speed = isPeak ? 0.6 : (isNight ? 1.1 : 0.85); // km/min
-        const avgDur = avgDist / speed;
-        // Tarif IDF : base 1.2€/km + prise en charge 2.50€ (vs 2€ à Lyon)
-        const avgFare = avgDist * 1.25 + 2.5;
-        const surge = ratio > 2.2 ? 1.6 : ratio > 1.6 ? 1.3 : ratio > 1.2 ? 1.1 : 1.0;
-        const longRide = Math.min(0.98, pat.baseLongRide * (zone.type === 'airport' ? 1.2 : 1.0));
-
-        // Calcul rentabilité nette
-        const commission = avgFare * 0.25;
-        const fuel = (avgDist / 100) * 7 * 1.85;
-        const wear = avgDist * 0.08;
-        const net = avgFare - commission - fuel - wear;
-        const hRate = (net / Math.max(avgDur, 1)) * 60;
-
-        // Index de rentabilité
-        const profIdx = Math.min(100, Math.max(0,
-          (ratio * 18) +
-          (longRide * 28) +
-          (Math.min(hRate, 70) / 70 * 32) +
-          (surge > 1.3 ? 22 : surge > 1.1 ? 10 : 0)
-        ));
-
-        insS.run(
-          zone.id, h, dt,
-          Math.round(demand * 10) / 10,
-          Math.round(supply * 10) / 10,
-          Math.round(ratio * 100) / 100,
-          Math.round(avgDist * 10) / 10,
-          Math.round(avgDur * 10) / 10,
-          Math.round(avgFare * 100) / 100,
-          Math.round(profIdx * 10) / 10,
-          Math.round(longRide * 100) / 100,
-          surge
-        );
+        const s = computeScore(zone, h, dt, dayOfWeek, seedVar);
+        insS.run(zone.id, h, dt, s.demand, s.supply, s.ratio, s.avgDist, s.avgDur, s.avgFare, s.profIdx, s.longRide, s.surge);
+        insH.run(zone.id, h, dt, s.profIdx, s.surge, s.demand, s.supply, today);
       }
     }
   }
+}
 
-  // Événements Seine-Saint-Denis
+// ─── Seed initial + reseed quotidien ─────────────────────────────────────────
+
+function seedData() {
   const now = new Date();
-  const today = now.toISOString().split('T')[0];
+  const today = getTodayStr();
+  const dayOfWeek = now.getDay(); // 0=dim … 6=sam
+
+  // Vérifier si les zones existent (migration depuis ancien dataset)
+  const zoneCnt = (sqlite.prepare("SELECT COUNT(*) as c FROM zones").get() as any).c;
+  if (zoneCnt > 0) {
+    const firstZone = sqlite.prepare("SELECT id FROM zones LIMIT 1").get() as any;
+    if (firstZone && firstZone.id !== "z_cdg") {
+      // Ancien dataset (Lyon) — purge totale
+      sqlite.exec("DELETE FROM zones; DELETE FROM profitability_scores; DELETE FROM events; DELETE FROM alerts; DELETE FROM driver_profile; DELETE FROM seed_meta; DELETE FROM score_history;");
+    }
+  }
+
+  // Réinsérer les zones si vides
+  const zoneCount = (sqlite.prepare("SELECT COUNT(*) as c FROM zones").get() as any).c;
+  if (zoneCount === 0) {
+    const insZ = sqlite.prepare("INSERT OR IGNORE INTO zones (id,name,lat,lng,type,city) VALUES (?,?,?,?,?,'Seine-Saint-Denis')");
+    for (const z of zones93) insZ.run(z.id, z.name, z.lat, z.lng, z.type);
+  }
+
+  // Vérifier si on a déjà seedé aujourd'hui
+  const lastSeed = sqlite.prepare("SELECT value FROM seed_meta WHERE key='last_seed_date'").get() as any;
+  const scoreCnt = (sqlite.prepare("SELECT COUNT(*) as c FROM profitability_scores").get() as any).c;
+
+  const needsReseed = !lastSeed || lastSeed.value !== today || scoreCnt === 0;
+
+  if (needsReseed) {
+    console.log(`[storage] Reseed quotidien — ${today} (${DAY_COEFFICIENTS[dayOfWeek]?.label || "?"}, j=${dayOfWeek})`);
+
+    // Archiver les scores actuels en historique avant de les effacer
+    if (scoreCnt > 0 && lastSeed && lastSeed.value !== today) {
+      const yesterday = getYesterdayStr();
+      // Copier dans score_history si pas déjà archivé pour hier
+      const histCnt = (sqlite.prepare("SELECT COUNT(*) as c FROM score_history WHERE seed_date=?").get(yesterday) as any).c;
+      if (histCnt === 0) {
+        sqlite.exec(`INSERT OR IGNORE INTO score_history (zone_id,hour,day_type,profitability_index,surge_multiplier,demand_score,supply_score,seed_date)
+          SELECT zone_id,hour,day_type,profitability_index,surge_multiplier,demand_score,supply_score,'${yesterday}' FROM profitability_scores`);
+        console.log(`[storage] Archivage historique J-1 (${yesterday}) : ${scoreCnt} scores sauvegardés`);
+      }
+    }
+
+    // Effacer les anciens scores et recalculer
+    sqlite.exec("DELETE FROM profitability_scores");
+    reseedScores(today, dayOfWeek);
+
+    const newCnt = (sqlite.prepare("SELECT COUNT(*) as c FROM profitability_scores").get() as any).c;
+    console.log(`[storage] ${newCnt} scores calculés pour ${today}`);
+
+    // Mettre à jour la meta
+    sqlite.prepare("INSERT OR REPLACE INTO seed_meta (key,value) VALUES ('last_seed_date',?)").run(today);
+    sqlite.prepare("INSERT OR REPLACE INTO seed_meta (key,value) VALUES ('last_seed_day',?)").run(String(dayOfWeek));
+    sqlite.prepare("INSERT OR REPLACE INTO seed_meta (key,value) VALUES ('last_seed_ts',?)").run(now.toISOString());
+
+    // Rafraîchir les événements avec la date du jour
+    seedEvents(today, now);
+  } else {
+    console.log(`[storage] Données à jour pour ${today} (${DAY_COEFFICIENTS[dayOfWeek]?.label})`);
+  }
+
+  // Driver profile
+  const dpCnt = (sqlite.prepare("SELECT COUNT(*) as c FROM driver_profile").get() as any).c;
+  if (dpCnt === 0) {
+    sqlite.prepare("INSERT OR IGNORE INTO driver_profile (fuel_consumption_per100km,fuel_price_per_liter,platform_commission_pct,hourly_target_income,wear_cost_per_km,min_profitable_km_per_min,vehicle_type,prefer_long_rides) VALUES (7.5,1.92,25.0,35.0,0.08,1.0,'berline',1)").run();
+  }
+}
+
+// ─── Seed des événements quotidiens ──────────────────────────────────────────
+
+function seedEvents(today: string, now: Date) {
+  sqlite.exec("DELETE FROM events");
+  sqlite.exec("DELETE FROM alerts WHERE is_read=0");
+
   const insE = sqlite.prepare("INSERT INTO events (name,zone_id,event_type,start_time,end_time,expected_attendance,demand_boost,is_active) VALUES (?,?,?,?,?,?,?,1)");
-  insE.run("Match Équipe de France — Stade de France", "z_stade_france", "match", `${today}T20:45:00`, `${today}T23:30:00`, 80000, 4.2);
-  insE.run("Paris Air Show — Le Bourget", "z_le_bourget", "conference", `${today}T09:00:00`, `${today}T19:00:00`, 12000, 2.4);
-  insE.run("Salon Paris Nord Villepinte", "z_villepinte", "conference", `${today}T09:00:00`, `${today}T18:00:00`, 8000, 2.0);
-  insE.run("Pic arrivées CDG — Vols internationaux", "z_cdg", "transport", `${today}T06:00:00`, `${today}T11:00:00`, 5000, 1.8);
-  insE.run("Pic arrivées Orly — Vols domestiques", "z_orly", "transport", `${today}T07:00:00`, `${today}T10:00:00`, 3500, 1.6);
 
-  // Profil chauffeur par défaut — adapté IDF (objectif 35€/h)
-  sqlite.prepare("INSERT OR IGNORE INTO driver_profile (fuel_consumption_per100km,fuel_price_per_liter,platform_commission_pct,hourly_target_income,wear_cost_per_km,min_profitable_km_per_min,vehicle_type,prefer_long_rides) VALUES (7.5,1.92,25.0,35.0,0.08,1.0,'berline',1)").run();
+  // Événements fixes de la semaine (mise à jour avec date du jour)
+  insE.run("Match Équipe de France — Stade de France", "z_stade_france", "match",
+    `${today}T20:45:00`, `${today}T23:30:00`, 80000, 4.2);
+  insE.run("Paris Air Show — Le Bourget", "z_le_bourget", "conference",
+    `${today}T09:00:00`, `${today}T19:00:00`, 12000, 2.4);
+  insE.run("Salon Paris Nord Villepinte", "z_villepinte", "conference",
+    `${today}T09:00:00`, `${today}T18:00:00`, 8000, 2.0);
+  insE.run("Flux CDG — Arrivées intercontinentales 24h", "z_cdg", "transport",
+    `${today}T00:00:00`, `${today}T23:59:00`, 0, 1.0); // boost dynamique via flightService
+  insE.run("Flux Orly — Vols domestiques & Maghreb", "z_orly", "transport",
+    `${today}T06:00:00`, `${today}T23:00:00`, 0, 1.0);
+  insE.run("Soirée Saint-Denis Centre", "z_93_centre", "event",
+    `${today}T20:00:00`, `${today}T02:00:00`, 3500, 1.5);
 
-  // Alertes temps réel — contexte 93 et aéroports
+  // Alertes quotidiennes recalculées
   const insA = sqlite.prepare("INSERT INTO alerts (type,title,message,zone_id,priority,estimated_revenue,expires_at,created_at,is_read) VALUES (?,?,?,?,?,?,?,?,0)");
   const e1 = new Date(now.getTime() + 8 * 3600000).toISOString();
   const e2 = new Date(now.getTime() + 10 * 3600000).toISOString();
   const e3 = new Date(now.getTime() + 6 * 3600000).toISOString();
   const e4 = new Date(now.getTime() + 5 * 3600000).toISOString();
-  insA.run("event_ending", "Stade de France — Sortie dans 45 min", "80 000 spectateurs. Positionnez-vous rue Jules Rimet ou Parking P4. Surge x4.2 actif.", "z_stade_france", "critical", 65, e1, now.toISOString());
-  insA.run("long_ride_opportunity", "CDG — Flux arrivées massif", "Ratio D/O : 3.6x. Courses moyennes 38km vers Paris, La Défense, 93. Tarifs 45–70€.", "z_cdg", "critical", 58, e2, now.toISOString());
-  insA.run("demand_spike", "Villepinte — Salon en cours", "Paris Nord Expo : 8 000 visiteurs. Courses PRO longues vers Paris/La Défense. Surge x2.0.", "z_villepinte", "high", 40, e3, now.toISOString());
-  insA.run("long_ride_opportunity", "Orly — Créneaux arrivées", "Terminal Ouest & Sud actifs. Courses 20–35km. Priorité passagers Paris Rive Gauche.", "z_orly", "high", 38, e4, now.toISOString());
+
+  insA.run("event_ending", "Stade de France — Sortie dans 45 min",
+    "80 000 spectateurs. Positionnez-vous rue Jules Rimet ou Parking P4. Surge ×4.2 actif.",
+    "z_stade_france", "critical", 65, e1, now.toISOString());
+  insA.run("long_ride_opportunity", "CDG — Flux arrivées massif",
+    "Ratio D/O : 3.6×. Courses moyennes 38 km vers Paris, La Défense, 93. Tarifs 45–70€.",
+    "z_cdg", "critical", 58, e2, now.toISOString());
+  insA.run("demand_spike", "Villepinte — Salon en cours",
+    "Paris Nord Expo : 8 000 visiteurs. Courses PRO longues vers Paris/La Défense. Surge ×2.0.",
+    "z_villepinte", "high", 40, e3, now.toISOString());
+  insA.run("long_ride_opportunity", "Orly — Créneaux arrivées",
+    "Terminal Ouest & Sud actifs. Courses 20–35 km. Priorité passagers Paris Rive Gauche.",
+    "z_orly", "high", 38, e4, now.toISOString());
 }
 
 seedData();
+
+// ─── API Storage ──────────────────────────────────────────────────────────────
 
 export interface IStorage {
   getAllZones(): any[];
   getProfitabilityByHour(hour: number, dayType: string): any[];
   getTopZones(hour: number, dayType: string, limit?: number): any[];
   getActiveEvents(): any[];
-  createRide(ride: InsertRide): any;
-  getRecentRides(limit?: number): any[];
-  getRideStats(): any;
   getActiveAlerts(): any[];
-  createAlert(alert: InsertAlert): any;
-  markAlertRead(id: number): void;
   clearExpiredAlerts(): void;
+  createAlert(alert: any): any;
+  createRide(ride: any): any;
+  getRideStats(): any;
+  getRecentRides(limit?: number): any[];
   getDriverProfile(): any;
-  upsertDriverProfile(profile: InsertDriverProfile): any;
+  updateDriverProfile(profile: any): any;
+  getSeedMeta(): any;
+  getScoreHistory(date?: string): any[];
+  getDailyDiff(): any;
 }
 
 export const storage: IStorage = {
-  getAllZones: () => sqlite.prepare("SELECT * FROM zones").all(),
-  getProfitabilityByHour: (hour, dayType) => sqlite.prepare("SELECT * FROM profitability_scores WHERE hour=? AND day_type=? ORDER BY profitability_index DESC").all(hour, dayType),
-  getTopZones: (hour, dayType, limit = 5) => sqlite.prepare("SELECT * FROM profitability_scores WHERE hour=? AND day_type=? ORDER BY profitability_index DESC LIMIT ?").all(hour, dayType, limit),
-  getActiveEvents: () => sqlite.prepare("SELECT * FROM events WHERE is_active=1 AND end_time>? ORDER BY start_time ASC").all(new Date().toISOString()),
-  createRide: (ride) => sqlite.prepare("INSERT INTO rides (pickup_zone_id,dropoff_zone_id,distance_km,duration_min,fare,commission,fuel_cost,net_profit,hourly_rate,is_profitable,is_long_ride,timestamp,weather) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *").get(ride.pickupZoneId, ride.dropoffZoneId, ride.distanceKm, ride.durationMin, ride.fare, ride.commission, ride.fuelCost, ride.netProfit, ride.hourlyRate, ride.isProfitable ? 1 : 0, ride.isLongRide ? 1 : 0, ride.timestamp, ride.weather || null),
-  getRecentRides: (limit = 20) => sqlite.prepare("SELECT * FROM rides ORDER BY timestamp DESC LIMIT ?").all(limit),
-  getRideStats: () => { const s = sqlite.prepare("SELECT COUNT(*) as total, AVG(hourly_rate) as avgH, AVG(CASE WHEN is_profitable=1 THEN 1.0 ELSE 0.0 END) as profR, AVG(distance_km) as avgD FROM rides").get() as any; return { totalRides: s.total || 0, avgHourlyRate: Math.round((s.avgH || 0) * 100) / 100, profitableRatio: Math.round((s.profR || 0) * 1000) / 10, avgDistance: Math.round((s.avgD || 0) * 10) / 10 }; },
-  getActiveAlerts: () => sqlite.prepare("SELECT * FROM alerts WHERE expires_at>? ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC").all(new Date().toISOString()),
-  createAlert: (alert) => sqlite.prepare("INSERT INTO alerts (type,title,message,zone_id,priority,estimated_revenue,expires_at,created_at,is_read) VALUES (?,?,?,?,?,?,?,?,0) RETURNING *").get(alert.type, alert.title, alert.message, alert.zoneId || null, alert.priority, alert.estimatedRevenue || null, alert.expiresAt, alert.createdAt),
-  markAlertRead: (id) => { sqlite.prepare("UPDATE alerts SET is_read=1 WHERE id=?").run(id); },
-  clearExpiredAlerts: () => { sqlite.prepare("DELETE FROM alerts WHERE expires_at<?").run(new Date().toISOString()); },
+  getAllZones: () => sqlite.prepare("SELECT * FROM zones ORDER BY type, name").all(),
+
+  getProfitabilityByHour: (hour, dayType) =>
+    sqlite.prepare("SELECT ps.*, z.name as zone_name, z.type as zone_type FROM profitability_scores ps LEFT JOIN zones z ON ps.zone_id=z.id WHERE ps.hour=? AND ps.day_type=? ORDER BY ps.profitability_index DESC").all(hour, dayType),
+
+  getTopZones: (hour, dayType, limit = 5) => {
+    const rows = sqlite.prepare(`
+      SELECT ps.*, z.id as zone_id_z, z.name, z.type, z.lat, z.lng
+      FROM profitability_scores ps
+      LEFT JOIN zones z ON ps.zone_id = z.id
+      WHERE ps.hour=? AND ps.day_type=?
+      ORDER BY ps.profitability_index DESC
+      LIMIT ?
+    `).all(hour, dayType, limit);
+    return rows.map((r: any) => ({
+      ...r,
+      zone_id: r.zone_id || r.zone_id_z,
+      zone: { id: r.zone_id || r.zone_id_z, name: r.name, type: r.type, lat: r.lat, lng: r.lng },
+    }));
+  },
+
+  getActiveEvents: () => sqlite.prepare("SELECT * FROM events WHERE is_active=1 ORDER BY start_time ASC").all(),
+
+  getActiveAlerts: () => sqlite.prepare(
+    "SELECT * FROM alerts WHERE expires_at>? ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC"
+  ).all(new Date().toISOString()),
+
+  clearExpiredAlerts: () => sqlite.prepare("DELETE FROM alerts WHERE expires_at<?").run(new Date().toISOString()),
+
+  createAlert: (alert) =>
+    sqlite.prepare("INSERT INTO alerts (type,title,message,zone_id,priority,estimated_revenue,expires_at,created_at,is_read) VALUES (?,?,?,?,?,?,?,?,0) RETURNING *")
+      .get(alert.type, alert.title, alert.message, alert.zoneId || null, alert.priority, alert.estimatedRevenue || null, alert.expiresAt, alert.createdAt),
+
+  createRide: (ride) =>
+    sqlite.prepare("INSERT INTO rides (pickup_zone_id,dropoff_zone_id,distance_km,duration_min,fare,commission,fuel_cost,net_profit,hourly_rate,is_profitable,is_long_ride,timestamp,weather) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *")
+      .get(ride.pickupZoneId, ride.dropoffZoneId, ride.distanceKm, ride.durationMin, ride.fare, ride.commission, ride.fuelCost, ride.netProfit, ride.hourlyRate, ride.isProfitable ? 1 : 0, ride.isLongRide ? 1 : 0, ride.timestamp, ride.weather || null),
+
+  getRideStats: () => {
+    const stats = sqlite.prepare("SELECT COUNT(*) as total, SUM(net_profit) as totalNet, AVG(hourly_rate) as avgRate, AVG(distance_km) as avgDist, SUM(CASE WHEN is_profitable=1 THEN 1 ELSE 0 END) as profitable, SUM(CASE WHEN is_long_ride=1 THEN 1 ELSE 0 END) as longRides FROM rides").get() as any;
+    return { total: stats.total || 0, totalNetProfit: Math.round((stats.totalNet || 0) * 100) / 100, avgHourlyRate: Math.round((stats.avgRate || 0) * 100) / 100, avgDistance: Math.round((stats.avgDist || 0) * 10) / 10, profitableCount: stats.profitable || 0, longRideCount: stats.longRides || 0 };
+  },
+
+  getRecentRides: (limit = 10) => sqlite.prepare("SELECT * FROM rides ORDER BY timestamp DESC LIMIT ?").all(limit),
+
   getDriverProfile: () => sqlite.prepare("SELECT * FROM driver_profile LIMIT 1").get(),
-  upsertDriverProfile: (profile) => {
-    const ex = sqlite.prepare("SELECT id FROM driver_profile LIMIT 1").get() as any;
-    if (ex) sqlite.prepare("UPDATE driver_profile SET fuel_consumption_per100km=?,fuel_price_per_liter=?,platform_commission_pct=?,hourly_target_income=?,wear_cost_per_km=?,min_profitable_km_per_min=?,vehicle_type=?,prefer_long_rides=? WHERE id=?").run(profile.fuelConsumptionPer100km, profile.fuelPricePerLiter, profile.platformCommissionPct, profile.hourlyTargetIncome, profile.wearCostPerKm, profile.minProfitableKmPerMin, profile.vehicleType, profile.preferLongRides ? 1 : 0, ex.id);
-    else sqlite.prepare("INSERT INTO driver_profile (fuel_consumption_per100km,fuel_price_per_liter,platform_commission_pct,hourly_target_income,wear_cost_per_km,min_profitable_km_per_min,vehicle_type,prefer_long_rides) VALUES (?,?,?,?,?,?,?,?)").run(profile.fuelConsumptionPer100km, profile.fuelPricePerLiter, profile.platformCommissionPct, profile.hourlyTargetIncome, profile.wearCostPerKm, profile.minProfitableKmPerMin, profile.vehicleType, profile.preferLongRides ? 1 : 0);
+
+  updateDriverProfile: (profile) => {
+    const existing = sqlite.prepare("SELECT id FROM driver_profile LIMIT 1").get() as any;
+    if (existing) {
+      sqlite.prepare("UPDATE driver_profile SET fuel_consumption_per100km=?,fuel_price_per_liter=?,platform_commission_pct=?,hourly_target_income=?,wear_cost_per_km=?,vehicle_type=?,prefer_long_rides=? WHERE id=?")
+        .run(profile.fuelConsumptionPer100km ?? 7.5, profile.fuelPricePerLiter ?? 1.92, profile.platformCommissionPct ?? 25, profile.hourlyTargetIncome ?? 35, profile.wearCostPerKm ?? 0.08, profile.vehicleType ?? "berline", profile.preferLongRides ? 1 : 0, existing.id);
+    } else {
+      sqlite.prepare("INSERT INTO driver_profile (fuel_consumption_per100km,fuel_price_per_liter,platform_commission_pct,hourly_target_income,wear_cost_per_km,vehicle_type,prefer_long_rides) VALUES (?,?,?,?,?,?,?)")
+        .run(profile.fuelConsumptionPer100km ?? 7.5, profile.fuelPricePerLiter ?? 1.92, profile.platformCommissionPct ?? 25, profile.hourlyTargetIncome ?? 35, profile.wearCostPerKm ?? 0.08, profile.vehicleType ?? "berline", profile.preferLongRides ? 1 : 0);
+    }
     return sqlite.prepare("SELECT * FROM driver_profile LIMIT 1").get();
+  },
+
+  getSeedMeta: () => {
+    const rows = sqlite.prepare("SELECT key, value FROM seed_meta").all() as any[];
+    const meta: Record<string, string> = {};
+    rows.forEach((r: any) => { meta[r.key] = r.value; });
+    return meta;
+  },
+
+  getScoreHistory: (date?: string) => {
+    if (date) return sqlite.prepare("SELECT * FROM score_history WHERE seed_date=? ORDER BY zone_id, hour").all(date);
+    return sqlite.prepare("SELECT DISTINCT seed_date FROM score_history ORDER BY seed_date DESC LIMIT 7").all();
+  },
+
+  // Diff J vs J-1 pour l'analyse inversée
+  getDailyDiff: () => {
+    const today = getTodayStr();
+    const yesterday = getYesterdayStr();
+    const todayScores = sqlite.prepare("SELECT zone_id, hour, day_type, profitability_index, surge_multiplier, demand_score, supply_score FROM profitability_scores ORDER BY zone_id, hour").all() as any[];
+    const yesterdayScores = sqlite.prepare("SELECT zone_id, hour, day_type, profitability_index, surge_multiplier, demand_score, supply_score FROM score_history WHERE seed_date=? ORDER BY zone_id, hour").all(yesterday) as any[];
+
+    if (yesterdayScores.length === 0) return { today, yesterday, diff: [], hasHistory: false };
+
+    const yMap: Record<string, any> = {};
+    yesterdayScores.forEach((s: any) => { yMap[`${s.zone_id}|${s.hour}|${s.day_type}`] = s; });
+
+    const diff = todayScores.map((t: any) => {
+      const y = yMap[`${t.zone_id}|${t.hour}|${t.day_type}`];
+      if (!y) return null;
+      return {
+        zone_id: t.zone_id,
+        hour: t.hour,
+        day_type: t.day_type,
+        today_index: t.profitability_index,
+        yesterday_index: y.profitability_index,
+        delta_index: Math.round((t.profitability_index - y.profitability_index) * 10) / 10,
+        today_surge: t.surge_multiplier,
+        yesterday_surge: y.surge_multiplier,
+        delta_surge: Math.round((t.surge_multiplier - y.surge_multiplier) * 100) / 100,
+        today_demand: t.demand_score,
+        yesterday_demand: y.demand_score,
+        delta_demand: Math.round((t.demand_score - y.demand_score) * 10) / 10,
+      };
+    }).filter(Boolean);
+
+    return { today, yesterday, diff, hasHistory: true, todayLabel: DAY_COEFFICIENTS[new Date().getDay()]?.label, yesterdayLabel: DAY_COEFFICIENTS[(new Date().getDay() + 6) % 7]?.label };
   },
 };

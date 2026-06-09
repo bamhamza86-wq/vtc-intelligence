@@ -179,7 +179,84 @@ export function registerRoutes(httpServer: Server, app: Express): void {
 
   app.get("/api/driver-profile", (_req, res) => { res.json(storage.getDriverProfile() || null); });
 
-  app.put("/api/driver-profile", (req, res) => { res.json(storage.upsertDriverProfile(req.body)); });
+  app.put("/api/driver-profile", (req, res) => { res.json(storage.updateDriverProfile(req.body)); });
+
+  // ─── Analytics : refresh quotidien + diff historique ──────────────────────────
+  app.get("/api/analytics/refresh", async (_req, res) => {
+    try {
+      const meta = storage.getSeedMeta();
+      const diff = storage.getDailyDiff();
+      const flightData = await getFlightData();
+      const now = new Date();
+      const h = now.getHours();
+      const dayType = [0,6].includes(now.getDay()) ? 'weekend' : 'weekday';
+      const currentScores = storage.getProfitabilityByHour(h, dayType);
+
+      // Statistiques globales du diff
+      let statsGlobal: any = {};
+      if (diff.hasHistory && diff.diff.length > 0) {
+        const weekdayDiff = diff.diff.filter((d: any) => d.day_type === 'weekday');
+        const deltas = weekdayDiff.map((d: any) => d.delta_index);
+        const posZones = deltas.filter((d: number) => d > 3).length;
+        const negZones = deltas.filter((d: number) => d < -3).length;
+        const stableZones = deltas.length - posZones - negZones;
+        const avgDelta = deltas.reduce((a: number, b: number) => a + b, 0) / Math.max(deltas.length, 1);
+        const maxGain = Math.max(...deltas);
+        const maxLoss = Math.min(...deltas);
+        // Zone avec la plus forte variation
+        const topGainer = weekdayDiff.find((d: any) => d.delta_index === maxGain);
+        const topLoser = weekdayDiff.find((d: any) => d.delta_index === maxLoss);
+        statsGlobal = { posZones, negZones, stableZones, avgDelta: Math.round(avgDelta * 10) / 10, maxGain, maxLoss, topGainer, topLoser };
+      }
+
+      // Corrélation surge_multiplier vs profitabilité (Pearson simplifié)
+      let pearsonSurge = null;
+      if (diff.hasHistory && diff.diff.length > 5) {
+        const xs = diff.diff.map((d: any) => d.today_surge);
+        const ys = diff.diff.map((d: any) => d.today_index);
+        const n = xs.length;
+        const mx = xs.reduce((a: number, b: number) => a+b, 0) / n;
+        const my = ys.reduce((a: number, b: number) => a+b, 0) / n;
+        const num = xs.reduce((s: number, x: number, i: number) => s + (x - mx) * (ys[i] - my), 0);
+        const den = Math.sqrt(xs.reduce((s: number, x: number) => s + (x-mx)**2, 0) * ys.reduce((s: number, y: number) => s + (y-my)**2, 0));
+        pearsonSurge = den > 0 ? Math.round(num / den * 1000) / 1000 : null;
+      }
+
+      res.json({
+        timestamp: now.toISOString(),
+        today: diff.today,
+        yesterday: diff.yesterday,
+        today_label: diff.todayLabel,
+        yesterday_label: diff.yesterdayLabel,
+        seed_meta: meta,
+        current_hour: h,
+        day_type: dayType,
+        current_scores_count: currentScores.length,
+        flights: { cdg: flightData.cdg, orly: flightData.orly, source: flightData.source },
+        historical_diff: diff,
+        stats: statsGlobal,
+        correlations: { pearson_surge_vs_profitability: pearsonSurge },
+        data_freshness: {
+          scores_last_seeded: meta.last_seed_ts || 'unknown',
+          scores_for_date: meta.last_seed_date || 'unknown',
+          auto_refresh: 'quotidien au premier démarrage du jour',
+          history_available: diff.hasHistory,
+          history_days: diff.hasHistory ? diff.diff.length / (14 * 48) : 0,
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.get("/api/analytics/history", (_req, res) => {
+    try {
+      const dates = storage.getScoreHistory();
+      res.json(dates);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
 
   app.get("/api/data-sources", (_req, res) => {
     res.json({ categories: [
