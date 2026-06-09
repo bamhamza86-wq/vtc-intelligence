@@ -1,146 +1,135 @@
-/**
- * auth.ts — Authentification VTC Intelligence
- * Token opaque en mémoire, transmis via Authorization: Bearer <token>
- * Compatible avec le proxy pplx.app (pas de cookies de session)
- * Credentials par défaut : root / 12345678
- */
-
-import type { Express, Request, Response, NextFunction } from "express";
+import { Request, Response, NextFunction, RequestHandler } from "express";
+import { randomBytes } from "crypto";
 import bcrypt from "bcryptjs";
-import crypto from "crypto";
 
-// ─── Utilisateurs ─────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────────
+// Configuration
+// ──────────────────────────────────────────────────────────────────────────────
+const USERS: Record<string, string> = {
+  // username → bcrypt hash of password
+  root: bcrypt.hashSync("12345678", 10),
+};
 
-interface User {
-  id: number;
-  username: string;
-  passwordHash: string;
-  role: "admin" | "driver";
-}
+const TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
 
-const DEFAULT_HASH = bcrypt.hashSync("12345678", 10);
-
-const users: User[] = [
-  { id: 1, username: "root", passwordHash: DEFAULT_HASH, role: "admin" },
-];
-
-// ─── Store de tokens en mémoire ───────────────────────────────────────────────
-
+// ──────────────────────────────────────────────────────────────────────────────
+// Token store (in-memory — survives only while the process is running)
+// ──────────────────────────────────────────────────────────────────────────────
 interface TokenEntry {
-  userId: number;
   username: string;
-  role: string;
-  generation: number;
-  createdAt: number;
-  expiresAt: number; // 8h
+  expiresAt: number;
 }
 
 const tokenStore = new Map<string, TokenEntry>();
-let sessionGeneration = 1;
-
-export function revokeAllSessions() {
-  sessionGeneration++;
-  tokenStore.clear();
-}
 
 function generateToken(): string {
-  return crypto.randomBytes(32).toString("hex");
+  return randomBytes(32).toString("hex");
 }
 
-function cleanExpiredTokens() {
-  const now = Date.now();
-  for (const [tok, entry] of tokenStore.entries()) {
-    if (entry.expiresAt < now || entry.generation < sessionGeneration) {
-      tokenStore.delete(tok);
-    }
-  }
-}
-
-// ─── Extraction du token depuis la requête ────────────────────────────────────
-// Priorité : Authorization: Bearer <token>  puis  X-Auth-Token: <token>
-
-function extractToken(req: Request): string | null {
-  const auth = req.headers["authorization"];
-  if (auth && auth.startsWith("Bearer ")) {
-    return auth.slice(7).trim();
-  }
-  const xauth = req.headers["x-auth-token"] as string | undefined;
-  if (xauth) return xauth.trim();
-  return null;
-}
-
-// ─── Middleware requireAuth ───────────────────────────────────────────────────
-
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  cleanExpiredTokens();
-  const token = extractToken(req);
-  if (!token) {
-    return res.status(401).json({ error: "Non authentifié", code: "UNAUTHORIZED" });
-  }
+function isValidToken(token: string): TokenEntry | null {
   const entry = tokenStore.get(token);
-  if (!entry || entry.generation < sessionGeneration || entry.expiresAt < Date.now()) {
-    tokenStore.delete(token ?? "");
-    return res.status(401).json({ error: "Session expirée", code: "SESSION_EXPIRED" });
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    tokenStore.delete(token);
+    return null;
   }
-  (req as any).authUser = { userId: entry.userId, username: entry.username, role: entry.role };
-  next();
+  return entry;
 }
 
-// ─── Enregistrement des routes auth ───────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────────
+// Revoke all sessions (called at startup → forces re-login after every deploy)
+// ──────────────────────────────────────────────────────────────────────────────
+export function revokeAllSessions(): void {
+  tokenStore.clear();
+  console.log("[auth] All sessions revoked — re-login required");
+}
 
-export function registerAuth(app: Express) {
-  // POST /api/auth/login — retourne un token Bearer
-  app.post("/api/auth/login", async (req: Request, res: Response) => {
-    const { username, password } = req.body as { username: string; password: string };
-    if (!username || !password) {
-      return res.status(400).json({ error: "Identifiant et mot de passe requis." });
-    }
-    const user = users.find(u => u.username.toLowerCase() === username.toLowerCase());
-    if (!user) {
-      return res.status(401).json({ error: "Identifiant ou mot de passe incorrect." });
-    }
-    const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) {
-      return res.status(401).json({ error: "Identifiant ou mot de passe incorrect." });
-    }
-    const token = generateToken();
-    const now = Date.now();
-    tokenStore.set(token, {
-      userId: user.id,
-      username: user.username,
-      role: user.role,
-      generation: sessionGeneration,
-      createdAt: now,
-      expiresAt: now + 8 * 60 * 60 * 1000, // 8h
-    });
-    return res.json({ success: true, token, username: user.username, role: user.role });
-  });
+// ──────────────────────────────────────────────────────────────────────────────
+// Middleware — protect API routes
+// ──────────────────────────────────────────────────────────────────────────────
+export const requireAuth: RequestHandler = (req, res, next) => {
+  // Extract token from Authorization: Bearer <token>  or  X-Auth-Token: <token>
+  const authHeader = req.headers["authorization"] || "";
+  const headerToken = req.headers["x-auth-token"] as string | undefined;
+  let token: string | null = null;
 
-  // POST /api/auth/logout
-  app.post("/api/auth/logout", (req: Request, res: Response) => {
-    const token = extractToken(req);
-    if (token) tokenStore.delete(token);
-    res.json({ success: true });
-  });
+  if (authHeader.startsWith("Bearer ")) {
+    token = authHeader.slice(7).trim();
+  } else if (headerToken) {
+    token = headerToken.trim();
+  }
 
-  // GET /api/auth/me
-  app.get("/api/auth/me", (req: Request, res: Response) => {
-    const token = extractToken(req);
-    if (!token) return res.json({ authenticated: false });
-    const entry = tokenStore.get(token);
-    if (!entry || entry.generation < sessionGeneration || entry.expiresAt < Date.now()) {
-      return res.json({ authenticated: false });
-    }
-    res.json({ authenticated: true, username: entry.username, role: entry.role });
-  });
+  if (!token || !isValidToken(token)) {
+    res.status(401).json({ error: "Non authentifié", authenticated: false });
+    return;
+  }
 
-  // POST /api/auth/revoke-all — déconnecte tout le monde
-  app.post("/api/auth/revoke-all", requireAuth, (req: Request, res: Response) => {
-    const user = (req as any).authUser;
-    if (user?.role !== "admin") {
-      return res.status(403).json({ error: "Accès refusé" });
-    }
-    revokeAllSessions();
-    res.json({ success: true, message: "Toutes les sessions révoquées." });
-  });
+  next();
+};
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Auth route handlers
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** POST /api/auth/login — { username, password } → { success, token } */
+export function handleLogin(req: Request, res: Response): void {
+  const { username, password } = req.body as { username?: string; password?: string };
+
+  if (!username || !password) {
+    res.status(400).json({ success: false, error: "Identifiants manquants" });
+    return;
+  }
+
+  const hash = USERS[username];
+  if (!hash || !bcrypt.compareSync(password, hash)) {
+    res.status(401).json({ success: false, error: "Identifiants incorrects" });
+    return;
+  }
+
+  // Revoke old tokens for this user
+  for (const [t, entry] of tokenStore.entries()) {
+    if (entry.username === username) tokenStore.delete(t);
+  }
+
+  const token = generateToken();
+  tokenStore.set(token, { username, expiresAt: Date.now() + TOKEN_TTL_MS });
+  console.log(`[auth] Login: ${username}`);
+
+  res.json({ success: true, token, username });
+}
+
+/** GET /api/auth/me — check current session */
+export function handleMe(req: Request, res: Response): void {
+  const authHeader = req.headers["authorization"] || "";
+  const headerToken = req.headers["x-auth-token"] as string | undefined;
+  let token: string | null = null;
+
+  if (authHeader.startsWith("Bearer ")) token = authHeader.slice(7).trim();
+  else if (headerToken) token = headerToken.trim();
+
+  const entry = token ? isValidToken(token) : null;
+  if (!entry) {
+    res.json({ authenticated: false });
+    return;
+  }
+  res.json({ authenticated: true, username: entry.username });
+}
+
+/** POST /api/auth/logout — invalidate current token */
+export function handleLogout(req: Request, res: Response): void {
+  const authHeader = req.headers["authorization"] || "";
+  const headerToken = req.headers["x-auth-token"] as string | undefined;
+  let token: string | null = null;
+
+  if (authHeader.startsWith("Bearer ")) token = authHeader.slice(7).trim();
+  else if (headerToken) token = headerToken.trim();
+
+  if (token) tokenStore.delete(token);
+  res.json({ success: true });
+}
+
+/** POST /api/auth/revoke-all — revoke all sessions */
+export function handleRevokeAll(_req: Request, res: Response): void {
+  revokeAllSessions();
+  res.json({ success: true, message: "Toutes les sessions révoquées" });
 }

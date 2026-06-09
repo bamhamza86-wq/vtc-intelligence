@@ -1,7 +1,8 @@
+import { useState, useEffect } from "react";
 import { Switch, Route, Router } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
-import { QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
-import { queryClient, getAuthToken, setAuthToken } from "./lib/queryClient";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { queryClient, API_BASE, getAuthToken, setAuthToken } from "./lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import { ThemeProvider } from "./components/ThemeProvider";
 import Layout from "./components/Layout";
@@ -13,48 +14,63 @@ import ProfilePage from "./pages/ProfilePage";
 import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/not-found";
 
-const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
-
-// ─── Garde d'authentification ─────────────────────────────────────────────────
-
+// ──────────────────────────────────────────────────────────────────────────────
+// AuthGuard — checks /api/auth/me on mount, shows LoginPage if not authenticated
+// ──────────────────────────────────────────────────────────────────────────────
 function AuthGuard({ children }: { children: React.ReactNode }) {
-  const qc = useQueryClient();
+  const [status, setStatus] = useState<"checking" | "authenticated" | "unauthenticated">("checking");
 
-  const { data: auth, isLoading } = useQuery({
-    queryKey: ["auth-me"],
-    queryFn: async () => {
-      const token = getAuthToken();
-      if (!token) return { authenticated: false };
+  const checkAuth = async () => {
+    const token = getAuthToken();
+    if (!token) {
+      setStatus("unauthenticated");
+      return;
+    }
+    try {
       const res = await fetch(`${API_BASE}/api/auth/me`, {
-        headers: { "Authorization": `Bearer ${token}`, "X-Auth-Token": token },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Auth-Token": token,
+        },
       });
-      if (!res.ok) return { authenticated: false };
-      return res.json();
-    },
-    refetchInterval: 5 * 60 * 1000,
-    retry: false,
-    staleTime: 60 * 1000,
-  });
+      const data = await res.json();
+      setStatus(data.authenticated ? "authenticated" : "unauthenticated");
+      if (!data.authenticated) setAuthToken(null);
+    } catch {
+      setStatus("unauthenticated");
+    }
+  };
 
-  if (isLoading) {
+  useEffect(() => {
+    checkAuth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (status === "checking") {
     return (
-      <div style={{
-        minHeight: "100vh", background: "#0a0a0f",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        color: "#64748b", fontSize: "14px", gap: "10px",
-      }}>
-        <div style={{ width: "18px", height: "18px", border: "2px solid #3b82f6", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-        Chargement…
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#0f172a",
+          color: "#94a3b8",
+          fontFamily: "Inter, sans-serif",
+          fontSize: "14px",
+        }}
+      >
+        Vérification de la session…
       </div>
     );
   }
 
-  if (!auth?.authenticated) {
+  if (status === "unauthenticated") {
     return (
       <LoginPage
         onLogin={() => {
-          qc.invalidateQueries({ queryKey: ["auth-me"] });
+          queryClient.clear();
+          setStatus("authenticated");
         }}
       />
     );
@@ -63,8 +79,9 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-// ─── App principale ───────────────────────────────────────────────────────────
-
+// ──────────────────────────────────────────────────────────────────────────────
+// App
+// ──────────────────────────────────────────────────────────────────────────────
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>

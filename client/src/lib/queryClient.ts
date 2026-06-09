@@ -1,33 +1,50 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+// ──────────────────────────────────────────────────────────────────────────────
+// API base URL
+// The sentinel __PORT_5000__ is rewritten to /port/5000 by publish_website.
+// During local dev it stays as-is and resolves to empty string (same origin).
+// ──────────────────────────────────────────────────────────────────────────────
+const _sentinel = "__PORT_5000__";
+export const API_BASE = _sentinel.startsWith("__") ? "" : _sentinel;
 
-// ─── Token Bearer (localStorage) ─────────────────────────────────────────────
-// localStorage peut être bloqué en iframe, on utilise un fallback mémoire
-
+// ──────────────────────────────────────────────────────────────────────────────
+// Auth token helpers
+// Token is kept in localStorage for persistence + an in-memory fallback.
+// ──────────────────────────────────────────────────────────────────────────────
+const TOKEN_KEY = "vtc_auth_token";
 let _memToken: string | null = null;
 
 export function getAuthToken(): string | null {
-  try { return localStorage.getItem("vtc_token") ?? _memToken; } catch { return _memToken; }
+  try {
+    return localStorage.getItem(TOKEN_KEY) || _memToken;
+  } catch {
+    return _memToken;
+  }
 }
-export function setAuthToken(token: string | null) {
+
+export function setAuthToken(token: string | null): void {
   _memToken = token;
   try {
-    if (token) localStorage.setItem("vtc_token", token);
-    else localStorage.removeItem("vtc_token");
-  } catch { /* iframe localStorage blocked — use memory only */ }
-}
-
-function authHeaders(extra?: Record<string, string>): Record<string, string> {
-  const token = getAuthToken();
-  const h: Record<string, string> = { ...(extra || {}) };
-  if (token) {
-    h["Authorization"] = `Bearer ${token}`;
-    h["X-Auth-Token"] = token; // fallback
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // localStorage unavailable — memory-only
   }
-  return h;
 }
 
+function authHeaders(): Record<string, string> {
+  const token = getAuthToken();
+  if (!token) return {};
+  return {
+    Authorization: `Bearer ${token}`,
+    "X-Auth-Token": token,
+  };
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// API helpers
+// ──────────────────────────────────────────────────────────────────────────────
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
@@ -38,12 +55,14 @@ async function throwIfResNotOk(res: Response) {
 export async function apiRequest(
   method: string,
   url: string,
-  data?: unknown | undefined,
+  data?: unknown,
 ): Promise<Response> {
-  const headers = authHeaders(data ? { "Content-Type": "application/json" } : {});
   const res = await fetch(`${API_BASE}${url}`, {
     method,
-    headers,
+    headers: {
+      ...(data ? { "Content-Type": "application/json" } : {}),
+      ...authHeaders(),
+    },
     body: data ? JSON.stringify(data) : undefined,
   });
 
@@ -52,6 +71,7 @@ export async function apiRequest(
 }
 
 type UnauthorizedBehavior = "returnNull" | "throw";
+
 export const getQueryFn: <T>(options: {
   on401: UnauthorizedBehavior;
 }) => QueryFunction<T> =
