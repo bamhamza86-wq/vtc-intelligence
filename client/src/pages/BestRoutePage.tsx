@@ -72,154 +72,77 @@ function getZoneTypeIcon(type: string): string {
 
 // ─── Chargeur Leaflet ─────────────────────────────────────────────────────────
 
-function useLeaflet(ready: boolean) {
-  const [loaded, setLoaded] = useState(!!(window as any).L);
-
-  useEffect(() => {
-    if (!ready || (window as any).L) { setLoaded(true); return; }
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-    document.head.appendChild(link);
-    const script = document.createElement("script");
-    script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-    script.onload = () => setLoaded(true);
-    document.head.appendChild(script);
-  }, [ready]);
-
-  return loaded;
-}
-
-// ─── Carte BestRoute ─────────────────────────────────────────────────────────
+// ─── Carte BestRoute (Google Maps) ───────────────────────────────────────────
 
 function BestRouteMap({ data, selectedIdx }: { data: BestRouteResponse; selectedIdx: number }) {
-  const mapRef = useRef<any>(null);
-  const mapDivRef = useRef<HTMLDivElement>(null);
-  const markersRef = useRef<any[]>([]);
-  const linesRef = useRef<any[]>([]);
-  const leafletLoaded = useLeaflet(true);
+  const selectedZone = data.top5[selectedIdx];
+  const { lat, lng } = data.userPosition;
 
-  useEffect(() => {
-    if (!leafletLoaded || !mapDivRef.current) return;
-    const L = (window as any).L;
+  // Zoom adapté à la distance
+  const distDeg = Math.max(
+    Math.abs(lat - selectedZone.zone.lat),
+    Math.abs(lng - selectedZone.zone.lng)
+  );
+  const zoom = distDeg > 0.5 ? 10 : distDeg > 0.2 ? 11 : 12;
 
-    if (!mapRef.current) {
-      mapRef.current = L.map(mapDivRef.current, { zoomControl: true, attributionControl: false });
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-        attribution: "© CartoDB",
-        subdomains: "abcd",
-        maxZoom: 16,
-      }).addTo(mapRef.current);
-    }
-
-    const map = mapRef.current;
-
-    // Nettoyage anciens éléments
-    markersRef.current.forEach(m => m.remove());
-    linesRef.current.forEach(l => l.remove());
-    markersRef.current = [];
-    linesRef.current = [];
-
-    const { lat, lng } = data.userPosition;
-
-    // Marqueur position utilisateur (pulsant)
-    const userIcon = L.divIcon({
-      html: `<div style="width:16px;height:16px;border-radius:50%;background:#3b82f6;border:3px solid white;box-shadow:0 0 0 4px rgba(59,130,246,0.3);animation:pulse 2s infinite;"></div>
-             <style>@keyframes pulse{0%,100%{box-shadow:0 0 0 4px rgba(59,130,246,0.3)}50%{box-shadow:0 0 0 8px rgba(59,130,246,0.1)}}</style>`,
-      className: "", iconSize: [16, 16], iconAnchor: [8, 8],
-    });
-    const userMarker = L.marker([lat, lng], { icon: userIcon })
-      .addTo(map)
-      .bindPopup("<b>📍 Votre position</b>");
-    markersRef.current.push(userMarker);
-
-    // Marqueurs + lignes zones top5
-    data.top5.forEach((z, i) => {
-      const isSelected = i === selectedIdx;
-      const color = isSelected ? getScoreColor(z.globalScore) : "#475569";
-      const rank = i + 1;
-      const zoneIcon = L.divIcon({
-        html: `<div style="width:${isSelected ? 36 : 28}px;height:${isSelected ? 36 : 28}px;border-radius:50%;background:${color};border:${isSelected ? 3 : 2}px solid white;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:${isSelected ? 14 : 11}px;color:${isSelected ? '#000' : '#fff'};box-shadow:0 2px 8px rgba(0,0,0,0.5);transition:all 0.3s;">${rank}</div>`,
-        className: "", iconSize: [isSelected ? 36 : 28, isSelected ? 36 : 28],
-        iconAnchor: [isSelected ? 18 : 14, isSelected ? 18 : 14],
-      });
-
-      const marker = L.marker([z.zone.lat, z.zone.lng], { icon: zoneIcon })
-        .addTo(map)
-        .bindPopup(`
-          <div style="min-width:180px;">
-            <b>#${rank} ${z.zone.name}</b><br/>
-            <span style="color:${color};font-weight:bold;">Score ${z.globalScore}</span><br/>
-            📍 ${z.distanceKm} km — ⏱ ${z.etaMinutes} min<br/>
-            💶 ~${z.estimatedRevenue}€/course<br/>
-            <small>${z.reason}</small>
-          </div>
-        `);
-      markersRef.current.push(marker);
-
-      // Ligne utilisateur → zone
-      const line = L.polyline(
-        [[lat, lng], [z.zone.lat, z.zone.lng]],
-        {
-          color: isSelected ? getScoreColor(z.globalScore) : "#334155",
-          weight: isSelected ? 3 : 1.5,
-          opacity: isSelected ? 0.9 : 0.4,
-          dashArray: isSelected ? undefined : "5,8",
-        }
-      ).addTo(map);
-      linesRef.current.push(line);
-    });
-
-    // Ajuster le zoom pour tout voir
-    const allLatLngs = [
-      [lat, lng],
-      ...data.top5.map(z => [z.zone.lat, z.zone.lng]),
-    ] as [number, number][];
-    const bounds = L.latLngBounds(allLatLngs);
-    map.fitBounds(bounds, { padding: [40, 40] });
-
-  }, [leafletLoaded, data, selectedIdx]);
+  // Google Maps embed centré sur la zone de destination
+  const iframeSrc = `https://maps.google.com/maps?q=${selectedZone.zone.lat},${selectedZone.zone.lng}&z=${zoom}&output=embed&hl=fr`;
 
   return (
-    <div
-      ref={mapDivRef}
-      style={{ height: "320px", borderRadius: "12px", overflow: "hidden" }}
-      className="border border-border"
-    />
+    <div className="relative" style={{ height: "320px", borderRadius: "12px", overflow: "hidden" }}>
+      <iframe
+        key={`map-${selectedZone.zone.id}`}
+        title="Google Maps"
+        src={iframeSrc}
+        width="100%"
+        height="100%"
+        style={{ border: 0, display: "block" }}
+        loading="lazy"
+        referrerPolicy="no-referrer-when-downgrade"
+        allowFullScreen
+      />
+      {/* Overlay liste top5 */}
+      <div className="absolute top-2 left-2 flex flex-col gap-1 pointer-events-none" style={{ maxWidth: "70%" }}>
+        {data.top5.map((z, i) => (
+          <div
+            key={z.zone.id}
+            className="flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-bold"
+            style={{
+              background: i === selectedIdx ? getScoreColor(z.globalScore) : "rgba(15,23,42,0.82)",
+              color: i === selectedIdx ? "#000" : "#94a3b8",
+              border: `1px solid ${i === selectedIdx ? getScoreColor(z.globalScore) : "rgba(148,163,184,0.2)"}`,
+              backdropFilter: "blur(4px)",
+            }}
+          >
+            {i + 1}. {z.zone.name} — {z.distanceKm}km / ~{z.etaMinutes}min
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
-// ─── Carte mini GPS en cours ──────────────────────────────────────────────────
+// ─── Carte mini GPS en cours (Google Maps) ────────────────────────────────────
 
 function GpsWaitMap({ pos }: { pos: { lat: number; lng: number } | null }) {
-  const mapRef = useRef<any>(null);
-  const mapDivRef = useRef<HTMLDivElement>(null);
-  const leafletLoaded = useLeaflet(!!pos);
-
-  useEffect(() => {
-    if (!leafletLoaded || !pos || !mapDivRef.current) return;
-    const L = (window as any).L;
-    if (!mapRef.current) {
-      mapRef.current = L.map(mapDivRef.current, { zoomControl: false, attributionControl: false });
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-        subdomains: "abcd", maxZoom: 16,
-      }).addTo(mapRef.current);
-    }
-    const userIcon = (window as any).L.divIcon({
-      html: `<div style="width:14px;height:14px;border-radius:50%;background:#3b82f6;border:2px solid white;box-shadow:0 0 0 6px rgba(59,130,246,0.25);"></div>`,
-      className: "", iconSize: [14, 14], iconAnchor: [7, 7],
-    });
-    mapRef.current.setView([pos.lat, pos.lng], 14);
-    (window as any).L.marker([pos.lat, pos.lng], { icon: userIcon }).addTo(mapRef.current);
-  }, [leafletLoaded, pos]);
-
   if (!pos) return null;
+  const iframeSrc = `https://maps.google.com/maps?q=${pos.lat},${pos.lng}&z=15&output=embed&hl=fr`;
   return (
     <div
-      ref={mapDivRef}
       style={{ height: "150px", borderRadius: "10px", overflow: "hidden" }}
       className="border border-border mt-3"
-    />
+    >
+      <iframe
+        key={`gps-${pos.lat}-${pos.lng}`}
+        title="Position GPS"
+        src={iframeSrc}
+        width="100%"
+        height="100%"
+        style={{ border: 0, display: "block" }}
+        loading="lazy"
+        referrerPolicy="no-referrer-when-downgrade"
+      />
+    </div>
   );
 }
 

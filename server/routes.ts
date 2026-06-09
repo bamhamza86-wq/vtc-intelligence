@@ -347,7 +347,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       // Zones résidentielles / business 93 : mixte → ~1.28-1.35
       const ROAD_FACTOR: Record<string, number> = {
         z_cdg:                1.40, // A1/A3 depuis Paris → 28km réel pour ~20km vol
-        z_orly:               1.37, // A6/A106 depuis Paris → ~26km réel pour ~19km vol
+        z_orly:               1.47, // A6/A106 traverse Paris → 28.2km réel pour ~19km vol (calibré Google Maps)
         z_tremblay:           1.38, // Proche CDG, même accès A104
         z_villepinte:         1.35, // A104 + N2 depuis Paris
         z_le_bourget:         1.30, // A1 court depuis Paris Nord
@@ -374,20 +374,37 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       //   17h-19h (rush PM) = ~55 min → ~31 km/h
       //   22h-6h (nuit) = ~26 min → ~65 km/h
       function estimateSpeedKmH(zoneId: string, roadDistKm: number, h: number): number {
-        const isAirport = zoneId === "z_cdg" || zoneId === "z_orly" || zoneId === "z_tremblay";
-        const isNight = h >= 22 || h <= 5;
+        // ── Aéroports NORD (CDG, Tremblay) : trajet via A1/A3, peu de traversée Paris ──
+        const isCdgNord = zoneId === "z_cdg" || zoneId === "z_tremblay";
+        // ── Orly : DIFFÉRENT — traverse tout Paris Nord→Sud (A13/Bd Péri/A6) ──
+        const isOrly = zoneId === "z_orly";
+        const isNight = h >= 22 || h < 6;
 
-        if (isAirport) {
-          // Vitesse mixte urbain+autoroute A1/A6, calibrée sur Google Maps réel
-          if (h >= 6  && h < 7)   return 44; // Pré-rush : autoroute encore fluide
-          if (h >= 7  && h < 9)   return 38; // Rush AM : bouchons A1/A3/A6 → 44-47min CDG
-          if (h >= 9  && h < 12)  return 39; // Post-rush : encore dense → ~44min CDG
-          if (h >= 12 && h < 14)  return 44; // Mi-journée : fluide → ~39min CDG
-          if (h >= 14 && h <= 16) return 46; // Après-midi creux
-          if (h >= 16 && h <= 17) return 40; // Pré-rush PM
-          if (h >= 17 && h <= 19) return 30; // Rush PM : dense retour
-          if (h >= 19 && h <= 22) return 48; // Soir post-rush
-          return 65;                          // Nuit : autoroute libre
+        if (isCdgNord) {
+          // Vitesse mixte urbain+autoroute A1, calibrée Google Maps : Bd Ney → CDG 28.3km
+          if (h >= 6  && h < 7)   return 44; // Pré-rush : A1 encore fluide
+          if (h >= 7  && h < 9)   return 38; // Rush AM : bouchons A1 → 44min
+          if (h >= 9  && h < 12)  return 39; // Post-rush : encore dense → 44min
+          if (h >= 12 && h < 14)  return 44; // Mi-journée : A1 fluide
+          if (h >= 14 && h < 16)  return 46; // Après-midi creux
+          if (h >= 16 && h < 17)  return 40; // Pré-rush PM
+          if (h >= 17 && h < 19)  return 30; // Rush PM
+          if (h >= 19 && h < 22)  return 48; // Soir post-rush
+          return 65;                          // Nuit
+        }
+
+        if (isOrly) {
+          // Traversée NORD→SUD de Paris (Bd Ney → Orly via Bd Péri/A6)
+          // Calibré Google Maps : 28.2km, 1h08 à 17h47 → 24.9 km/h
+          if (h >= 6  && h < 7)   return 38; // Pré-rush urbain
+          if (h >= 7  && h < 9)   return 33; // Rush AM traversée Paris ~51min
+          if (h >= 9  && h < 12)  return 35; // Post-rush encore chargé ~48min
+          if (h >= 12 && h < 14)  return 37; // Mi-journée ~46min
+          if (h >= 14 && h < 16)  return 38; // Après-midi ~45min
+          if (h >= 16 && h < 17)  return 32; // Pré-rush PM ~53min
+          if (h >= 17 && h < 19)  return 25; // Rush PM CALIBRÉ ~68min ✅ Google Maps 1h08
+          if (h >= 19 && h < 22)  return 42; // Soir post-rush ~40min
+          return 56;                          // Nuit ~30min
         }
 
         // Zones urbaines / banlieue
