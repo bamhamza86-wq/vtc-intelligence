@@ -242,11 +242,22 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         data_freshness: {
           scores_last_seeded: meta.last_seed_ts || 'unknown',
           scores_for_date: meta.last_seed_date || 'unknown',
-          auto_refresh: 'quotidien au premier démarrage du jour',
+          last_refresh_ts: meta.last_refresh_ts || meta.last_seed_ts || 'unknown',
+          auto_refresh: 'toutes les 3 minutes (refresh automatique en production)',
           history_available: diff.hasHistory,
           history_days: diff.hasHistory ? diff.diff.length / (14 * 48) : 0,
         },
       });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ─── Force refresh immédiat des scores ────────────────────────────────────────
+  app.post("/api/analytics/force-refresh", (_req, res) => {
+    try {
+      const result = storage.forceReseed();
+      res.json({ ...result, message: "Recalcul complet des 672 scores effectué" });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
