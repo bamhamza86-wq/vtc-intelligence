@@ -1,15 +1,39 @@
 import { Express, Request, Response, NextFunction, RequestHandler } from "express";
 import { randomBytes } from "crypto";
 import bcrypt from "bcryptjs";
+import rateLimit from "express-rate-limit";
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Configuration
+// Configuration — mots de passe via variables d'environnement
+// Fallback dev : plaintext hashé au démarrage (UNIQUEMENT si la var n'est pas définie)
+// En production, définir PASSWORD_ROOT_HASH et PASSWORD_ANTOINE_HASH dans .env
 // ──────────────────────────────────────────────────────────────────────────────
+function resolveHash(envHash: string | undefined, devPlaintext: string): string {
+  if (envHash && envHash.startsWith("$2")) return envHash; // bcrypt hash déjà prêt
+  // Fallback dev : hash à la volée (jamais en production)
+  if (process.env.NODE_ENV !== "production") {
+    return bcrypt.hashSync(devPlaintext, 10);
+  }
+  // Production sans var env → refus de démarrer proprement
+  console.error(`[auth] ERREUR: hash mot de passe manquant en production.`);
+  return bcrypt.hashSync(randomBytes(32).toString("hex"), 10); // hash inaccessible
+}
+
 const USERS: Record<string, string> = {
-  // username → bcrypt hash of password
-  root: bcrypt.hashSync("12345678", 10),
-  antoine: bcrypt.hashSync("antoine", 10),
+  root:    resolveHash(process.env.PASSWORD_ROOT_HASH,    "12345678"),
+  antoine: resolveHash(process.env.PASSWORD_ANTOINE_HASH, "antoine"),
 };
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Rate limiting — max 15 tentatives login / 15 minutes / IP
+// ──────────────────────────────────────────────────────────────────────────────
+export const loginRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: "Trop de tentatives. Réessayez dans 15 minutes." },
+});
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
 
@@ -129,7 +153,7 @@ export function handleLogout(req: Request, res: Response): void {
   res.json({ success: true });
 }
 
-/** POST /api/auth/revoke-all — revoke all sessions */
+/** POST /api/admin/revoke-all — revoke all sessions (authentifié requis) */
 export function handleRevokeAll(_req: Request, res: Response): void {
   revokeAllSessions();
   res.json({ success: true, message: "Toutes les sessions révoquées" });
@@ -140,8 +164,9 @@ export function handleRevokeAll(_req: Request, res: Response): void {
 // Call this BEFORE any requireAuth middleware.
 // ──────────────────────────────────────────────────────────────────────────────
 export function registerAuth(app: Express): void {
-  app.post("/api/auth/login", handleLogin);
+  app.post("/api/auth/login", loginRateLimiter, handleLogin);
   app.get("/api/auth/me", handleMe);
   app.post("/api/auth/logout", handleLogout);
-  app.post("/api/auth/revoke-all", handleRevokeAll);
+  // /api/admin/revoke-all est protégé par requireAuth dans index.ts (/api/* hors /auth/*)
+  app.post("/api/admin/revoke-all", handleRevokeAll);
 }

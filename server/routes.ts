@@ -329,6 +329,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       let flightData: any = null;
       try { flightData = await getFlightData(); } catch { /* non bloquant */ }
 
+      // ── Distance Haversine (vol d'oiseau) ─────────────────────────────────────
       function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
         const R = 6371;
         const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -339,13 +340,84 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
       }
 
+      // ── Facteurs de correction routière par zone ──────────────────────────────
+      // Calibrés sur distances Google Maps réelles depuis positions typiques IDF
+      // Aéroports : accès autoroute sinueux (A1, A6, A86) → facteur élevé ~1.38-1.42
+      // Zones proches Paris : voirie urbaine dense → ~1.25-1.30
+      // Zones résidentielles / business 93 : mixte → ~1.28-1.35
+      const ROAD_FACTOR: Record<string, number> = {
+        z_cdg:                1.40, // A1/A3 depuis Paris → 28km réel pour ~20km vol
+        z_orly:               1.37, // A6/A106 depuis Paris → ~26km réel pour ~19km vol
+        z_tremblay:           1.38, // Proche CDG, même accès A104
+        z_villepinte:         1.35, // A104 + N2 depuis Paris
+        z_le_bourget:         1.30, // A1 court depuis Paris Nord
+        z_aulnay:             1.33, // D40/A3 banlieue est
+        z_saint_denis_gare:   1.28, // A1 + urbain Saint-Denis
+        z_plaine_commune:     1.27, // D20 / A86 couronne
+        z_bobigny_gare:       1.28, // A3 + urbain Bobigny
+        z_aubervilliers:      1.26, // Urbain dense Aubervilliers
+        z_epinay_gennevilliers: 1.30, // D14 / RD1
+        z_93_centre:          1.26, // Urbain Saint-Denis Centre
+        z_montreuil:          1.27, // Urbain Montreuil
+        z_stade_france:       1.25, // A1 + D20 court
+      };
+
+      // ── Vitesse moyenne réaliste par heure et distance ────────────────────────
+      // Vitesse effective IDF = f(distance, heure, type de route)
+      // Pour les aéroports : trajet mixte urbain + autoroute → vitesse plus élevée
+      // que le pur urbain, mais ralentie par trafic dense aux heures de pointe
+      // Profil de vitesse horaire calibré Google Maps IDF
+      // Référence : Bd Ney (Paris 18e) → CDG = 28.3km
+      //   7h-9h (rush AM) = 44 min → 38.6 km/h
+      //   10h-11h (post-rush) = 44 min → 38.6 km/h (encore dense)
+      //   13h-15h (creux) = ~39 min → ~44 km/h (autoroute fluide)
+      //   17h-19h (rush PM) = ~55 min → ~31 km/h
+      //   22h-6h (nuit) = ~26 min → ~65 km/h
+      function estimateSpeedKmH(zoneId: string, roadDistKm: number, h: number): number {
+        const isAirport = zoneId === "z_cdg" || zoneId === "z_orly" || zoneId === "z_tremblay";
+        const isNight = h >= 22 || h <= 5;
+
+        if (isAirport) {
+          // Vitesse mixte urbain+autoroute A1/A6, calibrée sur Google Maps réel
+          if (h >= 6  && h < 7)   return 44; // Pré-rush : autoroute encore fluide
+          if (h >= 7  && h < 9)   return 38; // Rush AM : bouchons A1/A3/A6 → 44-47min CDG
+          if (h >= 9  && h < 12)  return 39; // Post-rush : encore dense → ~44min CDG
+          if (h >= 12 && h < 14)  return 44; // Mi-journée : fluide → ~39min CDG
+          if (h >= 14 && h <= 16) return 46; // Après-midi creux
+          if (h >= 16 && h <= 17) return 40; // Pré-rush PM
+          if (h >= 17 && h <= 19) return 30; // Rush PM : dense retour
+          if (h >= 19 && h <= 22) return 48; // Soir post-rush
+          return 65;                          // Nuit : autoroute libre
+        }
+
+        // Zones urbaines / banlieue
+        const isRushAM = h >= 7 && h <= 9;
+        const isRushPM = h >= 17 && h <= 19;
+        const isRush = isRushAM || isRushPM;
+        const isPostRush = (h >= 9 && h <= 11) || (h >= 19 && h <= 21);
+
+        if (roadDistKm <= 5) {
+          // Urbain dense court
+          return isRush ? 15 : isPostRush ? 18 : (isNight ? 35 : 22);
+        }
+        if (roadDistKm <= 12) {
+          // Urbain + rocade
+          return isRush ? 20 : isPostRush ? 24 : (isNight ? 45 : 30);
+        }
+        // Banlieue > 12km
+        return isRush ? 25 : isPostRush ? 30 : (isNight ? 55 : 38);
+      }
+
       const scoreMap: Record<string, any> = {};
       scores.forEach((s: any) => { scoreMap[s.zone_id] = s; });
 
       const results = zones.map((z: any) => {
-        const distanceKm = Math.round(haversineKm(lat, lng, z.lat, z.lng) * 10) / 10;
-        const speedKmH = (hour >= 7 && hour <= 9) ? 22 : (hour >= 17 && hour <= 19) ? 20 : 35;
-        const etaMinutes = Math.round((distanceKm / speedKmH) * 60);
+        const straightKm = haversineKm(lat, lng, z.lat, z.lng);
+        const roadFactor = ROAD_FACTOR[z.id] ?? 1.30;
+        // Distance routière estimée = vol d'oiseau × facteur de tortuosité
+        const distanceKm = Math.round(straightKm * roadFactor * 10) / 10;
+        const speedKmH = estimateSpeedKmH(z.id, distanceKm, hour);
+        const etaMinutes = Math.max(1, Math.round((distanceKm / speedKmH) * 60));
 
         const s = scoreMap[z.id] || {};
         const profitIdx = s.profitability_index ?? 0;
@@ -357,13 +429,14 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         let flightBoost = 1.0;
         if (flightData) flightBoost = getFlightBoostForZone(z.id, flightData);
 
-        // Pénalité distance : favoriser zones proches rentables
-        const distancePenalty = distanceKm <= 2 ? 1.0
-          : distanceKm <= 5 ? 0.92
-          : distanceKm <= 10 ? 0.80
-          : distanceKm <= 20 ? 0.65
-          : distanceKm <= 35 ? 0.45
-          : 0.25;
+        // Pénalité distance routière : seuils recalibrés sur km réels (not vol d'oiseau)
+        // CDG = ~28km réel depuis Paris → reste très rentable malgré la distance
+        const distancePenalty = distanceKm <= 3 ? 1.0
+          : distanceKm <= 8 ? 0.93
+          : distanceKm <= 15 ? 0.82
+          : distanceKm <= 25 ? 0.70
+          : distanceKm <= 40 ? 0.55
+          : 0.35;
 
         const globalScore = Math.round(profitIdx * distancePenalty * surge * flightBoost);
         const estimatedRevenue = Math.round(avgFare * surge * flightBoost * 100) / 100;

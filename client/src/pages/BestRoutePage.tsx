@@ -503,7 +503,7 @@ export default function BestRoutePage() {
 
           <div className="grid grid-cols-4 gap-2">
             {[
-              { icon: <MapPin size={13} />, label: "Distance", value: `${data.recommendation.distanceKm} km` },
+              { icon: <MapPin size={13} />, label: "Distance route", value: `${data.recommendation.distanceKm} km` },
               { icon: <Clock size={13} />, label: "ETA", value: `~${data.recommendation.etaMinutes} min` },
               { icon: <Zap size={13} />, label: "Surge", value: `×${data.recommendation.surgeMultiplier}` },
               { icon: <Car size={13} />, label: "Tarif moy.", value: `~${data.recommendation.estimatedRevenue}€` },
