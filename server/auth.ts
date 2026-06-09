@@ -8,6 +8,7 @@ import bcrypt from "bcryptjs";
 const USERS: Record<string, string> = {
   // username → bcrypt hash of password
   root: bcrypt.hashSync("12345678", 10),
+  antoine: bcrypt.hashSync("antoine", 10),
 };
 
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
