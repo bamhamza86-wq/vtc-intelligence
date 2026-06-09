@@ -35,41 +35,40 @@ const zones93 = [
 
 // ─── Patterns horaires par zone ───────────────────────────────────────────────
 
-// Recalibrés 09/06/2026 — corrélation réel mardi 9h-11h vs données ADP/RATP
+// Recalibrés 09/06/2026 — corrélation étendue réel mardi 6h-11h vs données ADP/RATP/DRIEA
 const patterns: Record<string, { peakHours: number[]; baseAvgDist: number; baseLongRide: number; demandCap?: number }> = {
-  // Aéroports — pics intercontinentaux confirmés 9-11h (données ADP 2024-2025)
-  z_cdg:               { peakHours: [4,5,6,7,8,9,10,11,12,13,18,19,20,21,22,23], baseAvgDist: 42, baseLongRide: 0.94, demandCap: 96 },
-  // Orly — flux Maghreb+DOM-TOM sous-estimé 10-11h, correction +15%
-  z_orly:              { peakHours: [5,6,7,8,9,10,11,16,17,18,19,20,21],          baseAvgDist: 27, baseLongRide: 0.84, demandCap: 92 },
-  // Transport — offre réelle plus faible 9h mardi (D/O ratio corrigé)
+  // CDG — écart +0.16 : demande sous-estimée 6h-8h; surge 7h réel ~1.6 vs prédit 1.3
+  z_cdg:               { peakHours: [4,5,6,7,8,9,10,11,12,13,18,19,20,21,22,23], baseAvgDist: 42, baseLongRide: 0.94, demandCap: 98 },
+  // Orly — écart +0.14 : 8h CONFIRMÉ peakHour, flux DOM-TOM 6h-9h sous-estimé
+  z_orly:              { peakHours: [5,6,7,8,9,10,11,16,17,18,19,20,21],          baseAvgDist: 27, baseLongRide: 0.84, demandCap: 94 },
+  // Saint-Denis — écart +0.03 OK; 7h légèrement sous (+0.12)
   z_saint_denis_gare:  { peakHours: [6,7,8,9,17,18,19,20],                        baseAvgDist: 16, baseLongRide: 0.40 },
   z_bobigny_gare:      { peakHours: [7,8,9,17,18,19],                             baseAvgDist: 13, baseLongRide: 0.32 },
   z_aubervilliers:     { peakHours: [7,8,9,17,18,19,22,23],                       baseAvgDist: 15, baseLongRide: 0.37 },
   z_epinay_gennevilliers: { peakHours: [6,7,8,9,17,18,19],                        baseAvgDist: 19, baseLongRide: 0.44 },
-  // Business — Plaine Commune + Le Bourget : activité 9h confirmée
+  // Plaine Commune — 8h sous-estimé (+0.08) : 8h confirmé peakHour
   z_plaine_commune:    { peakHours: [7,8,9,10,12,13,17,18,19],                    baseAvgDist: 18, baseLongRide: 0.48 },
   z_le_bourget:        { peakHours: [7,8,9,10,11,17,18,19,20],                    baseAvgDist: 24, baseLongRide: 0.58 },
-  // Villepinte : salons 9-11h confirmés, distance longue vers Paris/Défense
-  z_villepinte:        { peakHours: [8,9,10,11,12,17,18,19,20],                   baseAvgDist: 32, baseLongRide: 0.68 },
-  // Tremblay : proximité CDG — long_ride corrigé à la hausse (+8%)
+  // Villepinte — 6h retiré (ratio prédit 1.00 vs réel 0.95 = surestimé 6h)
+  z_villepinte:        { peakHours: [7,8,9,10,11,12,17,18,19,20],                 baseAvgDist: 32, baseLongRide: 0.68 },
+  // Tremblay : proximité CDG — pic 6h confirmé
   z_tremblay:          { peakHours: [6,7,8,9,17,18,19],                           baseAvgDist: 35, baseLongRide: 0.78 },
-  // Entertainment — Stade France: inactif 9-11h confirmé
+  // Stade France : CONFIRMÉ inactif 6h-11h
   z_stade_france:      { peakHours: [18,19,20,21,22,23],                          baseAvgDist: 14, baseLongRide: 0.32 },
   z_93_centre:         { peakHours: [9,10,12,13,17,18,20,21,22],                  baseAvgDist: 14, baseLongRide: 0.30 },
-  // Montreuil : D/O surestimé matin corrigé — offre élevée 9h mardi
+  // Montreuil — écart -0.09 (surestimé) : supplyBase augmentée dans computeScore
   z_montreuil:         { peakHours: [7,8,17,18,19],                               baseAvgDist: 12, baseLongRide: 0.26 },
-  // Aulnay : proximité CDG — long_ride majoré, pic 9h maintenu
+  // Aulnay : proximité CDG — long_ride majoré, pic 6h-9h maintenu
   z_aulnay:            { peakHours: [6,7,8,9,17,18,22,23],                        baseAvgDist: 22, baseLongRide: 0.52 },
 };
 
 // ─── Coefficients par jour de semaine (0=dim, 1=lun, …, 6=sam) ───────────────
-// Calibrés sur données ADP et RATP pour le 93
-// Recalibrés 09/06/2026 — analyse inversée réel mardi 9h-11h
-// Mardi: demande +3%, offre -8% (moins de chauffeurs matin vs lundi), surge +0.06
+// Recalibrés 09/06/2026 — corrélation étendue 6h-11h données ADP/RATP/DRIEA
+// Mardi supply 0.82→0.78 : resserrement ratios D/O sur zones sous-estimées 6h-11h
 const DAY_COEFFICIENTS: Record<number, { demand: number; supply: number; surge: number; label: string }> = {
   0: { demand: 0.74, supply: 0.58, surge: 1.14, label: "Dimanche"  }, // aéroports actifs nuit/matin
   1: { demand: 0.93, supply: 0.88, surge: 1.08, label: "Lundi"     }, // offre forte (chauffeurs actifs)
-  2: { demand: 1.03, supply: 0.82, surge: 1.18, label: "Mardi"     }, // recalibré: offre -8%, surge +0.06
+  2: { demand: 1.03, supply: 0.78, surge: 1.18, label: "Mardi"     }, // supply -5% sup. (6h-11h : ratios D/O resserrés)
   3: { demand: 1.04, supply: 0.90, surge: 1.15, label: "Mercredi"  }, // légère hausse demande
   4: { demand: 1.07, supply: 0.93, surge: 1.18, label: "Jeudi"     }, // pic semaine confirmé
   5: { demand: 1.10, supply: 0.85, surge: 1.28, label: "Vendredi"  }, // forte sortie + aéroports
@@ -101,25 +100,32 @@ function computeScore(
   const isWeekendNight = dt === "weekend" && (h >= 22 || h <= 3);
   const dayCo = DAY_COEFFICIENTS[dayOfWeek] || DAY_COEFFICIENTS[2];
 
-  // ── Demande recalibrée 09/06/2026 ─────────────────────────────────────────
+  // ── Demande recalibrée 09/06/2026 étendu 6h-11h ───────────────────────────
   let demandBase = isPeak ? 82 : (isNight ? 36 : 50);
   if (zone.type === "airport") {
-    demandBase = isPeak ? 92 : (isNight ? 62 : 64); // +4 aéroports (sous-estimés)
+    // CDG +0.16 / Orly +0.14 : demande aéroports sous-estimée 6h-9h
+    demandBase = isPeak ? 94 : (isNight ? 62 : 66);
     if ((pat as any).demandCap) demandBase = Math.min(demandBase, (pat as any).demandCap);
   }
+  // CDG 6h-8h : boost supplémentaire (arrivées intercontinentales précoces)
+  if (zone.id === "z_cdg" && h >= 6 && h <= 8) demandBase = Math.min(demandBase + 4, 98);
+  // Orly 8h : sous-estimé → forcer demande haute (peakHour confirmé)
+  if (zone.id === "z_orly" && h === 8) demandBase = Math.min(demandBase + 3, 94);
+  // Saint-Denis 7h : légèrement sous-estimé (+0.12)
+  if (zone.id === "z_saint_denis_gare" && h === 7) demandBase += 2;
   if (zone.id === "z_stade_france" && !isPeak) demandBase = 20;
-  if (zone.id === "z_montreuil" && h >= 9 && h <= 11) demandBase = 58; // surestimé matin
+  if (zone.id === "z_montreuil" && h >= 6 && h <= 11) demandBase = 50; // surestimé 6h-11h
   if (isWeekendNight) demandBase += 24;
   demandBase *= dayCo.demand;
-  const v = Math.sin(seedVariance * 7.3 + h * 0.5) * 0.07; // variance ±7% (réduite)
+  const v = Math.sin(seedVariance * 7.3 + h * 0.5) * 0.07; // variance ±7%
   const demand = Math.min(100, Math.max(5, demandBase * (1 + v)));
 
-  // ── Offre recalibrée ────────────────────────────────────────────────────────
-  // Offre mardi 9h-11h réelle : moins de chauffeurs → supply -8%
+  // ── Offre recalibrée 6h-11h ─────────────────────────────────────────────────
   let supplyBase = isPeak ? 58 : (isNight ? 16 : 48);
   if (zone.type === "airport") supplyBase = isPeak ? 48 : 34; // files courtes airports
   if (zone.id === "z_stade_france" && !isPeak) supplyBase = 64;
-  if (zone.id === "z_montreuil" && h >= 9 && h <= 11) supplyBase = 52; // corrigé
+  // Montreuil surestimé (-0.09) : offre trop basse → supplyBase augmentée 6h-11h
+  if (zone.id === "z_montreuil" && h >= 6 && h <= 11) supplyBase = 58;
   supplyBase *= dayCo.supply;
   const vs = Math.cos(seedVariance * 5.1 + h * 0.7) * 0.09; // variance ±9%
   const supply = Math.max(5, Math.min(100, supplyBase * (1 + vs)));
@@ -134,11 +140,12 @@ function computeScore(
   const avgDur = avgDist / speed;
   const avgFare = avgDist * 1.30 + 2.80; // tarif recalibré
 
-  // ── Surge recalibré ─────────────────────────────────────────────────────────
-  // Seuils ajustés sur observations réelles (ratio D/O mardi 9h)
-  const surgeMult = ratio > 2.6 ? 1.85 * dayCo.surge
-    : ratio > 1.9 ? 1.42 * dayCo.surge
-    : ratio > 1.4 ? 1.18 * dayCo.surge
+  // ── Surge recalibré 6h-11h ─────────────────────────────────────────────────
+  // Seuils abaissés : CDG 7h réel ~1.6 vs prédit 1.3; Orly 8h réel ~1.4 vs prédit 1.1
+  // 2.6/1.9/1.4 → 2.2/1.7/1.3 pour capturer surge plus tôt
+  const surgeMult = ratio > 2.2 ? 1.90 * dayCo.surge
+    : ratio > 1.7 ? 1.48 * dayCo.surge
+    : ratio > 1.3 ? 1.20 * dayCo.surge
     : 1.0;
   const surge = Math.min(3.8, surgeMult);
 
