@@ -310,4 +310,113 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       ]},
     ]});
   });
+
+  // ─── Meilleur Trajet — calcul itinéraire rentable depuis position GPS ──────────
+  // POST /api/best-route
+  // Body: { lat: number, lng: number }
+  app.post("/api/best-route", async (req, res) => {
+    try {
+      const { lat, lng } = req.body as { lat: number; lng: number };
+      if (typeof lat !== "number" || typeof lng !== "number") {
+        return res.status(400).json({ error: "lat et lng requis (number)" });
+      }
+
+      const hour = new Date().getHours();
+      const dayType = [0, 6].includes(new Date().getDay()) ? "weekend" : "weekday";
+      const zones = storage.getAllZones() as any[];
+      const scores = storage.getProfitabilityByHour(hour, dayType) as any[];
+
+      let flightData: any = null;
+      try { flightData = await getFlightData(); } catch { /* non bloquant */ }
+
+      function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+        const R = 6371;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLng = (lng2 - lng1) * Math.PI / 180;
+        const a = Math.sin(dLat / 2) ** 2 +
+          Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+          Math.sin(dLng / 2) ** 2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      }
+
+      const scoreMap: Record<string, any> = {};
+      scores.forEach((s: any) => { scoreMap[s.zone_id] = s; });
+
+      const results = zones.map((z: any) => {
+        const distanceKm = Math.round(haversineKm(lat, lng, z.lat, z.lng) * 10) / 10;
+        const speedKmH = (hour >= 7 && hour <= 9) ? 22 : (hour >= 17 && hour <= 19) ? 20 : 35;
+        const etaMinutes = Math.round((distanceKm / speedKmH) * 60);
+
+        const s = scoreMap[z.id] || {};
+        const profitIdx = s.profitability_index ?? 0;
+        const surge = s.surge_multiplier ?? 1.0;
+        const avgFare = s.avg_fare ?? 0;
+        const longRide = s.long_ride_probability ?? 0;
+        const ratio = s.ratio_ds ?? 1;
+
+        let flightBoost = 1.0;
+        if (flightData) flightBoost = getFlightBoostForZone(z.id, flightData);
+
+        // Pénalité distance : favoriser zones proches rentables
+        const distancePenalty = distanceKm <= 2 ? 1.0
+          : distanceKm <= 5 ? 0.92
+          : distanceKm <= 10 ? 0.80
+          : distanceKm <= 20 ? 0.65
+          : distanceKm <= 35 ? 0.45
+          : 0.25;
+
+        const globalScore = Math.round(profitIdx * distancePenalty * surge * flightBoost);
+        const estimatedRevenue = Math.round(avgFare * surge * flightBoost * 100) / 100;
+
+        let reason = "Zone active";
+        if (z.id === "z_cdg" || z.id === "z_orly") {
+          const fd = z.id === "z_cdg" ? flightData?.cdg : flightData?.orly;
+          reason = fd ? `${fd.arrivals_next_hour} arrivees/h — Flux ${fd.peak_level}` : "Aeroport — flux eleve";
+        } else if (longRide >= 0.7) {
+          reason = `${Math.round(longRide * 100)}% longues courses (${(s.avg_distance_km ?? 0).toFixed(0)}km moy.)`;
+        } else if (surge > 1.4) {
+          reason = `Surge x${surge.toFixed(2)} — ratio D/O ${ratio.toFixed(2)}`;
+        } else if (ratio > 1.5) {
+          reason = `Demande forte — ratio D/O ${ratio.toFixed(2)}`;
+        } else if (distanceKm < 3) {
+          reason = "Zone proche — peu de trajet a vide";
+        }
+
+        return {
+          zone: z,
+          distanceKm,
+          etaMinutes,
+          profitabilityIndex: profitIdx,
+          surgeMultiplier: Math.round(surge * 100) / 100,
+          flightBoost: Math.round(flightBoost * 100) / 100,
+          avgFare: Math.round(avgFare * 100) / 100,
+          longRideProbability: Math.round(longRide * 100) / 100,
+          ratioDO: Math.round(ratio * 100) / 100,
+          globalScore,
+          estimatedRevenue,
+          reason,
+          waypoints: [
+            { lat, lng, label: "Votre position" },
+            { lat: z.lat, lng: z.lng, label: z.name },
+          ],
+        };
+      });
+
+      results.sort((a, b) => b.globalScore - a.globalScore || a.distanceKm - b.distanceKm);
+      const top5 = results.slice(0, 5);
+
+      res.json({
+        userPosition: { lat, lng },
+        hour,
+        dayType,
+        recommendation: top5[0],
+        top5,
+        all: results,
+        computedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error("[best-route] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
 }

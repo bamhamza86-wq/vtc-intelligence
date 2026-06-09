@@ -11,6 +11,7 @@ import SimulatorPage from "./pages/SimulatorPage";
 import AlertsPage from "./pages/AlertsPage";
 import DataSourcesPage from "./pages/DataSourcesPage";
 import ProfilePage from "./pages/ProfilePage";
+import BestRoutePage from "./pages/BestRoutePage";
 import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/not-found";
 
@@ -91,6 +92,7 @@ export default function App() {
             <Layout>
               <Switch>
                 <Route path="/" component={MapPage} />
+                <Route path="/best-route" component={BestRoutePage} />
                 <Route path="/simulator" component={SimulatorPage} />
                 <Route path="/alerts" component={AlertsPage} />
                 <Route path="/sources" component={DataSourcesPage} />
