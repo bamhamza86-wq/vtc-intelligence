@@ -1,4 +1,4 @@
-import { Request, Response, NextFunction, RequestHandler } from "express";
+import { Express, Request, Response, NextFunction, RequestHandler } from "express";
 import { randomBytes } from "crypto";
 import bcrypt from "bcryptjs";
 
@@ -132,4 +132,15 @@ export function handleLogout(req: Request, res: Response): void {
 export function handleRevokeAll(_req: Request, res: Response): void {
   revokeAllSessions();
   res.json({ success: true, message: "Toutes les sessions révoquées" });
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// registerAuth — mount public auth routes on the Express app
+// Call this BEFORE any requireAuth middleware.
+// ──────────────────────────────────────────────────────────────────────────────
+export function registerAuth(app: Express): void {
+  app.post("/api/auth/login", handleLogin);
+  app.get("/api/auth/me", handleMe);
+  app.post("/api/auth/logout", handleLogout);
+  app.post("/api/auth/revoke-all", handleRevokeAll);
 }

@@ -2,11 +2,12 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // API base URL
-// The sentinel __PORT_5000__ is rewritten to /port/5000 by publish_website.
-// During local dev it stays as-is and resolves to empty string (same origin).
+// publish_website rewrites __PORT_5000__ → /port/5000 during S3 upload.
+// We prefix the sentinel with / so the rewrite produces /port/5000 (absolute).
+// During local dev the sentinel stays __PORT_5000__ → startsWith("__") → "".
 // ──────────────────────────────────────────────────────────────────────────────
-const _sentinel = "__PORT_5000__";
-export const API_BASE = _sentinel.startsWith("__") ? "" : _sentinel;
+const _raw = "__PORT_5000__"; // rewritten to /port/5000 by publish_website
+export const API_BASE: string = _raw.startsWith("__") ? "" : "/" + _raw;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Auth token helpers

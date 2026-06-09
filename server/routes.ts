@@ -2,27 +2,10 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { getFlightData, getFlightBoostForZone } from "./flightService";
-import {
-  requireAuth,
-  handleLogin,
-  handleMe,
-  handleLogout,
-  handleRevokeAll,
-  revokeAllSessions,
-} from "./auth";
 
 export function registerRoutes(httpServer: Server, app: Express): void {
-  // ─── Auth routes (PUBLIC — no requireAuth) ─────────────────────────────────
-  app.post("/api/auth/login", handleLogin);
-  app.get("/api/auth/me", handleMe);
-  app.post("/api/auth/logout", handleLogout);
-  app.post("/api/auth/revoke-all", handleRevokeAll);
-
-  // ─── Revoke all sessions on startup → forces re-login after every deploy ───
-  revokeAllSessions();
-
-  // ─── Protected API routes (Bearer token required) ──────────────────────────
-  app.use("/api", requireAuth);
+  // Auth routes + requireAuth middleware are registered in server/index.ts
+  // before this function is called — do not duplicate them here.
 
   app.get("/api/zones", (_req, res) => { res.json(storage.getAllZones()); });
 

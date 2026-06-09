@@ -1,10 +1,8 @@
 import { Link, useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiRequest, getAuthToken, setAuthToken } from "@/lib/queryClient";
+import { apiRequest, getAuthToken, setAuthToken, API_BASE } from "@/lib/queryClient";
 import { useTheme } from "./ThemeProvider";
 import { Bell, Map, Calculator, Database, User, Sun, Moon, LogOut } from "lucide-react";
-
-const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
 const navItems = [
   { path: "/", label: "Carte", icon: Map },
