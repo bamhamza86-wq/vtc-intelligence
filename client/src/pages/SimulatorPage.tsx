@@ -10,12 +10,13 @@ import { Separator } from "@/components/ui/separator";
 import { Calculator, Info, CheckCircle, XCircle } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Cell } from "recharts";
 
+// Scénarios courses clients — distances Google Maps réelles
 const SCENARIOS = [
-  { name: "CDG → Paris", distanceKm: 40, durationMin: 38, fare: 55 },
-  { name: "Orly → La Défense", distanceKm: 28, durationMin: 32, fare: 40 },
-  { name: "Stade de France sortie", distanceKm: 14, durationMin: 22, fare: 22 },
+  { name: "CDG → Paris Centre", distanceKm: 37, durationMin: 40, fare: 55 },
+  { name: "Orly → Paris Centre", distanceKm: 24, durationMin: 38, fare: 38 },
+  { name: "CDG → La Défense", distanceKm: 33, durationMin: 35, fare: 50 },
+  { name: "Le Bourget → Paris", distanceKm: 14, durationMin: 22, fare: 22 },
   { name: "Seuil rentabilité", distanceKm: 16, durationMin: 16, fare: 16 },
-  { name: "Embouteillage IDF", distanceKm: 16, durationMin: 45, fare: 18 },
   { name: "93 → Paris Business", distanceKm: 22, durationMin: 28, fare: 32 },
 ];
 
