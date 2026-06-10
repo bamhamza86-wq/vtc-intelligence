@@ -2,13 +2,14 @@ import { Link, useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, getAuthToken, setAuthToken, API_BASE } from "@/lib/queryClient";
 import { useTheme } from "./ThemeProvider";
-import { Bell, Map, Calculator, Database, User, Sun, Moon, LogOut, Navigation, Target } from "lucide-react";
+import { Bell, Map, Calculator, Database, User, Sun, Moon, LogOut, Navigation, Target, BarChart2 } from "lucide-react";
 
 const navItems = [
   { path: "/", label: "Carte", icon: Map },
   { path: "/best-route", label: "Trajet", icon: Navigation },
   { path: "/smart-plan", label: "Planning", icon: Target },
   { path: "/alerts", label: "Alertes", icon: Bell },
+  { path: "/economics", label: "Éco", icon: BarChart2 },
   { path: "/profile", label: "Profil", icon: User },
 ];
 

@@ -13,6 +13,7 @@ import DataSourcesPage from "./pages/DataSourcesPage";
 import ProfilePage from "./pages/ProfilePage";
 import BestRoutePage from "./pages/BestRoutePage";
 import SmartPlanPage from "./pages/SmartPlanPage";
+import EconomicsDashboard from "./pages/EconomicsDashboard";
 import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/not-found";
 
@@ -97,6 +98,7 @@ export default function App() {
                 <Route path="/smart-plan" component={SmartPlanPage} />
                 <Route path="/simulator" component={SimulatorPage} />
                 <Route path="/alerts" component={AlertsPage} />
+                <Route path="/economics" component={EconomicsDashboard} />
                 <Route path="/sources" component={DataSourcesPage} />
                 <Route path="/profile" component={ProfilePage} />
                 <Route component={NotFound} />
