@@ -588,6 +588,55 @@ MIT — Libre d'utilisation, modification et redistribution.
 
 ---
 
+## Logique de priorisation des alertes
+
+### Architecture (depuis v2.0 — juin 2026)
+
+Les alertes ne sont plus hardcodées mais **générées dynamiquement** toutes les 3 minutes
+depuis les scores de rentabilité temps réel (`profitability_scores`).
+
+#### Règles de déclenchement (ordre de priorité)
+
+| Règle | Condition | Priorité | TTL |
+|-------|-----------|----------|-----|
+| Surge trafic | ratio D/O > 4.5 | critical | 2h |
+| Surge trafic | ratio D/O 3.5–4.5 | high | 4h |
+| Surge trafic | ratio D/O 3.0–3.5 | medium | 4h |
+| Événement actif | demand_boost ≥ 3.0 | critical | jusqu'à fin event |
+| Événement actif | demand_boost ≥ 2.0 | high | jusqu'à fin event |
+| Aéroport (CDG/Orly) | profitability_index > 85 | high | 3h |
+| Aéroport (CDG/Orly) | profitability_index > 70 | medium | 3h |
+| Zone saturée | ratio D/O < 0.8 ET demand < 30 | low | 1h |
+
+#### Tri dans la liste (getActiveAlerts)
+
+1. Non lues en premier (`is_read ASC`)
+2. Priorité statique (critical → high → medium → low)
+3. **Densité trafic temps réel** (`ratio_ds DESC`) — nouveau critère principal
+4. Date de création (`created_at DESC`)
+
+#### Pour ajustements UI futurs
+
+- Champ `traffic_density` (ratio D/O) disponible dans chaque alerte retournée
+- Champ `current_demand` (score 0-100) disponible
+- Champ `current_surge` (multiplicateur surge) disponible
+- Seuil `ratio_ds > 3.0` = déclenchement alerte (configurable dans `generateDynamicAlerts`)
+- Max 8 alertes actives simultanées (configurable)
+- TTL par règle ajustable dans les constantes `ttlH`
+
+#### Endpoint de rafraîchissement
+
+`POST /api/alerts/refresh` force la régénération immédiate des alertes dynamiques et
+renvoie `{ success, count, alerts }`.
+
+#### Zones ciblées (Seine-Saint-Denis)
+
+Toutes les 14 zones sont dans le département 93 ou aéroports franciliens :
+CDG, Orly, Le Bourget, Villepinte, Tremblay, Aulnay, Saint-Denis Gare,
+Plaine Commune, Bobigny, Aubervilliers, Épinay-Gennevilliers, 93 Centre, Montreuil, Stade de France
+
+---
+
 ## Auteur
 
 Développé avec [Perplexity Computer](https://www.perplexity.ai/computer) · Déployé sur [vtc-one.pplx.app](https://vtc-one.pplx.app)

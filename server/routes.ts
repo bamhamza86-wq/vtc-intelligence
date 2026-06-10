@@ -215,6 +215,14 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     res.json({ success: true });
   });
 
+  // POST /api/alerts/refresh — force la régénération des alertes dynamiques
+  app.post("/api/alerts/refresh", (_req, res) => {
+    storage.clearExpiredAlerts();
+    (storage as any).generateDynamicAlerts?.() ?? null;
+    const alerts = storage.getActiveAlerts();
+    res.json({ success: true, count: alerts.length, alerts });
+  });
+
   app.get("/api/rides/stats", (_req, res) => { res.json(storage.getRideStats()); });
   app.get("/api/rides", (_req, res) => { res.json(storage.getRecentRides(20)); });
 

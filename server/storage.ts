@@ -500,25 +500,154 @@ function seedEvents(today: string, now: Date) {
   insE.run("Soirée Saint-Denis Centre", "z_93_centre", "event",
     `${today}T20:00:00`, `${today}T02:00:00`, 3500, 1.5);
 
-  // Alertes quotidiennes recalculées
-  const insA = sqlite.prepare("INSERT INTO alerts (type,title,message,zone_id,priority,estimated_revenue,expires_at,created_at,is_read) VALUES (?,?,?,?,?,?,?,?,0)");
-  const e1 = new Date(now.getTime() + 8 * 3600000).toISOString();
-  const e2 = new Date(now.getTime() + 10 * 3600000).toISOString();
-  const e3 = new Date(now.getTime() + 6 * 3600000).toISOString();
-  const e4 = new Date(now.getTime() + 5 * 3600000).toISOString();
+  // Alertes générées dynamiquement depuis les scores de rentabilité temps réel
+  generateDynamicAlerts();
+}
 
-  insA.run("event_ending", "Stade de France — Sortie dans 45 min",
-    "80 000 spectateurs. Positionnez-vous rue Jules Rimet ou Parking P4. Surge ×4.2 actif.",
-    "z_stade_france", "critical", 65, e1, now.toISOString());
-  insA.run("long_ride_opportunity", "CDG — Flux arrivées massif",
-    "Ratio D/O : 3.6×. Courses moyennes 38 km vers Paris, La Défense, 93. Tarifs 45–70€.",
-    "z_cdg", "critical", 58, e2, now.toISOString());
-  insA.run("demand_spike", "Villepinte — Salon en cours",
-    "Paris Nord Expo : 8 000 visiteurs. Courses PRO longues vers Paris/La Défense. Surge ×2.0.",
-    "z_villepinte", "high", 40, e3, now.toISOString());
-  insA.run("long_ride_opportunity", "Orly — Créneaux arrivées",
-    "Terminal Ouest & Sud actifs. Courses 20–35 km. Priorité passagers Paris Rive Gauche.",
-    "z_orly", "high", 38, e4, now.toISOString());
+// ─── Génération dynamique des alertes ─────────────────────────────────────────
+// Remplace les alertes hardcodées : génère depuis les scores de rentabilité
+// (profitability_scores) et les événements actifs à l'heure courante.
+// Toutes les zones ciblées sont en Seine-Saint-Denis (93) ou aéroports franciliens.
+function generateDynamicAlerts(): void {
+  const now = new Date();
+  const h = now.getHours();
+  const dayType = [0, 6].includes(now.getDay()) ? "weekend" : "weekday";
+
+  // 1. Lire les scores ACTUELS depuis profitability_scores (heure courante)
+  const currentScores = sqlite.prepare(`
+    SELECT ps.*, z.name as zone_name, z.type as zone_type
+    FROM profitability_scores ps
+    LEFT JOIN zones z ON ps.zone_id = z.id
+    WHERE ps.hour = ? AND ps.day_type = ?
+    ORDER BY ps.profitability_index DESC
+  `).all(h, dayType) as any[];
+
+  // 2. Lire les événements actifs maintenant
+  const activeEvents = sqlite.prepare(`
+    SELECT * FROM events
+    WHERE is_active = 1
+    AND datetime('now') BETWEEN datetime(start_time) AND datetime(end_time)
+  `).all() as any[];
+
+  // 3. Supprimer uniquement les alertes auto-générées non lues (garder les lues = historique)
+  sqlite.prepare("DELETE FROM alerts WHERE is_read = 0 AND created_at > ?")
+    .run(new Date(now.getTime() - 3 * 60 * 1000).toISOString()); // garder > 3min
+
+  const insA = sqlite.prepare(
+    "INSERT INTO alerts (type,title,message,zone_id,priority,estimated_revenue,expires_at,created_at,is_read) VALUES (?,?,?,?,?,?,?,?,0)"
+  );
+
+  const alertsGenerated: string[] = [];
+
+  // ── RÈGLE 1 : Surge critique — ratio D/O > 3.0 ET zone 93 ────────────────
+  // Prioriser les zones avec forte densité trafic (demande >> offre)
+  for (const score of currentScores) {
+    if (alertsGenerated.length >= 8) break; // max 8 alertes actives
+    if (score.ratio_ds < 3.0) continue;
+
+    // Calculer TTL selon urgence : ratio > 4 → 2h, ratio 3-4 → 4h
+    const ttlH = score.ratio_ds > 4.0 ? 2 : 4;
+    const expires = new Date(now.getTime() + ttlH * 3600000).toISOString();
+
+    // Niveau de priorité basé sur densité trafic
+    const priority = score.ratio_ds > 4.5 ? "critical"
+      : score.ratio_ds > 3.5 ? "high" : "medium";
+
+    // Revenus estimés : avg_fare × (ratio_ds / 2) = estimation courses possibles
+    const estRevenue = Math.round(score.avg_fare * Math.min(score.ratio_ds / 2, 3));
+
+    const congestionLabel = score.ratio_ds > 4.5 ? "Dense critique"
+      : score.ratio_ds > 3.5 ? "Forte densité" : "Densité élevée";
+
+    insA.run(
+      "demand_spike",
+      `${score.zone_name} — ${congestionLabel} D/O ${score.ratio_ds.toFixed(1)}×`,
+      `Demande ${score.demand_score.toFixed(0)}pts / Offre ${score.supply_score.toFixed(0)}pts. ` +
+      `Course moyenne ${score.avg_distance_km.toFixed(0)} km · ${score.avg_duration_min.toFixed(0)} min. ` +
+      `Tarif estimé ${score.avg_fare.toFixed(0)}€. Surge ×${score.surge_multiplier.toFixed(1)}.`,
+      score.zone_id, priority, estRevenue, expires, now.toISOString()
+    );
+    alertsGenerated.push(score.zone_id);
+  }
+
+  // ── RÈGLE 2 : Événements actifs avec boost significatif ───────────────────
+  for (const ev of activeEvents) {
+    if (alertsGenerated.length >= 8) break;
+    if (alertsGenerated.includes(ev.zone_id)) continue; // déjà une alerte sur cette zone
+    if (ev.demand_boost < 1.5) continue; // ignorer les micro-boosts
+
+    // Trouver le score de la zone de l'événement
+    const zoneScore = currentScores.find((s: any) => s.zone_id === ev.zone_id);
+    if (!zoneScore) continue;
+
+    const minutesLeft = Math.round(
+      (new Date(ev.end_time).getTime() - now.getTime()) / 60000
+    );
+    if (minutesLeft <= 0) continue;
+
+    const ttlMs = Math.min(minutesLeft * 60000, 4 * 3600000);
+    const expires = new Date(now.getTime() + ttlMs).toISOString();
+
+    const priority = ev.demand_boost >= 3.0 ? "critical"
+      : ev.demand_boost >= 2.0 ? "high" : "medium";
+
+    const attendanceStr = ev.expected_attendance > 0
+      ? `${(ev.expected_attendance / 1000).toFixed(0)} 000 personnes. ` : "";
+
+    insA.run(
+      "event_ending",
+      `${zoneScore.zone_name} — ${ev.name.substring(0, 40)}`,
+      `${attendanceStr}Boost ×${ev.demand_boost.toFixed(1)}. ` +
+      `Fin dans ${minutesLeft < 60 ? minutesLeft + " min" : Math.round(minutesLeft / 60) + "h"}. ` +
+      `D/O courant ${zoneScore.ratio_ds.toFixed(1)}×.`,
+      ev.zone_id, priority,
+      Math.round(zoneScore.avg_fare * ev.demand_boost),
+      expires, now.toISOString()
+    );
+    alertsGenerated.push(ev.zone_id);
+  }
+
+  // ── RÈGLE 3 : Opportunité long trajet (aéroports) ──────────────────────────
+  // CDG/Orly : toujours pertinents si profitability_index > 70
+  const airports = currentScores.filter((s: any) =>
+    s.zone_type === "airport" &&
+    s.profitability_index > 70 &&
+    !alertsGenerated.includes(s.zone_id)
+  );
+  for (const ap of airports.slice(0, 2)) {
+    if (alertsGenerated.length >= 8) break;
+    const expires = new Date(now.getTime() + 3 * 3600000).toISOString();
+    const priority = ap.profitability_index > 85 ? "high" : "medium";
+    insA.run(
+      "long_ride_opportunity",
+      `${ap.zone_name} — Opportunité ${ap.long_ride_probability > 0.7 ? "long trajet" : "trajet moyen"}`,
+      `Indice rentabilité ${ap.profitability_index.toFixed(0)}/100. ` +
+      `Course moy. ${ap.avg_distance_km.toFixed(0)} km · ${ap.avg_fare.toFixed(0)}€. ` +
+      `Long trajet ${(ap.long_ride_probability * 100).toFixed(0)}% probable.`,
+      ap.zone_id, priority,
+      Math.round(ap.avg_fare),
+      expires, now.toISOString()
+    );
+    alertsGenerated.push(ap.zone_id);
+  }
+
+  // ── RÈGLE 4 : Alerte sous-performance — zones 93 avec ratio < 0.8 ─────────
+  // Avertir le chauffeur des zones à éviter (offre > demande = mauvais)
+  const lowZones = currentScores.filter((s: any) =>
+    s.ratio_ds < 0.8 && s.demand_score < 30
+  ).slice(0, 2);
+  if (lowZones.length > 0) {
+    const names = lowZones.map((z: any) => z.zone_name).join(", ");
+    const expires = new Date(now.getTime() + 1 * 3600000).toISOString();
+    insA.run(
+      "low_demand",
+      `Zones à éviter — Offre > Demande`,
+      `${names} : saturation chauffeurs. D/O < 0.8. Préférer CDG, Stade ou zones rush.`,
+      lowZones[0].zone_id, "low", null, expires, now.toISOString()
+    );
+  }
+
+  console.log(`[storage] generateDynamicAlerts: ${alertsGenerated.length} alertes générées (h=${h}, dayType=${dayType})`);
 }
 
 seedData();
@@ -536,6 +665,8 @@ setInterval(() => {
     // Recalcul complet des 672 scores (14 zones × 24h × 2 day_types)
     sqlite.exec("DELETE FROM profitability_scores");
     reseedScores(today, dayOfWeek);
+    // Régénérer les alertes dynamiques après recalcul des scores
+    generateDynamicAlerts();
     sqlite.prepare("INSERT OR REPLACE INTO seed_meta (key,value) VALUES ('last_refresh_ts',?)").run(now.toISOString());
     sqlite.prepare("INSERT OR REPLACE INTO seed_meta (key,value) VALUES ('last_seed_date',?)").run(today);
     console.log(`[storage] Auto-refresh 3min: scores recalculés à ${now.toLocaleTimeString('fr-FR')}`);
@@ -553,6 +684,7 @@ export interface IStorage {
   getActiveEvents(): any[];
   getActiveAlerts(): any[];
   clearExpiredAlerts(): void;
+  generateDynamicAlerts(): void;
   markAlertRead(id: number): void;
   createAlert(alert: any): any;
   createRide(ride: any): any;
@@ -592,8 +724,24 @@ export const storage: IStorage = {
   getActiveEvents: () => sqlite.prepare("SELECT * FROM events WHERE is_active=1 ORDER BY start_time ASC").all(),
 
   getActiveAlerts: () => sqlite.prepare(
-    "SELECT * FROM alerts WHERE expires_at>? ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC"
+    `SELECT a.*,
+      COALESCE(ps.ratio_ds, 0) as traffic_density,
+      COALESCE(ps.demand_score, 0) as current_demand,
+      COALESCE(ps.surge_multiplier, 1.0) as current_surge
+    FROM alerts a
+    LEFT JOIN profitability_scores ps
+      ON a.zone_id = ps.zone_id
+      AND ps.hour = CAST(strftime('%H', 'now', 'localtime') AS INTEGER)
+      AND ps.day_type = CASE WHEN strftime('%w', 'now') IN ('0','6') THEN 'weekend' ELSE 'weekday' END
+    WHERE a.expires_at > ?
+    ORDER BY
+      a.is_read ASC,
+      CASE a.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
+      COALESCE(ps.ratio_ds, 0) DESC,
+      a.created_at DESC`
   ).all(new Date().toISOString()),
+
+  generateDynamicAlerts: () => generateDynamicAlerts(),
 
   markAlertRead: (id: number) => sqlite.prepare("UPDATE alerts SET is_read=1 WHERE id=?").run(id),
   clearExpiredAlerts: () => sqlite.prepare("DELETE FROM alerts WHERE expires_at<?").run(new Date().toISOString()),
