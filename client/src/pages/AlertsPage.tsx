@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import {
   Bell, BellOff, Clock, Euro, AlertTriangle, Zap, Cloud,
   Train, CheckCheck, Crosshair, Navigation, CalendarClock,
-  ChevronRight, Timer, RefreshCw, AlertCircle, MapPin
+  ChevronDown, Timer, RefreshCw, AlertCircle, MapPin,
+  Plane, TrendingUp, Users, ArrowRight
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -74,6 +75,8 @@ const PRIORITY_CONFIG = {
     border: "border-red-500/40",
     borderL: "border-l-red-500",
     textClass: "text-red-400",
+    gradFrom: "from-red-500/20",
+    gradTo: "to-red-500/5",
   },
   high: {
     label: "Haute",
@@ -82,6 +85,8 @@ const PRIORITY_CONFIG = {
     border: "border-amber-500/40",
     borderL: "border-l-amber-400",
     textClass: "text-amber-400",
+    gradFrom: "from-amber-500/20",
+    gradTo: "to-amber-500/5",
   },
   medium: {
     label: "Moyenne",
@@ -90,6 +95,8 @@ const PRIORITY_CONFIG = {
     border: "border-blue-500/40",
     borderL: "border-l-blue-400",
     textClass: "text-blue-400",
+    gradFrom: "from-blue-500/20",
+    gradTo: "to-blue-500/5",
   },
   low: {
     label: "Faible",
@@ -98,6 +105,8 @@ const PRIORITY_CONFIG = {
     border: "border-slate-500/20",
     borderL: "border-l-slate-500",
     textClass: "text-muted-foreground",
+    gradFrom: "from-slate-500/15",
+    gradTo: "to-slate-500/5",
   },
 } as const;
 
@@ -120,10 +129,10 @@ function getEventTypeIcon(type: string): string {
 
 function getUrgencyConfig(urgency: Slot["urgency"]) {
   switch (urgency) {
-    case "now":      return { color: "#ef4444", bg: "bg-red-500/15",    border: "border-red-500/40",    label: "PARTEZ MAINTENANT", pulse: true };
-    case "soon":     return { color: "#f97316", bg: "bg-orange-500/15", border: "border-orange-500/40", label: "Bientôt",            pulse: true };
-    case "upcoming": return { color: "#fbbf24", bg: "bg-yellow-500/15", border: "border-yellow-500/40", label: "Dans 1h",            pulse: false };
-    case "later":    return { color: "#64748b", bg: "bg-slate-500/10",  border: "border-slate-500/20",  label: "Plus tard",          pulse: false };
+    case "now":      return { color: "#ef4444", bg: "bg-red-500/15",    border: "border-red-500/40",    label: "PARTEZ MAINTENANT", badge: "MAINTENANT", pulse: true };
+    case "soon":     return { color: "#f97316", bg: "bg-orange-500/15", border: "border-orange-500/40", label: "Bientôt",            badge: "BIENTÔT",    pulse: true };
+    case "upcoming": return { color: "#fbbf24", bg: "bg-yellow-500/15", border: "border-yellow-500/40", label: "Dans 1h",            badge: "DANS 1H",    pulse: false };
+    case "later":    return { color: "#64748b", bg: "bg-slate-500/10",  border: "border-slate-500/20",  label: "Plus tard",          badge: "PLUS TARD",  pulse: false };
   }
 }
 
@@ -139,6 +148,16 @@ function minutesFromNow(iso: string): number {
   return Math.round((new Date(iso).getTime() - Date.now()) / 60000);
 }
 
+function countdownLabel(iso: string): string {
+  const diff = new Date(iso).getTime() - Date.now();
+  if (diff <= 0) return "MAINTENANT";
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins} min`;
+  return `${Math.floor(mins / 60)}h${mins % 60 > 0 ? `${mins % 60}m` : ""}`;
+}
+
 function timeLeft(expiresAt: string): string {
   const diff = new Date(expiresAt).getTime() - Date.now();
   if (diff <= 0) return "Expiré";
@@ -146,7 +165,18 @@ function timeLeft(expiresAt: string): string {
   return mins < 60 ? `${mins}min` : `${Math.floor(mins / 60)}h${mins % 60 > 0 ? `${mins % 60}m` : ""}`;
 }
 
-// ─── Top 4 Alerte Card (horizontale) ─────────────────────────────────────────
+// ─── Countdown live (tick 1s) ─────────────────────────────────────────────────
+
+function LiveCountdown({ iso, color }: { iso: string; color: string }) {
+  const [label, setLabel] = useState(countdownLabel(iso));
+  useEffect(() => {
+    const id = setInterval(() => setLabel(countdownLabel(iso)), 1000);
+    return () => clearInterval(id);
+  }, [iso]);
+  return <span style={{ color }} className="font-black tabular-nums">{label}</span>;
+}
+
+// ─── TOP 4 Alerte Card (grande, horizontale) ───────────────────────────────────
 
 function AlertTopCard({ alert, isSelected, onClick }: {
   alert: Alert; isSelected: boolean; onClick: () => void;
@@ -159,54 +189,70 @@ function AlertTopCard({ alert, isSelected, onClick }: {
     <div
       onClick={onClick}
       style={{
-        minWidth: "152px",
-        maxWidth: "152px",
+        minWidth: "200px",
+        maxWidth: "200px",
         borderColor: isSelected ? cfg.color : undefined,
-        boxShadow: isSelected ? `0 0 0 2px ${cfg.color}40` : undefined,
+        boxShadow: isSelected ? `0 0 0 2px ${cfg.color}40, 0 4px 20px ${cfg.color}20` : undefined,
       }}
-      className={`cursor-pointer flex-shrink-0 rounded-xl border p-3 transition-all duration-200 ${cfg.bg} ${
-        isSelected ? "" : "border-border hover:border-muted-foreground/40"
-      } ${alert.is_read ? "opacity-60" : ""}`}
+      className={`cursor-pointer flex-shrink-0 rounded-2xl border p-4 transition-all duration-200
+        bg-gradient-to-b ${cfg.gradFrom} ${cfg.gradTo}
+        ${isSelected ? "" : "border-border hover:border-muted-foreground/40"}
+        ${alert.is_read ? "opacity-55" : ""}`}
     >
-      {/* Header : icon + priorité */}
-      <div className="flex items-center justify-between mb-2">
+      {/* Header */}
+      <div className="flex items-start justify-between mb-3">
         <div
-          className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+          className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
           style={{ background: `${cfg.color}20`, border: `1px solid ${cfg.color}40` }}
         >
-          <TypeIcon size={15} style={{ color: cfg.color }} />
+          <TypeIcon size={17} style={{ color: cfg.color }} />
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex flex-col items-end gap-1">
           {isNew && (
             <span
               className="w-2 h-2 rounded-full animate-pulse flex-shrink-0"
               style={{ background: cfg.color }}
             />
           )}
-          <span className="text-[9px] font-bold" style={{ color: cfg.color }}>{cfg.label}</span>
+          <span
+            className="text-[9px] font-bold px-2 py-0.5 rounded-full"
+            style={{ background: `${cfg.color}20`, color: cfg.color, border: `1px solid ${cfg.color}30` }}
+          >
+            {cfg.label}
+          </span>
         </div>
       </div>
 
       {/* Titre */}
-      <p className="text-[11px] font-semibold leading-tight mb-1.5 line-clamp-2">{alert.title}</p>
+      <p className="text-[12px] font-bold leading-snug mb-2 line-clamp-2">{alert.title}</p>
 
-      {/* Revenus estimés */}
+      {/* Revenus */}
       {alert.estimated_revenue && (
-        <div className="flex items-center gap-1 text-[10px] text-green-400 font-semibold mb-1">
-          <Euro size={9} />~{alert.estimated_revenue}€
+        <div className="flex items-center gap-1 mb-2">
+          <span
+            className="flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-lg"
+            style={{ background: "#10b98120", color: "#10b981", border: "1px solid #10b98130" }}
+          >
+            <Euro size={9} />~{alert.estimated_revenue}€
+          </span>
         </div>
       )}
 
       {/* Expire */}
-      <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
-        <Clock size={8} />
-        {timeLeft(alert.expires_at)}
+      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+        <span className="flex items-center gap-1">
+          <Clock size={9} />
+          {timeLeft(alert.expires_at)}
+        </span>
+        {isSelected && (
+          <span style={{ color: cfg.color }} className="text-[9px] font-semibold">Sélectionné</span>
+        )}
       </div>
     </div>
   );
 }
 
-// ─── Detail alerte sélectionnée ───────────────────────────────────────────────
+// ─── Détail alerte sélectionnée ───────────────────────────────────────────────
 
 function AlertDetail({ alert, onMarkRead, isPending }: {
   alert: Alert; onMarkRead: () => void; isPending: boolean;
@@ -215,18 +261,16 @@ function AlertDetail({ alert, onMarkRead, isPending }: {
   const TypeIcon = TYPE_ICONS[alert.type] || Bell;
 
   return (
-    <div
-      className={`rounded-xl border p-4 ${cfg.bg} ${cfg.border}`}
-    >
+    <div className={`rounded-2xl border p-4 ${cfg.bg} ${cfg.border} transition-all duration-200`}>
       <div className="flex items-start gap-3 mb-3">
         <div
-          className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
+          className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
           style={{ background: `${cfg.color}20`, border: `1px solid ${cfg.color}40` }}
         >
           <TypeIcon size={18} style={{ color: cfg.color }} />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between gap-2 mb-0.5">
+          <div className="flex items-start justify-between gap-2 mb-1">
             <p className="font-bold text-sm leading-tight">{alert.title}</p>
             <span
               className="text-[9px] font-bold px-2 py-0.5 rounded-full flex-shrink-0"
@@ -238,7 +282,6 @@ function AlertDetail({ alert, onMarkRead, isPending }: {
           <p className="text-xs text-muted-foreground leading-relaxed">{alert.message}</p>
         </div>
       </div>
-
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-wrap">
           {alert.estimated_revenue && (
@@ -251,13 +294,7 @@ function AlertDetail({ alert, onMarkRead, isPending }: {
           </span>
         </div>
         {!alert.is_read && (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 text-xs gap-1"
-            onClick={onMarkRead}
-            disabled={isPending}
-          >
+          <Button size="sm" variant="ghost" className="h-7 text-xs gap-1" onClick={onMarkRead} disabled={isPending}>
             <CheckCheck size={12} />Lu
           </Button>
         )}
@@ -268,73 +305,111 @@ function AlertDetail({ alert, onMarkRead, isPending }: {
 
 // ─── Slot card (créneau de positionnement) ────────────────────────────────────
 
-function SlotCard({ slot, zoneLat, zoneLng, userLat, userLng }: {
-  slot: Slot; zoneLat: number; zoneLng: number; userLat: number; userLng: number;
+function SlotCard({ slot, zoneLat, zoneLng, userLat, userLng, isAirport }: {
+  slot: Slot; zoneLat: number; zoneLng: number; userLat: number; userLng: number; isAirport?: boolean;
 }) {
   const cfg = getUrgencyConfig(slot.urgency);
   const minsUntilDepart = minutesFromNow(slot.departAt);
   const mapsUrl = `https://www.google.com/maps/dir/${userLat},${userLng}/${zoneLat},${zoneLng}`;
+  const isPast = minsUntilDepart < -2;
+  const isVeryUrgent = slot.urgency === "now" || slot.urgency === "soon";
+
+  if (isPast) return null;
 
   return (
-    <div className={`rounded-xl border p-3 ${cfg.bg} ${cfg.border}`}>
-      <div className="flex items-start justify-between gap-2 mb-2">
+    <div
+      className={`rounded-2xl border overflow-hidden transition-all ${cfg.bg} ${cfg.border}`}
+      style={isVeryUrgent ? { boxShadow: `0 0 0 1px ${cfg.color}40, 0 2px 12px ${cfg.color}20` } : {}}
+    >
+      {/* Label vol / créneau */}
+      <div className="px-3.5 pt-3 pb-2 flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
-          <div className="text-xs font-semibold leading-snug mb-0.5">{slot.label}</div>
-          {slot.detail && <div className="text-[10px] text-muted-foreground">{slot.detail}</div>}
+          <p className="text-xs font-bold leading-snug">{slot.label}</p>
+          {slot.detail && (
+            <p className="text-[10px] text-muted-foreground mt-0.5">{slot.detail}</p>
+          )}
         </div>
         <div
-          className={`flex-shrink-0 text-[9px] font-bold px-2 py-0.5 rounded-full border flex items-center gap-1 ${cfg.bg} ${cfg.border}`}
-          style={{ color: cfg.color }}
+          className="flex-shrink-0 flex items-center gap-1 text-[9px] font-bold px-2 py-1 rounded-full border"
+          style={{ color: cfg.color, borderColor: `${cfg.color}50`, background: `${cfg.color}15` }}
         >
           {cfg.pulse && (
             <span className="w-1.5 h-1.5 rounded-full animate-pulse inline-block" style={{ background: cfg.color }} />
           )}
-          {cfg.label}
+          {cfg.badge}
         </div>
       </div>
 
-      {/* Timeline */}
-      <div className="grid grid-cols-3 gap-1 mb-2.5">
-        <div className="flex flex-col items-center text-center">
-          <div className="text-[9px] text-muted-foreground mb-0.5">Partez à</div>
-          <div className="text-sm font-black tabular-nums" style={{ color: cfg.color }}>
-            {fmtTime(slot.departAt)}
-          </div>
-          {minsUntilDepart > 0
-            ? <div className="text-[9px] text-muted-foreground">dans {minsUntilDepart}min</div>
-            : <div className="text-[9px] font-bold" style={{ color: cfg.color }}>MAINTENANT</div>
-          }
-        </div>
+      {/* Timeline principale */}
+      <div className="px-3.5 pb-3">
+        <div className="flex items-center gap-2 mb-3">
 
-        <div className="flex flex-col items-center justify-center">
-          <div className="flex items-center gap-0.5 text-muted-foreground">
-            <div className="h-px w-4 bg-muted-foreground/40" />
-            <span className="text-[9px] whitespace-nowrap">{slot.etaMin}min</span>
-            <div className="h-px w-4 bg-muted-foreground/40" />
+          {/* Départ chauffeur */}
+          <div className="flex-1 rounded-xl p-2.5 text-center"
+            style={{ background: `${cfg.color}12`, border: `1px solid ${cfg.color}30` }}>
+            <p className="text-[9px] text-muted-foreground mb-0.5 uppercase tracking-wide">Partez à</p>
+            <p className="text-lg font-black tabular-nums leading-none" style={{ color: cfg.color }}>
+              {fmtTime(slot.departAt)}
+            </p>
+            <p className="text-[9px] mt-0.5">
+              {minsUntilDepart > 0
+                ? <span className="text-muted-foreground">dans <LiveCountdown iso={slot.departAt} color={cfg.color} /></span>
+                : <span style={{ color: cfg.color }} className="font-bold animate-pulse">MAINTENANT</span>
+              }
+            </p>
           </div>
-          <div className="text-[9px] text-muted-foreground">{slot.distKm}km</div>
-        </div>
 
-        <div className="flex flex-col items-center text-center">
-          <div className="text-[9px] text-muted-foreground mb-0.5">Arrivée</div>
-          <div className="text-sm font-black tabular-nums text-blue-400">{fmtTime(slot.arriveBy)}</div>
-          {slot.bufferMin > 0 && (
-            <div className="text-[9px] text-muted-foreground">{slot.bufferMin}min avant</div>
+          {/* Flèche + trajet */}
+          <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
+            <ArrowRight size={14} className="text-muted-foreground/60" />
+            <span className="text-[9px] text-muted-foreground">{slot.etaMin}min</span>
+            <span className="text-[9px] text-muted-foreground">{slot.distKm}km</span>
+          </div>
+
+          {/* Arrivée sur zone */}
+          <div className="flex-1 rounded-xl p-2.5 text-center bg-blue-500/10 border border-blue-500/25">
+            <p className="text-[9px] text-muted-foreground mb-0.5 uppercase tracking-wide">Arrivée zone</p>
+            <p className="text-lg font-black tabular-nums leading-none text-blue-400">
+              {fmtTime(slot.arriveBy)}
+            </p>
+            {slot.bufferMin > 0 && (
+              <p className="text-[9px] text-muted-foreground mt-0.5">{slot.bufferMin}min avant</p>
+            )}
+          </div>
+
+          {/* Heure événement (vol atterrissage ou début) */}
+          {isAirport && (
+            <>
+              <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
+                <Plane size={12} className="text-muted-foreground/60" />
+                <span className="text-[9px] text-muted-foreground">atterro.</span>
+              </div>
+              <div className="flex-1 rounded-xl p-2.5 text-center bg-purple-500/10 border border-purple-500/25">
+                <p className="text-[9px] text-muted-foreground mb-0.5 uppercase tracking-wide">Vol arrive</p>
+                <p className="text-base font-black tabular-nums leading-none text-purple-400">
+                  {fmtTime(slot.eventTime)}
+                </p>
+                {slot.flightCallsign && (
+                  <p className="text-[9px] text-purple-400/70 mt-0.5 font-bold">{slot.flightCallsign}</p>
+                )}
+              </div>
+            </>
           )}
         </div>
-      </div>
 
-      <a
-        href={mapsUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="flex items-center justify-center gap-1.5 w-full py-1.5 rounded-lg text-[10px] font-semibold text-black transition-opacity hover:opacity-90"
-        style={{ background: cfg.color }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <Navigation size={11} />
-        Naviguer maintenant
-      </a>
+        {/* Bouton naviguer */}
+        <a
+          href={mapsUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center justify-center gap-2 w-full py-2 rounded-xl text-[11px] font-bold text-black transition-all hover:opacity-90 active:scale-95"
+          style={{ background: cfg.color }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <Navigation size={12} />
+          Naviguer maintenant
+        </a>
+      </div>
     </div>
   );
 }
@@ -347,89 +422,117 @@ function EventBlockCard({ block, userPos, isExpanded, onToggle }: {
   isExpanded: boolean;
   onToggle: () => void;
 }) {
-  const nextSlot = block.slots[0];
+  const nextSlot = block.slots.find(s => minutesFromNow(s.departAt) > -2);
   const nextCfg = nextSlot ? getUrgencyConfig(nextSlot.urgency) : null;
   const hasUrgent = block.slots.some(s => s.urgency === "now" || s.urgency === "soon");
+  const visibleSlots = block.slots.filter(s => minutesFromNow(s.departAt) > -2);
+  const isAirport = block.zoneType === "airport";
 
   return (
     <div className={`rounded-2xl border overflow-hidden transition-all duration-300 ${
       hasUrgent ? "border-orange-500/40" : "border-border"
-    }`}>
+    }`} style={hasUrgent ? { boxShadow: "0 0 0 1px rgba(249,115,22,0.3)" } : {}}>
+
+      {/* Header cliquable */}
       <button
         onClick={onToggle}
-        className="w-full text-left p-3.5 flex items-center gap-3 hover:bg-muted/30 transition-colors"
+        className="w-full text-left p-4 flex items-center gap-3 hover:bg-muted/30 transition-colors"
       >
-        <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center text-base flex-shrink-0">
+        {/* Icône */}
+        <div className="w-10 h-10 rounded-xl bg-muted flex items-center justify-center text-xl flex-shrink-0">
           {getEventTypeIcon(block.eventType)}
         </div>
 
+        {/* Infos */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 mb-0.5">
-            <span className="font-semibold text-sm leading-tight truncate">{block.eventName}</span>
+          <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+            <span className="font-bold text-sm leading-tight">{block.eventName}</span>
             {hasUrgent && (
-              <span className="flex-shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-orange-500/20 text-orange-400 border border-orange-500/30">
+              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-orange-500/20 text-orange-400 border border-orange-500/30 animate-pulse">
                 URGENT
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-            <span className="flex items-center gap-0.5"><MapPin size={9} /> {block.distKm}km</span>
-            <span className="flex items-center gap-0.5"><Clock size={9} /> ~{block.etaMin}min</span>
+
+          <div className="flex items-center gap-2 text-[10px] text-muted-foreground mb-1">
+            <span className="flex items-center gap-0.5"><MapPin size={9} />{block.distKm}km</span>
+            <span className="flex items-center gap-0.5"><Clock size={9} />~{block.etaMin}min trajet</span>
             {block.demandBoost > 1.1 && (
-              <span className="flex items-center gap-0.5 text-green-400">
-                <Zap size={9} /> ×{block.demandBoost.toFixed(2)}
+              <span className="flex items-center gap-0.5 text-green-400 font-semibold">
+                <TrendingUp size={9} />×{block.demandBoost.toFixed(2)}
               </span>
             )}
-            <span className="text-[9px] text-muted-foreground/60">
-              {block.slots.length} créneau{block.slots.length > 1 ? "x" : ""}
+            <span className="text-muted-foreground/50">
+              {visibleSlots.length} créneau{visibleSlots.length > 1 ? "x" : ""}
             </span>
           </div>
 
+          {/* Prochain créneau */}
           {nextSlot && !isExpanded && (
-            <div className="mt-0.5 text-[10px] font-semibold flex items-center gap-1" style={{ color: nextCfg?.color }}>
-              <Timer size={9} />
-              Prochain départ : {fmtTime(nextSlot.departAt)}
-              {minutesFromNow(nextSlot.departAt) > 0
-                ? ` (dans ${minutesFromNow(nextSlot.departAt)}min)`
-                : " · MAINTENANT"
-              }
+            <div
+              className="flex items-center gap-1.5 text-[11px] font-bold"
+              style={{ color: nextCfg?.color }}
+            >
+              <Timer size={10} />
+              Prochain départ :{" "}
+              <span className="tabular-nums">{fmtTime(nextSlot.departAt)}</span>
+              <span className="font-normal text-muted-foreground text-[10px]">
+                {minutesFromNow(nextSlot.departAt) > 0
+                  ? `(dans ${minutesFromNow(nextSlot.departAt)}min)`
+                  : "· MAINTENANT"
+                }
+              </span>
             </div>
           )}
         </div>
 
-        <ChevronRight
+        <ChevronDown
           size={16}
-          className={`flex-shrink-0 text-muted-foreground transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`}
+          className={`flex-shrink-0 text-muted-foreground transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
         />
       </button>
 
+      {/* Contenu expandé */}
       {isExpanded && (
-        <div className="px-3.5 pb-3.5 flex flex-col gap-2.5">
-          {/* Timestamp GPS clic */}
-          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground bg-muted/30 rounded-lg px-3 py-1.5">
-            <Crosshair size={9} className="text-blue-400" />
+        <div className="px-4 pb-4 flex flex-col gap-3">
+
+          {/* GPS clic timestamp */}
+          <div className="flex items-center gap-2 text-[10px] text-muted-foreground bg-muted/40 rounded-xl px-3 py-2">
+            <Crosshair size={10} className="text-blue-400 flex-shrink-0" />
             <span>
-              Calculé depuis votre GPS à{" "}
-              <strong className="text-blue-400">{fmtTimeSec(block.clickedAt)}</strong>
+              Calculé depuis votre position GPS à{" "}
+              <strong className="text-blue-400 tabular-nums">{fmtTimeSec(block.clickedAt)}</strong>
+              {" "}· ETA trajet{" "}
+              <strong className="text-foreground">{block.etaMin} min</strong>
+              {" "}({block.distKm} km)
             </span>
           </div>
 
-          {block.slots.map((slot) => (
-            <SlotCard
-              key={slot.slotId}
-              slot={slot}
-              zoneLat={block.zoneLat}
-              zoneLng={block.zoneLng}
-              userLat={userPos.lat}
-              userLng={userPos.lng}
-            />
-          ))}
+          {/* Créneaux */}
+          {visibleSlots.length === 0 ? (
+            <p className="text-xs text-muted-foreground text-center py-2">
+              Aucun créneau disponible dans les 3h.
+            </p>
+          ) : (
+            visibleSlots.map((slot) => (
+              <SlotCard
+                key={slot.slotId}
+                slot={slot}
+                zoneLat={block.zoneLat}
+                zoneLng={block.zoneLng}
+                userLat={userPos.lat}
+                userLng={userPos.lng}
+                isAirport={isAirport}
+              />
+            ))
+          )}
 
+          {/* Maps global */}
           <a
             href={block.mapsUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center justify-center gap-2 w-full py-2 rounded-lg text-xs font-semibold border border-border text-muted-foreground hover:border-primary hover:text-primary transition-colors"
+            className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-xs font-semibold border border-border text-muted-foreground hover:border-primary hover:text-primary transition-colors"
           >
             <Navigation size={12} />
             Voir sur Google Maps
@@ -440,7 +543,7 @@ function EventBlockCard({ block, userPos, isExpanded, onToggle }: {
   );
 }
 
-// ─── GPS Mini Banner ──────────────────────────────────────────────────────────
+// ─── GPS Banner ──────────────────────────────────────────────────────────────
 
 function GpsBanner({ status, position, onActivate }: {
   status: string;
@@ -449,17 +552,17 @@ function GpsBanner({ status, position, onActivate }: {
 }) {
   if (status === "granted" && position) {
     return (
-      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/20 text-xs text-green-400">
-        <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse flex-shrink-0" />
-        <span className="tabular-nums">
-          GPS actif — {position.lat.toFixed(4)}, {position.lng.toFixed(4)}
+      <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-green-500/10 border border-green-500/25 text-xs text-green-400">
+        <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse flex-shrink-0" />
+        <span className="tabular-nums font-medium">
+          GPS actif — {position.lat.toFixed(5)}, {position.lng.toFixed(5)}
         </span>
       </div>
     );
   }
   if (status === "requesting") {
     return (
-      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/20 text-xs text-blue-400">
+      <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-blue-500/10 border border-blue-500/25 text-xs text-blue-400">
         <div className="w-3 h-3 rounded-full border border-blue-400/50 border-t-blue-400 animate-spin flex-shrink-0" />
         Acquisition GPS…
       </div>
@@ -468,18 +571,19 @@ function GpsBanner({ status, position, onActivate }: {
   return (
     <button
       onClick={onActivate}
-      className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/10 border border-primary/30 text-xs text-primary w-full hover:bg-primary/15 transition-colors"
+      className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary/10 border border-primary/30 text-xs text-primary w-full hover:bg-primary/15 transition-colors"
     >
-      <Crosshair size={12} />
-      <span>Activer GPS pour les créneaux de positionnement</span>
-      <ChevronRight size={12} className="ml-auto" />
+      <Crosshair size={13} />
+      <span className="font-medium">Activer GPS pour les créneaux de positionnement</span>
+      <ArrowRight size={12} className="ml-auto" />
     </button>
   );
 }
 
-// ─── Page principale ───────────────────────────────────────────────────────────
+// ─── Page principale ──────────────────────────────────────────────────────────
 
 export default function AlertsPage() {
+
   // ── Alertes ────────────────────────────────────────────────────────────────
   const { data: alerts = [], isLoading } = useQuery({
     queryKey: ["/api/alerts"],
@@ -510,7 +614,7 @@ export default function AlertsPage() {
         setGpsStatus("granted");
       },
       () => setGpsStatus("denied"),
-      { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
+      { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 }
     );
   }, []);
 
@@ -531,6 +635,11 @@ export default function AlertsPage() {
       const resp = await apiRequest("POST", "/api/best-route/event-schedule", { ...pos, clickedAt });
       const data: EventScheduleResponse = await resp.json();
       setEventSchedule(data);
+      // Auto-ouvrir le premier événement urgent
+      const urgentBlock = data.eventBlocks.find(b =>
+        b.slots.some(s => s.urgency === "now" || s.urgency === "soon")
+      );
+      if (urgentBlock) setExpandedEvent(urgentBlock.eventId);
     } catch (e) {
       console.warn("Event schedule error:", e);
     } finally {
@@ -538,7 +647,7 @@ export default function AlertsPage() {
     }
   }, []);
 
-  // Auto-fetch événements dès que GPS accordé (max 1x/60s)
+  // Auto-fetch événements dès GPS accordé (max 1x/60s)
   useEffect(() => {
     if (!position || gpsStatus !== "granted") return;
     const now = Date.now();
@@ -559,7 +668,7 @@ export default function AlertsPage() {
 
   if (isLoading) return (
     <div className="p-4 space-y-3">
-      {[...Array(3)].map((_, i) => <Skeleton key={i} className="h-24 w-full rounded-xl" />)}
+      {[...Array(3)].map((_, i) => <Skeleton key={i} className="h-24 w-full rounded-2xl" />)}
     </div>
   );
 
@@ -571,18 +680,24 @@ export default function AlertsPage() {
     </div>
   );
 
+  const totalSlotsUrgent = eventSchedule?.eventBlocks.reduce((acc, b) =>
+    acc + b.slots.filter(s => s.urgency === "now" || s.urgency === "soon").length, 0) ?? 0;
+
   return (
     <div className="min-h-full">
 
-      {/* ── Header sticky ────────────────────────────────────────────────────── */}
+      {/* ── Header ───────────────────────────────────────────────────────────── */}
       <div className="sticky top-0 z-30 bg-background/95 backdrop-blur border-b border-border px-4 py-3">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Bell size={17} className="text-primary" />
+          <div className="flex items-center gap-2.5">
+            <Bell size={18} className="text-primary" />
             <div>
-              <h1 className="font-bold text-sm leading-none">Alertes</h1>
+              <h1 className="font-bold text-sm leading-none">Alertes & Positionnement</h1>
               <p className="text-[10px] text-muted-foreground mt-0.5">
-                {unread.length} non lue{unread.length > 1 ? "s" : ""} · Top 4 + créneaux GPS
+                {unread.length} alerte{unread.length > 1 ? "s" : ""} · GPS temps réel
+                {totalSlotsUrgent > 0 && (
+                  <span className="ml-1 text-orange-400 font-semibold">· {totalSlotsUrgent} créneau{totalSlotsUrgent > 1 ? "x" : ""} urgent{totalSlotsUrgent > 1 ? "s" : ""}</span>
+                )}
               </p>
             </div>
           </div>
@@ -595,7 +710,7 @@ export default function AlertsPage() {
         </div>
       </div>
 
-      <div className="flex flex-col gap-5 pb-8 pt-4">
+      <div className="flex flex-col gap-6 pb-10 pt-4">
 
         {/* ── GPS Banner ───────────────────────────────────────────────────── */}
         <div className="px-4">
@@ -603,16 +718,17 @@ export default function AlertsPage() {
         </div>
 
         {/* ── TOP 4 ALERTES — scroll horizontal ────────────────────────────── */}
-        <div className="px-4">
-          <div className="flex items-center gap-2 mb-3">
+        <div>
+          <div className="px-4 flex items-center gap-2 mb-3">
             <Zap size={13} className="text-primary" />
-            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              Top 4 alertes actives
+            <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+              Top 4 alertes prioritaires
             </h2>
           </div>
 
+          {/* Cards horizontales */}
           <div
-            className="flex gap-3 overflow-x-auto pb-2"
+            className="flex gap-3 overflow-x-auto pb-2 px-4"
             style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
           >
             {top4.map((alert, i) => (
@@ -625,9 +741,9 @@ export default function AlertsPage() {
             ))}
           </div>
 
-          {/* Détail de l'alerte sélectionnée */}
+          {/* Détail alerte sélectionnée */}
           {selectedAlert && (
-            <div className="mt-3">
+            <div className="mt-3 px-4">
               <AlertDetail
                 alert={selectedAlert}
                 onMarkRead={() => markRead.mutate(selectedAlert.id)}
@@ -637,32 +753,34 @@ export default function AlertsPage() {
           )}
         </div>
 
-        {/* ── ÉVÉNEMENTS — Créneaux chronologiques GPS ─────────────────────── */}
+        {/* ── ÉVÉNEMENTS — Créneaux GPS chronologiques ─────────────────────── */}
         <div className="px-4">
           <div className="flex items-center gap-2 mb-3">
             <CalendarClock size={13} className="text-primary" />
-            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              Événements — Créneaux de positionnement
+            <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+              Créneaux de positionnement
             </h2>
-            {eventLoading && <RefreshCw size={10} className="animate-spin text-muted-foreground ml-auto" />}
+            {eventLoading && <RefreshCw size={10} className="animate-spin text-muted-foreground ml-1" />}
             {!eventLoading && eventSchedule && position && (
               <button
                 onClick={() => fetchEvents(position)}
-                className="ml-auto text-[10px] text-muted-foreground hover:text-primary flex items-center gap-1"
+                className="ml-auto text-[10px] text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors"
               >
-                <RefreshCw size={9} /> Actualiser
+                <RefreshCw size={9} />Actualiser
               </button>
             )}
           </div>
 
-          {/* GPS non activé */}
+          {/* GPS idle */}
           {gpsStatus === "idle" && (
-            <div className="rounded-xl border border-dashed border-border p-5 text-center">
-              <Crosshair size={22} className="text-muted-foreground/40 mx-auto mb-2" />
-              <p className="text-xs text-muted-foreground mb-3">
-                Activez le GPS pour voir les créneaux de positionnement calculés depuis votre position exacte.
+            <div className="rounded-2xl border border-dashed border-border p-6 text-center">
+              <Crosshair size={26} className="text-muted-foreground/30 mx-auto mb-3" />
+              <p className="text-sm font-medium mb-1">Position GPS requise</p>
+              <p className="text-xs text-muted-foreground mb-4">
+                Activez le GPS pour calculer vos créneaux de positionnement en temps réel.
+                Les heures de départ sont calculées à la seconde près depuis votre position.
               </p>
-              <Button size="sm" onClick={startGps} className="gap-2 text-xs">
+              <Button size="sm" onClick={startGps} className="gap-2">
                 <Crosshair size={13} />
                 Activer GPS
               </Button>
@@ -671,45 +789,46 @@ export default function AlertsPage() {
 
           {/* GPS refusé */}
           {gpsStatus === "denied" && (
-            <div className="rounded-xl border border-orange-500/20 bg-orange-500/5 p-4 text-center">
-              <AlertCircle size={20} className="text-orange-400 mx-auto mb-2" />
-              <p className="text-xs text-orange-400">
-                GPS refusé — autorisez la géolocalisation dans les paramètres du navigateur.
+            <div className="rounded-2xl border border-orange-500/25 bg-orange-500/5 p-4 text-center">
+              <AlertCircle size={22} className="text-orange-400 mx-auto mb-2" />
+              <p className="text-sm font-medium text-orange-400 mb-1">GPS refusé</p>
+              <p className="text-xs text-muted-foreground">
+                Autorisez la géolocalisation dans les paramètres de votre navigateur.
               </p>
             </div>
           )}
 
           {/* Chargement */}
           {(gpsStatus === "granted" || gpsStatus === "requesting") && eventLoading && !eventSchedule && (
-            <div className="flex flex-col items-center py-8 gap-2">
+            <div className="flex flex-col items-center py-10 gap-3">
               <div className="w-8 h-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
-              <p className="text-xs text-muted-foreground">Calcul des créneaux…</p>
+              <p className="text-xs text-muted-foreground">Calcul des créneaux depuis votre GPS…</p>
+            </div>
+          )}
+
+          {/* Alerte urgence globale */}
+          {eventSchedule && totalSlotsUrgent > 0 && (
+            <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-orange-500/10 border border-orange-500/30 text-xs text-orange-400 mb-3">
+              <AlertTriangle size={13} className="flex-shrink-0" />
+              <span className="font-bold">
+                {totalSlotsUrgent} positionnement{totalSlotsUrgent > 1 ? "s" : ""} urgent{totalSlotsUrgent > 1 ? "s" : ""} — partez maintenant !
+              </span>
             </div>
           )}
 
           {/* Aucun événement */}
           {eventSchedule && eventSchedule.eventBlocks.length === 0 && (
-            <div className="rounded-xl border border-dashed border-border p-5 text-center">
+            <div className="rounded-2xl border border-dashed border-border p-5 text-center">
               <CalendarClock size={22} className="text-muted-foreground/40 mx-auto mb-2" />
               <p className="text-xs text-muted-foreground">
-                Aucun événement avec créneau disponible dans les 3h.
+                Aucun créneau disponible dans les 3h.
               </p>
             </div>
           )}
 
-          {/* Événements */}
+          {/* Blocs événements */}
           {eventSchedule && eventSchedule.eventBlocks.length > 0 && (
             <div className="flex flex-col gap-3">
-              {/* Alerte urgence */}
-              {eventSchedule.eventBlocks.some(b =>
-                b.slots.some(s => s.urgency === "now" || s.urgency === "soon")
-              ) && (
-                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-orange-500/10 border border-orange-500/30 text-xs text-orange-400">
-                  <AlertTriangle size={12} />
-                  <span className="font-semibold">Positionnement urgent recommandé</span>
-                </div>
-              )}
-
               {eventSchedule.eventBlocks.map((block) => (
                 <EventBlockCard
                   key={block.eventId}
@@ -726,21 +845,21 @@ export default function AlertsPage() {
 
           {/* Métadonnées */}
           {eventSchedule && (
-            <div className="mt-3 text-[10px] text-muted-foreground opacity-50 text-center">
-              Calculé à {fmtTimeSec(eventSchedule.computedAt)} ·
-              GPS : {eventSchedule.userPosition.lat.toFixed(4)}, {eventSchedule.userPosition.lng.toFixed(4)} ·
-              Actualisé auto toutes les 60s
+            <div className="mt-4 text-[10px] text-muted-foreground/40 text-center leading-relaxed">
+              Calculé à {fmtTimeSec(eventSchedule.computedAt)}{" "}
+              · GPS {eventSchedule.userPosition.lat.toFixed(4)},{eventSchedule.userPosition.lng.toFixed(4)}{" "}
+              · Actualisation auto 60s
             </div>
           )}
         </div>
 
-        {/* ── Liste complète des alertes ────────────────────────────────────── */}
+        {/* ── Toutes les alertes (si > 4) ──────────────────────────────────── */}
         {allAlerts.length > 4 && (
           <div className="px-4">
             <div className="flex items-center gap-2 mb-3">
               <Bell size={13} className="text-muted-foreground" />
-              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                Toutes les alertes
+              <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                Autres alertes
               </h2>
             </div>
             <div className="flex flex-col gap-2">
@@ -750,7 +869,7 @@ export default function AlertsPage() {
                 return (
                   <div
                     key={alert.id}
-                    className={`rounded-xl border-l-4 ${cfg.borderL} border border-border p-3 ${alert.is_read ? "opacity-60" : ""}`}
+                    className={`rounded-xl border-l-4 ${cfg.borderL} border border-border p-3 ${alert.is_read ? "opacity-55" : ""}`}
                   >
                     <div className="flex items-start gap-2">
                       <TypeIcon size={15} className={`mt-0.5 flex-shrink-0 ${cfg.textClass}`} />
@@ -771,9 +890,7 @@ export default function AlertsPage() {
                     {!alert.is_read && (
                       <div className="mt-2 flex justify-end">
                         <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 text-xs gap-1"
+                          size="sm" variant="ghost" className="h-6 text-xs gap-1"
                           onClick={() => markRead.mutate(alert.id)}
                           disabled={markRead.isPending}
                         >
@@ -790,19 +907,22 @@ export default function AlertsPage() {
 
         {/* ── Stratégies clés ───────────────────────────────────────────────── */}
         <div className="px-4">
-          <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
-            <p className="text-xs font-semibold mb-3 text-primary">Stratégies clés</p>
-            <div className="space-y-2 text-xs text-muted-foreground">
+          <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <TrendingUp size={13} className="text-primary" />
+              <p className="text-xs font-bold text-primary">Stratégies de positionnement</p>
+            </div>
+            <div className="space-y-2.5 text-xs text-muted-foreground">
               {[
-                ["①", "CDG/Orly — Flux arrivées", "Positionnez-vous 30min avant atterrissage. Courses 35-55€ vers Paris/La Défense."],
-                ["②", "Stade de France sortie", "80 000 spec. = surge ×4. Rue Jules Rimet, 20min avant le coup de sifflet final."],
-                ["③", "Villepinte / Le Bourget", "Salons pro = clients business → longues courses garanties. Tarifs 30-50€."],
-                ["④", "Pointe matinale 93 (6h-9h)", "Plaine Commune, Aulnay, Tremblay vers La Défense/Paris. Ratio D/O > 2.5×."],
-                ["⑤", "Nuit IDF (22h-3h)", "CDG actif 24h. Taxis rares = surge élevé. Courses 40-70€ depuis l'aéroport."],
-              ].map(([num, title, desc]) => (
-                <div key={num} className="flex gap-2">
-                  <span className="text-amber-400 font-bold flex-shrink-0">{num}</span>
-                  <span><strong>{title}</strong> — {desc}</span>
+                ["✈️", "CDG / Orly — Vols arrivées", "Positionnez-vous 20–30 min avant atterrissage. Courses 35–55€ vers Paris / La Défense."],
+                ["⚽", "Stade de France — Sortie match", "80 000 spec. → surge ×4. Rue Jules Rimet, 20 min avant coup de sifflet final."],
+                ["🏛️", "Villepinte / Le Bourget", "Salons pro = clients business → longues courses garanties. Tarifs 30–50€."],
+                ["🌅", "Pointe matinale 93 (6h–9h)", "Plaine Commune, Aulnay, Tremblay vers La Défense / Paris. Ratio D/O > 2.5×."],
+                ["🌙", "Nuit IDF (22h–3h)", "CDG actif 24h. Taxis rares = surge élevé. Courses 40–70€ depuis l'aéroport."],
+              ].map(([icon, title, desc]) => (
+                <div key={title} className="flex gap-2.5 items-start">
+                  <span className="flex-shrink-0 text-base leading-none mt-0.5">{icon}</span>
+                  <span><strong className="text-foreground/80">{title}</strong> — {desc}</span>
                 </div>
               ))}
             </div>
