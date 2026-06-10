@@ -586,6 +586,26 @@ export default function AlertsPage() {
   const allAlerts = alerts as Alert[];
   const unread = allAlerts.filter(a => !a.is_read);
 
+  // ── Déduplication par zone_id — garder la plus haute priorité par zone ──
+  const PRIO_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+  const seenZones = new Map<string, Alert>();
+  const dedupedAlerts: Alert[] = [];
+  for (const al of allAlerts) {
+    const key = al.zone_id || `no-zone-${al.id}`;
+    const existing = seenZones.get(key);
+    if (!existing || PRIO_RANK[al.priority] < PRIO_RANK[existing.priority]) {
+      seenZones.set(key, al);
+    }
+  }
+  // Reconstruire dans l'ordre original en ne gardant que le winner par zone
+  const winnerIds = new Set(Array.from(seenZones.values()).map(a => a.id));
+  for (const al of allAlerts) {
+    if (winnerIds.has(al.id)) dedupedAlerts.push(al);
+  }
+
+  // ── État accordéon alertes ──
+  const [expandedAlertId, setExpandedAlertId] = useState<number | null>(null);
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   if (isLoading) return (
@@ -741,49 +761,103 @@ export default function AlertsPage() {
           )}
         </div>
 
-        {/* ── Toutes les alertes (si > 4) ──────────────────────────────────── */}
-        {allAlerts.length > 4 && (
+        {/* ── Toutes les alertes — liste unifiée dédoublonnée avec accordéon ─── */}
+        {dedupedAlerts.length > 0 && (
           <div className="px-4">
             <div className="flex items-center gap-2 mb-3">
               <Bell size={13} className="text-muted-foreground" />
               <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
-                Autres alertes
+                Alertes actives
               </h2>
+              <span className="ml-1 text-[10px] text-muted-foreground/60">
+                {dedupedAlerts.length} zone{dedupedAlerts.length > 1 ? "s" : ""}
+              </span>
+              {unread.length > 0 && (
+                <span className="ml-auto text-[10px] font-bold text-red-400 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse inline-block" />
+                  {unread.length} non lu{unread.length > 1 ? "es" : "e"}
+                </span>
+              )}
             </div>
             <div className="flex flex-col gap-2">
-              {allAlerts.slice(4).map((alert) => {
+              {dedupedAlerts.map((alert) => {
                 const cfg = PRIORITY_CONFIG[alert.priority] || PRIORITY_CONFIG.low;
                 const TypeIcon = TYPE_ICONS[alert.type] || Bell;
+                const isOpen = expandedAlertId === alert.id;
                 return (
-                  <div
-                    key={alert.id}
-                    className={`rounded-xl border-l-4 ${cfg.borderL} border border-border p-3 ${alert.is_read ? "opacity-55" : ""}`}
-                  >
-                    <div className="flex items-start gap-2">
-                      <TypeIcon size={15} className={`mt-0.5 flex-shrink-0 ${cfg.textClass}`} />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-2 mb-1">
-                          <p className="font-semibold text-xs">{alert.title}</p>
-                          <span className={`text-[9px] font-bold flex-shrink-0 ${cfg.textClass}`}>{cfg.label}</span>
+                  <div key={alert.id}>
+                    {/* Carte cliquable */}
+                    <button
+                      className={`w-full text-left rounded-2xl border p-3.5 transition-all duration-200
+                        ${isOpen ? `${cfg.bg} ${cfg.border}` : "border-border hover:border-muted-foreground/40 bg-card"}
+                        ${alert.is_read ? "opacity-60" : ""}`}
+                      onClick={() => setExpandedAlertId(prev => prev === alert.id ? null : alert.id)}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div
+                          className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                          style={{ background: `${cfg.color}20`, border: `1px solid ${cfg.color}40` }}
+                        >
+                          <TypeIcon size={16} style={{ color: cfg.color }} />
                         </div>
-                        <p className="text-[10px] text-muted-foreground mb-1.5">{alert.message}</p>
-                        <div className="flex items-center gap-3 text-[9px] text-muted-foreground">
-                          {alert.estimated_revenue && (
-                            <span className="text-green-400 font-medium">~{alert.estimated_revenue}€</span>
-                          )}
-                          <span>Expire dans {timeLeft(alert.expires_at)}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-start justify-between gap-2 mb-1">
+                            <p className="font-bold text-xs leading-tight">{alert.title}</p>
+                            <div className="flex items-center gap-1.5 flex-shrink-0">
+                              {!alert.is_read && (
+                                <span className="w-1.5 h-1.5 rounded-full animate-pulse flex-shrink-0"
+                                  style={{ background: cfg.color }} />
+                              )}
+                              <span
+                                className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+                                style={{ background: `${cfg.color}20`, color: cfg.color, border: `1px solid ${cfg.color}30` }}
+                              >{cfg.label}</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+                            {alert.estimated_revenue && (
+                              <span className="flex items-center gap-0.5 text-green-400 font-semibold">
+                                <Euro size={9} />~{alert.estimated_revenue}€
+                              </span>
+                            )}
+                            <span className="flex items-center gap-0.5">
+                              <Clock size={9} />{timeLeft(alert.expires_at)}
+                            </span>
+                            <ChevronDown
+                              size={13}
+                              className={`ml-auto transition-transform duration-200 text-muted-foreground/60
+                                ${isOpen ? "rotate-180" : ""}`}
+                            />
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    {!alert.is_read && (
-                      <div className="mt-2 flex justify-end">
-                        <Button
-                          size="sm" variant="ghost" className="h-6 text-xs gap-1"
-                          onClick={() => markRead.mutate(alert.id)}
-                          disabled={markRead.isPending}
-                        >
-                          <CheckCheck size={11} />Lu
-                        </Button>
+                    </button>
+
+                    {/* Détail expandé — accordéon vertical */}
+                    {isOpen && (
+                      <div className="mt-1 rounded-2xl border border-border bg-muted/20 p-4 transition-all duration-200">
+                        <p className="text-xs text-muted-foreground leading-relaxed mb-3">{alert.message}</p>
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-wrap">
+                            {alert.estimated_revenue && (
+                              <span className="flex items-center gap-1 text-green-400 font-semibold">
+                                <Euro size={10} />~{alert.estimated_revenue}€ estimés
+                              </span>
+                            )}
+                            <span className="flex items-center gap-1">
+                              <Clock size={10} />Expire dans {timeLeft(alert.expires_at)}
+                            </span>
+                          </div>
+                          {!alert.is_read && (
+                            <Button
+                              size="sm" variant="ghost" className="h-7 text-xs gap-1 flex-shrink-0"
+                              onClick={(e) => { e.stopPropagation(); markRead.mutate(alert.id); }}
+                              disabled={markRead.isPending}
+                            >
+                              <CheckCheck size={12} />Lu
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     )}
                   </div>

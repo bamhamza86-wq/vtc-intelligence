@@ -488,7 +488,7 @@ function seedEvents(today: string, now: Date) {
 
   // Événements fixes de la semaine (mise à jour avec date du jour)
   insE.run("Match Équipe de France — Stade de France", "z_stade_france", "match",
-    `${today}T20:45:00`, `${today}T23:30:00`, 80000, 4.2);
+    `${today}T10:00:00`, `${today}T23:30:00`, 80000, 4.2);
   insE.run("Paris Air Show — Le Bourget", "z_le_bourget", "conference",
     `${today}T09:00:00`, `${today}T19:00:00`, 12000, 2.4);
   insE.run("Salon Paris Nord Villepinte", "z_villepinte", "conference",
@@ -529,9 +529,8 @@ function generateDynamicAlerts(): void {
     AND datetime('now') BETWEEN datetime(start_time) AND datetime(end_time)
   `).all() as any[];
 
-  // 3. Supprimer uniquement les alertes auto-générées non lues (garder les lues = historique)
-  sqlite.prepare("DELETE FROM alerts WHERE is_read = 0 AND created_at > ?")
-    .run(new Date(now.getTime() - 3 * 60 * 1000).toISOString()); // garder > 3min
+  // 3. Supprimer toutes les alertes non lues avant régénération (garder les lues = historique)
+  sqlite.prepare("DELETE FROM alerts WHERE is_read = 0").run();
 
   const insA = sqlite.prepare(
     "INSERT INTO alerts (type,title,message,zone_id,priority,estimated_revenue,expires_at,created_at,is_read) VALUES (?,?,?,?,?,?,?,?,0)"
@@ -539,26 +538,17 @@ function generateDynamicAlerts(): void {
 
   const alertsGenerated: string[] = [];
 
-  // ── RÈGLE 1 : Surge critique — ratio D/O > 3.0 ET zone 93 ────────────────
-  // Prioriser les zones avec forte densité trafic (demande >> offre)
-  for (const score of currentScores) {
-    if (alertsGenerated.length >= 8) break; // max 8 alertes actives
-    if (score.ratio_ds < 3.0) continue;
-
-    // Calculer TTL selon urgence : ratio > 4 → 2h, ratio 3-4 → 4h
+  // Helper pour insérer une alerte surge depuis un score (règle 1)
+  const insertSurgeAlert = (score: any) => {
+    if (alertsGenerated.includes(score.zone_id)) return;
+    if (score.ratio_ds < 3.0) return;
     const ttlH = score.ratio_ds > 4.0 ? 2 : 4;
     const expires = new Date(now.getTime() + ttlH * 3600000).toISOString();
-
-    // Niveau de priorité basé sur densité trafic
     const priority = score.ratio_ds > 4.5 ? "critical"
       : score.ratio_ds > 3.5 ? "high" : "medium";
-
-    // Revenus estimés : avg_fare × (ratio_ds / 2) = estimation courses possibles
     const estRevenue = Math.round(score.avg_fare * Math.min(score.ratio_ds / 2, 3));
-
     const congestionLabel = score.ratio_ds > 4.5 ? "Dense critique"
       : score.ratio_ds > 3.5 ? "Forte densité" : "Densité élevée";
-
     insA.run(
       "demand_spike",
       `${score.zone_name} — ${congestionLabel} D/O ${score.ratio_ds.toFixed(1)}×`,
@@ -568,15 +558,15 @@ function generateDynamicAlerts(): void {
       score.zone_id, priority, estRevenue, expires, now.toISOString()
     );
     alertsGenerated.push(score.zone_id);
-  }
+  };
 
-  // ── RÈGLE 2 : Événements actifs avec boost significatif ───────────────────
+  // ── RÈGLE 2 : Événements actifs — EN PREMIER pour garantir leur visibilité ──
+  // Le Bourget, Stade de France, Villepinte ont priorité sur surge générique
   for (const ev of activeEvents) {
-    if (alertsGenerated.length >= 8) break;
-    if (alertsGenerated.includes(ev.zone_id)) continue; // déjà une alerte sur cette zone
-    if (ev.demand_boost < 1.5) continue; // ignorer les micro-boosts
+    if (alertsGenerated.length >= 6) break; // max 6 events (laisser 2 pour aéroports)
+    if (alertsGenerated.includes(ev.zone_id)) continue;
+    if (ev.demand_boost < 1.5) continue;
 
-    // Trouver le score de la zone de l'événement
     const zoneScore = currentScores.find((s: any) => s.zone_id === ev.zone_id);
     if (!zoneScore) continue;
 
@@ -631,12 +621,23 @@ function generateDynamicAlerts(): void {
     alertsGenerated.push(ap.zone_id);
   }
 
+  // ── RÈGLE 1 : Surge critique — complète les slots restants jusqu'à 8 ────────
+  // Zones avec forte densité trafic (ratio D/O > 3.0) non encore couvertes
+  for (const score of currentScores) {
+    if (alertsGenerated.length >= 8) break;
+    insertSurgeAlert(score);
+  }
+
   // ── RÈGLE 4 : Alerte sous-performance — zones 93 avec ratio < 0.8 ─────────
   // Avertir le chauffeur des zones à éviter (offre > demande = mauvais)
+  // Exclure les zones qui ont déjà une alerte (événement ou aéroport)
+  const eventZoneIds = new Set(activeEvents.map((e: any) => e.zone_id));
   const lowZones = currentScores.filter((s: any) =>
-    s.ratio_ds < 0.8 && s.demand_score < 30
+    s.ratio_ds < 0.8 && s.demand_score < 30 &&
+    !eventZoneIds.has(s.zone_id) &&
+    !alertsGenerated.includes(s.zone_id)
   ).slice(0, 2);
-  if (lowZones.length > 0) {
+  if (lowZones.length > 0 && alertsGenerated.length < 8) {
     const names = lowZones.map((z: any) => z.zone_name).join(", ");
     const expires = new Date(now.getTime() + 1 * 3600000).toISOString();
     insA.run(
