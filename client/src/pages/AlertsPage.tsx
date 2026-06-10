@@ -582,7 +582,6 @@ export default function AlertsPage() {
   }, [position]);
 
   // ── UI state ───────────────────────────────────────────────────────────────
-  const [selectedAlertIdx, setSelectedAlertIdx] = useState<number>(-1);
 
   const allAlerts = alerts as Alert[];
   const unread = allAlerts.filter(a => !a.is_read);
@@ -640,112 +639,7 @@ export default function AlertsPage() {
           <GpsBanner status={gpsStatus} position={position} onActivate={startGps} />
         </div>
 
-        {/* ── ALERTES — liste cliquable avec détails expandables ────────────── */}
-        <div className="px-4">
-          <div className="flex items-center gap-2 mb-3">
-            <Zap size={13} className="text-primary" />
-            <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
-              Alertes prioritaires
-            </h2>
-            {unread.length > 0 && (
-              <span className="ml-auto text-[10px] font-bold text-red-400 flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse inline-block" />
-                {unread.length} non lu{unread.length > 1 ? "es" : "e"}
-              </span>
-            )}
-          </div>
-          <div className="flex flex-col gap-2">
-            {allAlerts.map((alert) => (
-              <div key={alert.id}>
-                {/* Carte alerte cliquable */}
-                <button
-                  onClick={() => setSelectedAlertIdx(prev => prev === alert.id ? -1 : alert.id)}
-                  className={`w-full text-left rounded-2xl border p-4 transition-all duration-200
-                    ${selectedAlertIdx === alert.id
-                      ? `${PRIORITY_CONFIG[alert.priority]?.bg || ""} ${PRIORITY_CONFIG[alert.priority]?.border || ""}`
-                      : "border-border hover:border-muted-foreground/40 bg-card"}
-                    ${alert.is_read ? "opacity-60" : ""}`}
-                >
-                  <div className="flex items-start gap-3">
-                    <div
-                      className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-                      style={{
-                        background: `${PRIORITY_CONFIG[alert.priority]?.color || "#64748b"}20`,
-                        border: `1px solid ${PRIORITY_CONFIG[alert.priority]?.color || "#64748b"}40`
-                      }}
-                    >
-                      {(() => { const Icon = TYPE_ICONS[alert.type] || Bell; return <Icon size={16} style={{ color: PRIORITY_CONFIG[alert.priority]?.color || "#64748b" }} />; })()}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-start justify-between gap-2 mb-1">
-                        <p className="font-bold text-sm leading-tight">{alert.title}</p>
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                          {!alert.is_read && (
-                            <span className="w-2 h-2 rounded-full animate-pulse flex-shrink-0"
-                              style={{ background: PRIORITY_CONFIG[alert.priority]?.color || "#ef4444" }} />
-                          )}
-                          <span
-                            className="text-[9px] font-bold px-2 py-0.5 rounded-full"
-                            style={{
-                              background: `${PRIORITY_CONFIG[alert.priority]?.color || "#64748b"}20`,
-                              color: PRIORITY_CONFIG[alert.priority]?.color || "#64748b",
-                              border: `1px solid ${PRIORITY_CONFIG[alert.priority]?.color || "#64748b"}30`
-                            }}
-                          >
-                            {PRIORITY_CONFIG[alert.priority]?.label || "Faible"}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
-                        {alert.estimated_revenue && (
-                          <span className="flex items-center gap-1 text-green-400 font-semibold">
-                            <Euro size={9} />~{alert.estimated_revenue}€
-                          </span>
-                        )}
-                        <span className="flex items-center gap-1">
-                          <Clock size={9} />{timeLeft(alert.expires_at)}
-                        </span>
-                        <ChevronDown
-                          size={13}
-                          className={`ml-auto transition-transform duration-200 text-muted-foreground/60
-                            ${selectedAlertIdx === alert.id ? "rotate-180" : ""}`}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </button>
 
-                {/* Détail expandé au clic */}
-                {selectedAlertIdx === alert.id && (
-                  <div className="mt-1 rounded-2xl border p-4 bg-muted/30 border-border">
-                    <p className="text-sm text-muted-foreground leading-relaxed mb-3">{alert.message}</p>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-wrap">
-                        {alert.estimated_revenue && (
-                          <span className="flex items-center gap-1 text-green-400 font-semibold">
-                            <Euro size={10} />~{alert.estimated_revenue}€ estimés
-                          </span>
-                        )}
-                        <span className="flex items-center gap-1">
-                          <Clock size={10} />Expire dans {timeLeft(alert.expires_at)}
-                        </span>
-                      </div>
-                      {!alert.is_read && (
-                        <Button
-                          size="sm" variant="ghost" className="h-7 text-xs gap-1"
-                          onClick={(e) => { e.stopPropagation(); markRead.mutate(alert.id); }}
-                          disabled={markRead.isPending}
-                        >
-                          <CheckCheck size={12} />Lu
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
 
         {/* ── ÉVÉNEMENTS — Créneaux GPS chronologiques ─────────────────────── */}
         <div className="px-4">
@@ -847,7 +741,57 @@ export default function AlertsPage() {
           )}
         </div>
 
-
+        {/* ── Toutes les alertes (si > 4) ──────────────────────────────────── */}
+        {allAlerts.length > 4 && (
+          <div className="px-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Bell size={13} className="text-muted-foreground" />
+              <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                Autres alertes
+              </h2>
+            </div>
+            <div className="flex flex-col gap-2">
+              {allAlerts.slice(4).map((alert) => {
+                const cfg = PRIORITY_CONFIG[alert.priority] || PRIORITY_CONFIG.low;
+                const TypeIcon = TYPE_ICONS[alert.type] || Bell;
+                return (
+                  <div
+                    key={alert.id}
+                    className={`rounded-xl border-l-4 ${cfg.borderL} border border-border p-3 ${alert.is_read ? "opacity-55" : ""}`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <TypeIcon size={15} className={`mt-0.5 flex-shrink-0 ${cfg.textClass}`} />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-start justify-between gap-2 mb-1">
+                          <p className="font-semibold text-xs">{alert.title}</p>
+                          <span className={`text-[9px] font-bold flex-shrink-0 ${cfg.textClass}`}>{cfg.label}</span>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground mb-1.5">{alert.message}</p>
+                        <div className="flex items-center gap-3 text-[9px] text-muted-foreground">
+                          {alert.estimated_revenue && (
+                            <span className="text-green-400 font-medium">~{alert.estimated_revenue}€</span>
+                          )}
+                          <span>Expire dans {timeLeft(alert.expires_at)}</span>
+                        </div>
+                      </div>
+                    </div>
+                    {!alert.is_read && (
+                      <div className="mt-2 flex justify-end">
+                        <Button
+                          size="sm" variant="ghost" className="h-6 text-xs gap-1"
+                          onClick={() => markRead.mutate(alert.id)}
+                          disabled={markRead.isPending}
+                        >
+                          <CheckCheck size={11} />Lu
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* ── Stratégies clés ───────────────────────────────────────────────── */}
         <div className="px-4">
