@@ -12,6 +12,7 @@ import AlertsPage from "./pages/AlertsPage";
 import DataSourcesPage from "./pages/DataSourcesPage";
 import ProfilePage from "./pages/ProfilePage";
 import BestRoutePage from "./pages/BestRoutePage";
+import ReturnJourneyPage from "./pages/ReturnJourneyPage";
 import SmartPlanPage from "./pages/SmartPlanPage";
 import EconomicsDashboard from "./pages/EconomicsDashboard";
 import LoginPage from "./pages/LoginPage";
@@ -95,6 +96,7 @@ export default function App() {
               <Switch>
                 <Route path="/" component={MapPage} />
                 <Route path="/best-route" component={BestRoutePage} />
+                <Route path="/return-journey" component={ReturnJourneyPage} />
                 <Route path="/smart-plan" component={SmartPlanPage} />
                 <Route path="/simulator" component={SimulatorPage} />
                 <Route path="/alerts" component={AlertsPage} />

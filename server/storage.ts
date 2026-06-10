@@ -689,6 +689,7 @@ export interface IStorage {
   markAlertRead(id: number): void;
   createAlert(alert: any): any;
   createRide(ride: any): any;
+  addRide(ride: any): any;
   getRideStats(): any;
   getRecentRides(limit?: number): any[];
   getDriverProfile(): any;
@@ -754,6 +755,25 @@ export const storage: IStorage = {
   createRide: (ride) =>
     sqlite.prepare("INSERT INTO rides (pickup_zone_id,dropoff_zone_id,distance_km,duration_min,fare,commission,fuel_cost,net_profit,hourly_rate,is_profitable,is_long_ride,timestamp,weather) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *")
       .get(ride.pickupZoneId, ride.dropoffZoneId, ride.distanceKm, ride.durationMin, ride.fare, ride.commission, ride.fuelCost, ride.netProfit, ride.hourlyRate, ride.isProfitable ? 1 : 0, ride.isLongRide ? 1 : 0, ride.timestamp, ride.weather || null),
+
+  // addRide : accepte un objet aux clés snake_case (schéma table rides)
+  addRide: (ride: any) =>
+    sqlite.prepare("INSERT INTO rides (pickup_zone_id,dropoff_zone_id,distance_km,duration_min,fare,commission,fuel_cost,net_profit,hourly_rate,is_profitable,is_long_ride,timestamp,weather) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *")
+      .get(
+        ride.pickup_zone_id,
+        ride.dropoff_zone_id,
+        ride.distance_km,
+        ride.duration_min,
+        ride.fare,
+        ride.commission,
+        ride.fuel_cost,
+        ride.net_profit,
+        ride.hourly_rate,
+        ride.is_profitable ? 1 : 0,
+        ride.is_long_ride ? 1 : 0,
+        ride.timestamp ?? new Date().toISOString(),
+        ride.weather ?? null,
+      ),
 
   getRideStats: () => {
     const stats = sqlite.prepare("SELECT COUNT(*) as total, SUM(net_profit) as totalNet, AVG(hourly_rate) as avgRate, AVG(distance_km) as avgDist, SUM(CASE WHEN is_profitable=1 THEN 1 ELSE 0 END) as profitable, SUM(CASE WHEN is_long_ride=1 THEN 1 ELSE 0 END) as longRides FROM rides").get() as any;

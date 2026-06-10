@@ -1261,4 +1261,253 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       res.status(500).json({ error: String(err) });
     }
   });
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // POST /api/return-journey
+  // « Meilleure course en chemin de retour » — trouve les zones rentables
+  // situées le long du trajet position GPS → destination de retour.
+  // Body: { lat, lng, destLat, destLng, destName }
+  // ═══════════════════════════════════════════════════════════════════════════════
+  app.post("/api/return-journey", async (req, res) => {
+    try {
+      const { lat, lng, destLat, destLng, destName } = req.body as {
+        lat: number; lng: number; destLat: number; destLng: number; destName: string;
+      };
+
+      if (
+        typeof lat !== "number" || typeof lng !== "number" ||
+        typeof destLat !== "number" || typeof destLng !== "number"
+      ) {
+        return res.status(400).json({ error: "lat, lng, destLat, destLng requis (number)" });
+      }
+
+      const hour = new Date().getHours();
+      const dayType = [0, 6].includes(new Date().getDay()) ? "weekend" : "weekday";
+      const zones = storage.getAllZones() as any[];
+      const scores = storage.getProfitabilityByHour(hour, dayType) as any[];
+
+      let flightData: any = null;
+      try { flightData = await getFlightData(); } catch { /* non bloquant */ }
+
+      const profile: any = storage.getDriverProfile() || {};
+      const fuelPer100 = profile.fuel_consumption_per100km ?? 7.5;
+      const fuelPrice  = profile.fuel_price_per_liter ?? 1.92;
+      const wearKm     = profile.wear_cost_per_km ?? 0.08;
+
+      // ── Distance Haversine (vol d'oiseau) — identique à /api/best-route ────────
+      const haversineKm = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
+        const R = 6371;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLng = (lng2 - lng1) * Math.PI / 180;
+        const a = Math.sin(dLat / 2) ** 2 +
+          Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+          Math.sin(dLng / 2) ** 2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      };
+
+      // ── Distance perpendiculaire point→segment + projection (proj 0..1.5) ──────
+      const distPointToSegmentKm = (
+        px: number, py: number, ax: number, ay: number, bx: number, by: number,
+      ): { dist: number; proj: number } => {
+        const dx = bx - ax, dy = by - ay;
+        const lenSq = dx * dx + dy * dy;
+        if (lenSq === 0) {
+          const d = Math.sqrt((px - ax) ** 2 + (py - ay) ** 2) * 111;
+          return { dist: d, proj: 0 };
+        }
+        const t = Math.max(0, Math.min(1.5, ((px - ax) * dx + (py - ay) * dy) / lenSq));
+        const closestX = ax + t * dx, closestY = ay + t * dy;
+        const dist = Math.sqrt((px - closestX) ** 2 + (py - closestY) ** 2) * 111;
+        return { dist, proj: t };
+      };
+
+      const scoreMap: Record<string, any> = {};
+      scores.forEach((s: any) => { scoreMap[s.zone_id] = s; });
+
+      // ── Trajet direct position → destination ───────────────────────────────────
+      const directStraightKm = haversineKm(lat, lng, destLat, destLng);
+      const directDistanceKm = Math.round(directStraightKm * 1.35 * 10) / 10;
+      const directEtaMin = Math.max(1, Math.round(directDistanceKm / 22 * 60));
+
+      // ── Analyse de chaque zone par rapport au segment origine→destination ──────
+      const routeZones = zones.map((z: any) => {
+        // Distance perpendiculaire + projection (coords brutes lng=x, lat=y)
+        const { dist: distToRouteRaw, proj } = distPointToSegmentKm(
+          z.lng, z.lat, lng, lat, destLng, destLat,
+        );
+        const distToRoute = Math.round(distToRouteRaw * 10) / 10;
+        const progressRatio = Math.round(proj * 1000) / 1000;
+
+        // Distance / ETA réels depuis le cache routingCache
+        const straightKm = haversineKm(lat, lng, z.lat, z.lng);
+        const rcEntry = getCachedRoute(z.id, lat, lng);
+        const distanceKm = rcEntry.roadKm > 0
+          ? rcEntry.roadKm
+          : Math.round(straightKm * (ROAD_FACTOR[z.id] ?? 1.35) * 10) / 10;
+        const etaMinutes = rcEntry.etaMin > 0 ? rcEntry.etaMin
+          : Math.max(1, Math.round(distanceKm / (rcEntry.speedKmH || 20) * 60));
+
+        // Détour estimé (aller-retour de la déviation perpendiculaire)
+        const detourKm = Math.round(distToRoute * 2 * 10) / 10;
+        const detourMinutes = Math.round(detourKm / 20 * 60);
+
+        const s = scoreMap[z.id] || {};
+        const profitIdx = s.profitability_index ?? 0;
+        const surge = s.surge_multiplier ?? 1.0;
+        const avgFare = s.avg_fare ?? 0;
+        const longRide = s.long_ride_probability ?? 0;
+        const ratio = s.ratio_ds ?? 1;
+
+        let flightBoost = 1.0;
+        if (flightData) flightBoost = getFlightBoostForZone(z.id, flightData);
+
+        const distancePenalty = distanceKm <= 3 ? 1.0
+          : distanceKm <= 8 ? 0.93
+          : distanceKm <= 15 ? 0.82
+          : distanceKm <= 25 ? 0.70
+          : distanceKm <= 40 ? 0.55
+          : 0.35;
+
+        const globalScore = Math.round(profitIdx * distancePenalty * surge * flightBoost);
+        const estimatedRevenue = Math.round(avgFare * surge * flightBoost * 100) / 100;
+
+        // Coûts du détour (carburant + usure)
+        const detourCost = detourKm * wearKm + (detourKm / 100) * fuelPer100 * fuelPrice;
+        const netGain = Math.round((estimatedRevenue - detourCost) * 100) / 100;
+        const efficiency = Math.round((netGain / Math.max(detourMinutes, 1)) * 100) / 100;
+
+        // Score de route : pénalise déviation perpendiculaire et longueur du détour
+        const routeScore = Math.round(
+          globalScore * (1 - distToRoute / 20) * Math.max(0.3, 1 - detourKm / 30),
+        );
+        const viability = netGain > 0 && progressRatio > 0.1;
+
+        let reason = "Zone sur le trajet";
+        if (z.id === "z_cdg" || z.id === "z_orly") {
+          const fd = z.id === "z_cdg" ? flightData?.cdg : flightData?.orly;
+          reason = fd ? `${fd.arrivals_next_hour} arrivees/h — Flux ${fd.peak_level}` : "Aeroport — flux eleve";
+        } else if (distToRoute < 3) {
+          reason = `Quasi sur le trajet — détour +${detourKm}km`;
+        } else if (longRide >= 0.7) {
+          reason = `${Math.round(longRide * 100)}% longues courses`;
+        } else if (surge > 1.4) {
+          reason = `Surge x${surge.toFixed(2)} — ratio D/O ${ratio.toFixed(2)}`;
+        } else if (!viability) {
+          reason = `Détour peu rentable (+${detourKm}km)`;
+        }
+
+        const mapsDetourUrl =
+          `https://www.google.com/maps/dir/${lat},${lng}/${z.lat},${z.lng}/${destLat},${destLng}`;
+
+        return {
+          zone: { id: z.id, name: z.name, lat: z.lat, lng: z.lng, type: z.type },
+          distanceKm,
+          etaMinutes,
+          distToRoute,
+          detourKm,
+          detourMinutes,
+          progressRatio,
+          profitabilityIndex: profitIdx,
+          surgeMultiplier: Math.round(surge * 100) / 100,
+          avgFare: Math.round(avgFare * 100) / 100,
+          estimatedRevenue,
+          netGain,
+          efficiency,
+          routeScore,
+          viability,
+          reason,
+          mapsDetourUrl,
+          globalScore,
+        };
+      });
+
+      // Conserver seulement les zones réellement « en chemin »
+      const onRoute = routeZones.filter((z: any) =>
+        z.progressRatio >= 0.05 && z.progressRatio <= 1.1 && z.distToRoute < 20,
+      );
+
+      onRoute.sort((a: any, b: any) => b.routeScore - a.routeScore);
+      const top5 = onRoute.slice(0, 5);
+
+      res.json({
+        userPosition: { lat, lng },
+        destination: { lat: destLat, lng: destLng, name: destName ?? "Destination" },
+        directDistanceKm,
+        directEtaMin,
+        routeZones: top5,
+        recommendation: top5[0] ?? null,
+        hour,
+        dayType,
+        computedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error("[return-journey] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // POST /api/rides/complete
+  // Enregistre une course terminée + rafraîchit les alertes dynamiques.
+  // Body: { pickup_zone_id, dropoff_zone_id, distance_km, duration_min, fare }
+  // ═══════════════════════════════════════════════════════════════════════════════
+  app.post("/api/rides/complete", (req, res) => {
+    try {
+      const { pickup_zone_id, dropoff_zone_id, distance_km, duration_min, fare } = req.body as {
+        pickup_zone_id: string; dropoff_zone_id: string;
+        distance_km: number; duration_min: number; fare: number;
+      };
+
+      if (
+        typeof distance_km !== "number" || typeof duration_min !== "number" ||
+        typeof fare !== "number"
+      ) {
+        return res.status(400).json({ error: "distance_km, duration_min, fare requis (number)" });
+      }
+
+      const profile: any = storage.getDriverProfile() || {};
+      const commPct    = profile.platform_commission_pct ?? 25;
+      const fuelPer100 = profile.fuel_consumption_per100km ?? 7.5;
+      const fuelPrice  = profile.fuel_price_per_liter ?? 1.92;
+      const wearKm     = profile.wear_cost_per_km ?? 0.08;
+
+      const commission = Math.round(fare * (commPct / 100) * 100) / 100;
+      const fuel_cost  = Math.round((distance_km / 100) * fuelPer100 * fuelPrice * 100) / 100;
+      const wear_cost  = Math.round(distance_km * wearKm * 100) / 100;
+      const net_profit = Math.round((fare - commission - fuel_cost - wear_cost) * 100) / 100;
+      const hourly_rate = Math.round((net_profit / Math.max(duration_min, 1)) * 60 * 100) / 100;
+
+      // Seuil 1€/km + 1min/km
+      const is_profitable = fare >= distance_km && duration_min <= distance_km ? 1 : 0;
+      const is_long_ride  = distance_km >= 15 ? 1 : 0;
+
+      const ride = {
+        pickup_zone_id: pickup_zone_id ?? "unknown",
+        dropoff_zone_id: dropoff_zone_id ?? "unknown",
+        distance_km,
+        duration_min,
+        fare,
+        commission,
+        fuel_cost,
+        net_profit,
+        hourly_rate,
+        is_profitable,
+        is_long_ride,
+        timestamp: new Date().toISOString(),
+        weather: null,
+      };
+
+      storage.addRide(ride);
+      storage.generateDynamicAlerts();
+
+      res.json({
+        success: true,
+        ride: { ...ride, wear_cost },
+        stats: storage.getRideStats(),
+      });
+    } catch (err) {
+      console.error("[rides/complete] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
 }
