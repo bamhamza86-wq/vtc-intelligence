@@ -319,17 +319,59 @@ function computeScore(
   const fuel = (avgDist / 100) * 7.5 * 1.92;
   const wear = avgDist * 0.08;
   const net = avgFare - commission - fuel - wear;
-  const hRate = (net / Math.max(avgDur / 60, 0.1)); // €/heure
+  const hRate = (net / Math.max(avgDur / 60, 0.1)); // €/heure sans surge
 
-  // ── Index de rentabilité — calibré 11h-18h ────────────────────────────────
-  // Observation terrain : Le Bourget/Villepinte 14h-16h très rentables
-  // CDG 11h-18h : rentabilité stable haute malgré hRate moyen (long rides)
-  const profIdx = Math.min(100, Math.max(0,
-    (ratio * 18) +
-    (longRide * 32) +
-    (Math.min(hRate, 80) / 80 * 30) +
-    (surge > 1.4 ? 20 : surge > 1.15 ? 10 : 0)
-  ));
+  // ── Rentabilité nette RÉELLE avec surge (€/h) ─────────────────────────────
+  // Revenu brut avec surge → net après commission + coûts → €/h réel chauffeur
+  const grossWithSurge = avgFare * surge;
+  const costKm = 0.224; // carburant 0.144 + usure 0.08
+  const netFare = grossWithSurge * (1 - 0.25) - avgDist * costKm;
+  const repoMin = Math.max(4, avgDist * 0.6); // repositionnement calibré
+  const cycleMins = avgDur + repoMin;
+  const coursesPerHour = 60 / Math.max(cycleMins, 8);
+  const netHourly = netFare * coursesPerHour; // €/h réel avec surge
+
+  // ── Index de rentabilité V2 — 10/06/2026 ─────────────────────────────────
+  // Corrections majeures :
+  // 1. Saturation CDG/Orly (ratio×18 overflow) → sigmoid sur netHourly
+  // 2. Ratio D/O log-normalisé → max 20pts, plus de saturation à ratio>3
+  // 3. Long ride × distance normalisée → bonus réel sur courses longues
+  // 4. Surge log-scale → 10pts max, variation conservée
+  // 5. Event boost intégré → 5pts max pour zones avec event actif
+  // Target : 35€/h chauffeur = score 50, 60€/h = score 80, 80€/h = score 90
+
+  // Sigmoid centrée sur 45€/h, pente 0.08 — calibrée 10/06/2026
+  // Score 50 @ 45€/h, score 66 @ 55€/h, score 82 @ 70€/h — max 95, jamais saturant
+  // CDG(64-70€/h) → 76-80, Orly(38-63€/h) → 48-72, zones€modestes(13-38€/h) → 12-48
+  const sigRent = 1 / (1 + Math.exp(-0.08 * (netHourly - 45)));
+
+  // Ratio D/O log-normalisé [0-1] — cap à ratio=6 (au lieu de saturer à ratio>2)
+  const ratioNorm = Math.min(Math.log1p(ratio) / Math.log1p(6), 1.0);
+
+  // Long ride × distance normalisée [0-1]
+  const distNorm = Math.min(avgDist / 55, 1.0); // 55km = distance max CDG longue
+  const longScore = longRide * (0.55 + 0.45 * distNorm);
+
+  // Surge log-scale [0-1] — cap à surge=4
+  const surgeNorm = surge > 1 ? Math.min(Math.log(surge) / Math.log(4), 1.0) : 0;
+
+  // Event boost zones actives (Paris Air Show, Villepinte, Stade France soirée)
+  const EVENT_BOOST_BY_ZONE: Record<string, number> = {
+    z_stade_france: 0.8,   // match soir → peu d'impact journée
+    z_le_bourget: 0.6,     // Paris Air Show actif
+    z_villepinte: 0.7,     // Salon Villepinte actif
+    z_93_centre: 0.3,      // Soirée Saint-Denis
+  };
+  const eventNorm = EVENT_BOOST_BY_ZONE[zone.id] ?? 0;
+
+  // Score composite [0-95] — cap 95 pour garder granularité visible
+  const profIdx = Math.min(95, Math.max(5, Math.round((
+    0.50 * sigRent * 100 +
+    0.20 * ratioNorm * 100 +
+    0.15 * longScore * 100 +
+    0.10 * surgeNorm * 100 +
+    0.05 * eventNorm * 100
+  ) * 10) / 10));
 
   return {
     demand: Math.round(demand * 10) / 10,

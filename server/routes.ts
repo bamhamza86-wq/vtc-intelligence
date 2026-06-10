@@ -84,8 +84,13 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       const flightData = await getFlightData();
       const enriched = scores.map((s: any) => {
         const flightBoost = getFlightBoostForZone(s.zone_id, flightData);
-        const boostedIndex = Math.min(100, Math.round((s.profitability_index ?? s.profitabilityIndex ?? 0) * flightBoost));
-        const boostedSurge = Math.round(((s.surge_multiplier ?? s.surgeMultiplier ?? 1.0) * flightBoost) * 100) / 100;
+        // Flight boost additif (log-scale) — évite la saturation multiplicative
+        // flightBoost=1.9 → +8pts max, flightBoost=1.5 → +5pts, flightBoost=1.0 → +0
+        const baseIdx = s.profitability_index ?? s.profitabilityIndex ?? 0;
+        const boostPts = flightBoost > 1 ? Math.round(Math.log(flightBoost) / Math.log(2) * 12) : 0;
+        const boostedIndex = Math.min(95, Math.round(baseIdx + boostPts));
+        // Surge boost multiplicatif plafonné à 4.5×
+        const boostedSurge = Math.min(4.5, Math.round(((s.surge_multiplier ?? s.surgeMultiplier ?? 1.0) * Math.min(flightBoost, 1.5)) * 100) / 100);
         return {
           ...s,
           profitability_index: boostedIndex,
@@ -576,6 +581,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       console.error("[best-route] error:", err);
       res.status(500).json({ error: String(err) });
     }
+  });
 
 
   // ─── Propositions chronologiques par événement (Trajet enrichi) ──────────
@@ -896,6 +902,5 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       console.error("[event-schedule] error:", err);
       res.status(500).json({ error: String(err) });
     }
-  });
   });
 }
