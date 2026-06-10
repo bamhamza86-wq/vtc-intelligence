@@ -2,10 +2,10 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { apiRequest } from "@/lib/queryClient";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Navigation, MapPin, TrendingUp, Clock, Zap, Car,
-  RefreshCw, AlertCircle, CheckCircle2, Crosshair, Route
+  RefreshCw, AlertCircle, CheckCircle2, Crosshair, Route,
+  Plane, CalendarClock, ChevronRight, Timer, AlertTriangle
 } from "lucide-react";
 import { UpdateWidget } from "@/components/UpdateWidget";
 
@@ -37,6 +37,45 @@ interface BestRouteResponse {
   computedAt: string;
 }
 
+interface Slot {
+  slotId: string;
+  label: string;
+  eventTime: string;
+  departAt: string;
+  arriveBy: string;
+  etaMin: number;
+  distKm: number;
+  bufferMin: number;
+  urgency: "now" | "soon" | "upcoming" | "later";
+  detail?: string;
+  flightCallsign?: string;
+  flightOrigin?: string;
+}
+
+interface EventBlock {
+  eventId: string | number;
+  eventName: string;
+  zoneId: string;
+  zoneName: string;
+  zoneType: string;
+  zoneLat: number;
+  zoneLng: number;
+  etaMin: number;
+  distKm: number;
+  demandBoost: number;
+  eventType: string;
+  clickedAt: string;
+  slots: Slot[];
+  mapsUrl: string;
+}
+
+interface EventScheduleResponse {
+  userPosition: { lat: number; lng: number };
+  clickedAt: string;
+  computedAt: string;
+  eventBlocks: EventBlock[];
+}
+
 // ─── Helpers couleur ─────────────────────────────────────────────────────────
 
 function getScoreColor(score: number): string {
@@ -55,14 +94,6 @@ function getScoreLabel(score: number): string {
   return "Déconseillé";
 }
 
-function getScoreBg(score: number): string {
-  if (score >= 80) return "bg-green-500/10 border-green-500/30 text-green-400";
-  if (score >= 60) return "bg-green-400/10 border-green-400/30 text-green-300";
-  if (score >= 40) return "bg-yellow-500/10 border-yellow-500/30 text-yellow-400";
-  if (score >= 25) return "bg-orange-500/10 border-orange-500/30 text-orange-400";
-  return "bg-red-500/10 border-red-500/30 text-red-400";
-}
-
 function getZoneTypeIcon(type: string): string {
   const icons: Record<string, string> = {
     airport: "✈️", transport: "🚊", business: "🏢",
@@ -71,74 +102,69 @@ function getZoneTypeIcon(type: string): string {
   return icons[type] || "📍";
 }
 
-// ─── Chargeur Leaflet ─────────────────────────────────────────────────────────
+function getEventTypeIcon(type: string): string {
+  const m: Record<string, string> = {
+    airport: "✈️", match: "⚽", concert: "🎵", salon: "🏛️",
+    festival: "🎪", congres: "🎤", transport: "🚉", flight_wave: "✈️",
+    flight_forecast: "📡",
+  };
+  return m[type] || "📅";
+}
 
-// ─── Carte BestRoute (Google Maps) ───────────────────────────────────────────
+function getUrgencyConfig(urgency: Slot["urgency"]) {
+  switch (urgency) {
+    case "now":      return { color: "#ef4444", bg: "bg-red-500/15",    border: "border-red-500/40",    label: "PARTEZ MAINTENANT", pulse: true };
+    case "soon":     return { color: "#f97316", bg: "bg-orange-500/15", border: "border-orange-500/40", label: "Bientôt",            pulse: true };
+    case "upcoming": return { color: "#fbbf24", bg: "bg-yellow-500/15", border: "border-yellow-500/40", label: "Dans 1h",            pulse: false };
+    case "later":    return { color: "#64748b", bg: "bg-slate-500/10",  border: "border-slate-500/20",  label: "Plus tard",          pulse: false };
+  }
+}
+
+function fmtTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+}
+
+function fmtTimeSec(iso: string): string {
+  return new Date(iso).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function minutesFromNow(iso: string): number {
+  return Math.round((new Date(iso).getTime() - Date.now()) / 60000);
+}
+
+// ─── Carte Google Maps embed ──────────────────────────────────────────────────
 
 function BestRouteMap({ data, selectedIdx }: { data: BestRouteResponse; selectedIdx: number }) {
   const selectedZone = data.top5[selectedIdx];
   const { lat, lng } = data.userPosition;
-
-  // Zoom adapté à la distance
-  const distDeg = Math.max(
-    Math.abs(lat - selectedZone.zone.lat),
-    Math.abs(lng - selectedZone.zone.lng)
-  );
+  const distDeg = Math.max(Math.abs(lat - selectedZone.zone.lat), Math.abs(lng - selectedZone.zone.lng));
   const zoom = distDeg > 0.5 ? 10 : distDeg > 0.2 ? 11 : 12;
-
-  // Google Maps embed centré sur la zone de destination
   const iframeSrc = `https://maps.google.com/maps?q=${selectedZone.zone.lat},${selectedZone.zone.lng}&z=${zoom}&output=embed&hl=fr`;
-
   return (
-    <div className="relative" style={{ height: "320px", borderRadius: "12px", overflow: "hidden" }}>
+    <div className="relative" style={{ height: "280px", borderRadius: "12px", overflow: "hidden" }}>
       <iframe
         key={`map-${selectedZone.zone.id}`}
         title="Google Maps"
         src={iframeSrc}
-        width="100%"
-        height="100%"
+        width="100%" height="100%"
         style={{ border: 0, display: "block" }}
         loading="lazy"
         referrerPolicy="no-referrer-when-downgrade"
         allowFullScreen
       />
-      {/* Overlay liste top5 */}
-      <div className="absolute top-2 left-2 flex flex-col gap-1 pointer-events-none" style={{ maxWidth: "70%" }}>
-        {data.top5.map((z, i) => (
-          <div
-            key={z.zone.id}
-            className="flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-bold"
-            style={{
-              background: i === selectedIdx ? getScoreColor(z.globalScore) : "rgba(15,23,42,0.82)",
-              color: i === selectedIdx ? "#000" : "#94a3b8",
-              border: `1px solid ${i === selectedIdx ? getScoreColor(z.globalScore) : "rgba(148,163,184,0.2)"}`,
-              backdropFilter: "blur(4px)",
-            }}
-          >
-            {i + 1}. {z.zone.name} — {z.distanceKm}km / ~{z.etaMinutes}min
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
 
-// ─── Carte mini GPS en cours (Google Maps) ────────────────────────────────────
-
 function GpsWaitMap({ pos }: { pos: { lat: number; lng: number } | null }) {
   if (!pos) return null;
-  const iframeSrc = `https://maps.google.com/maps?q=${pos.lat},${pos.lng}&z=15&output=embed&hl=fr`;
   return (
-    <div
-      style={{ height: "150px", borderRadius: "10px", overflow: "hidden" }}
-      className="border border-border mt-3"
-    >
+    <div style={{ height: "140px", borderRadius: "10px", overflow: "hidden" }} className="border border-border mt-3">
       <iframe
         key={`gps-${pos.lat}-${pos.lng}`}
         title="Position GPS"
-        src={iframeSrc}
-        width="100%"
-        height="100%"
+        src={`https://maps.google.com/maps?q=${pos.lat},${pos.lng}&z=15&output=embed&hl=fr`}
+        width="100%" height="100%"
         style={{ border: 0, display: "block" }}
         loading="lazy"
         referrerPolicy="no-referrer-when-downgrade"
@@ -147,61 +173,243 @@ function GpsWaitMap({ pos }: { pos: { lat: number; lng: number } | null }) {
   );
 }
 
-// ─── Carte résultat zone sélectionnée ────────────────────────────────────────
+// ─── Top 4 zone card (horizontale) ───────────────────────────────────────────
 
-function ZoneCard({ zone, rank, isSelected, onClick }: {
+function TopZoneCard({ zone, rank, isSelected, onClick }: {
   zone: ZoneResult; rank: number; isSelected: boolean; onClick: () => void;
 }) {
   const color = getScoreColor(zone.globalScore);
   return (
     <div
       onClick={onClick}
-      className={`cursor-pointer rounded-xl border p-3 transition-all duration-200 ${
-        isSelected
-          ? "border-primary bg-primary/5 shadow-lg ring-1 ring-primary/30"
-          : "border-border bg-card hover:border-muted-foreground/40"
+      style={{
+        minWidth: "148px",
+        maxWidth: "148px",
+        borderColor: isSelected ? color : undefined,
+        boxShadow: isSelected ? `0 0 0 2px ${color}40` : undefined,
+      }}
+      className={`cursor-pointer flex-shrink-0 rounded-xl border p-3 transition-all duration-200 ${
+        isSelected ? "bg-primary/5" : "border-border bg-card hover:border-muted-foreground/40"
       }`}
     >
-      <div className="flex items-start gap-3">
-        {/* Rang */}
+      {/* Rank + score */}
+      <div className="flex items-center justify-between mb-2">
         <div
-          className="flex-shrink-0 w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm text-black"
+          className="w-7 h-7 rounded-full flex items-center justify-center font-black text-xs text-black flex-shrink-0"
           style={{ background: color }}
         >
           {rank}
         </div>
+        <div className="text-right">
+          <div className="font-black text-lg leading-none" style={{ color }}>{zone.globalScore}</div>
+          <div className="text-[9px] text-muted-foreground leading-none mt-0.5">{getScoreLabel(zone.globalScore)}</div>
+        </div>
+      </div>
+
+      {/* Zone name */}
+      <div className="flex items-center gap-1 mb-1.5">
+        <span className="text-xs">{getZoneTypeIcon(zone.zone.type)}</span>
+        <span className="text-xs font-semibold leading-tight line-clamp-2">{zone.zone.name}</span>
+      </div>
+
+      {/* Distance + ETA */}
+      <div className="flex flex-col gap-0.5 mb-2">
+        <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+          <MapPin size={9} /> {zone.distanceKm} km
+        </div>
+        <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+          <Clock size={9} /> ~{zone.etaMinutes} min
+        </div>
+        <div className="flex items-center gap-1 text-[10px] text-green-400 font-semibold">
+          <TrendingUp size={9} /> ~{zone.estimatedRevenue}€
+        </div>
+      </div>
+
+      {rank === 1 && (
+        <div className="text-[9px] text-center font-bold px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400">
+          ⭐ TOP
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Slot de positionnement (card chronologique) ─────────────────────────────
+
+function SlotCard({ slot, zoneId, zoneLat, zoneLng, userLat, userLng }: {
+  slot: Slot; zoneId: string; zoneLat: number; zoneLng: number; userLat: number; userLng: number;
+}) {
+  const cfg = getUrgencyConfig(slot.urgency);
+  const minsUntilDepart = minutesFromNow(slot.departAt);
+  const mapsUrl = `https://www.google.com/maps/dir/${userLat},${userLng}/${zoneLat},${zoneLng}`;
+
+  return (
+    <div className={`rounded-xl border p-3 ${cfg.bg} ${cfg.border} transition-all`}>
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="flex-1 min-w-0">
+          <div className="text-xs font-semibold leading-snug mb-0.5">{slot.label}</div>
+          {slot.detail && (
+            <div className="text-[10px] text-muted-foreground">{slot.detail}</div>
+          )}
+        </div>
+        <div
+          className={`flex-shrink-0 text-[9px] font-bold px-2 py-0.5 rounded-full ${cfg.bg} border ${cfg.border} flex items-center gap-1`}
+          style={{ color: cfg.color }}
+        >
+          {cfg.pulse && <span className="w-1.5 h-1.5 rounded-full animate-pulse inline-block" style={{ background: cfg.color }} />}
+          {cfg.label}
+        </div>
+      </div>
+
+      {/* Timeline visuelle */}
+      <div className="grid grid-cols-3 gap-1 mb-2.5">
+        <div className="flex flex-col items-center text-center">
+          <div className="text-[9px] text-muted-foreground mb-0.5">Partez à</div>
+          <div
+            className="text-sm font-black tabular-nums"
+            style={{ color: cfg.color }}
+          >
+            {fmtTime(slot.departAt)}
+          </div>
+          {minsUntilDepart > 0 && (
+            <div className="text-[9px] text-muted-foreground">dans {minsUntilDepart}min</div>
+          )}
+          {minsUntilDepart <= 0 && (
+            <div className="text-[9px] font-bold" style={{ color: cfg.color }}>MAINTENANT</div>
+          )}
+        </div>
+
+        <div className="flex flex-col items-center justify-center">
+          <div className="flex items-center gap-1 text-muted-foreground">
+            <div className="h-px w-4 bg-muted-foreground/40" />
+            <div className="text-[9px] whitespace-nowrap">{slot.etaMin}min</div>
+            <div className="h-px w-4 bg-muted-foreground/40" />
+          </div>
+          <div className="text-[9px] text-muted-foreground">{slot.distKm}km</div>
+        </div>
+
+        <div className="flex flex-col items-center text-center">
+          <div className="text-[9px] text-muted-foreground mb-0.5">Arrivée</div>
+          <div className="text-sm font-black tabular-nums text-blue-400">{fmtTime(slot.arriveBy)}</div>
+          {slot.bufferMin > 0 && (
+            <div className="text-[9px] text-muted-foreground">{slot.bufferMin}min avant</div>
+          )}
+        </div>
+      </div>
+
+      <a
+        href={mapsUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center justify-center gap-1.5 w-full py-1.5 rounded-lg text-[10px] font-semibold text-black transition-opacity hover:opacity-90"
+        style={{ background: cfg.color }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Navigation size={11} />
+        Naviguer maintenant
+      </a>
+    </div>
+  );
+}
+
+// ─── Bloc événement complet ───────────────────────────────────────────────────
+
+function EventBlock({ block, userPos, isExpanded, onToggle }: {
+  block: EventBlock; userPos: { lat: number; lng: number }; isExpanded: boolean; onToggle: () => void;
+}) {
+  const nextSlot = block.slots[0];
+  const nextCfg = nextSlot ? getUrgencyConfig(nextSlot.urgency) : null;
+  const hasUrgent = block.slots.some(s => s.urgency === "now" || s.urgency === "soon");
+
+  return (
+    <div className={`rounded-2xl border overflow-hidden transition-all duration-300 ${
+      hasUrgent ? "border-orange-500/40" : "border-border"
+    }`}>
+      {/* Header cliquable */}
+      <button
+        onClick={onToggle}
+        className="w-full text-left p-4 flex items-center gap-3 hover:bg-muted/30 transition-colors"
+      >
+        {/* Icon type */}
+        <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center text-lg flex-shrink-0">
+          {getEventTypeIcon(block.eventType)}
+        </div>
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 mb-0.5">
-            <span className="text-sm">{getZoneTypeIcon(zone.zone.type)}</span>
-            <span className="font-semibold text-sm truncate">{zone.zone.name}</span>
-            {rank === 1 && <Badge className="text-[10px] px-1.5 py-0 bg-green-500/20 text-green-400 border-green-500/30">⭐ TOP</Badge>}
+            <span className="font-semibold text-sm leading-tight truncate">{block.eventName}</span>
+            {hasUrgent && (
+              <span className="flex-shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-orange-500/20 text-orange-400 border border-orange-500/30">
+                URGENT
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+            <span className="flex items-center gap-0.5"><MapPin size={9} /> {block.distKm}km</span>
+            <span className="flex items-center gap-0.5"><Clock size={9} /> ~{block.etaMin}min</span>
+            {block.demandBoost > 1.1 && (
+              <span className="flex items-center gap-0.5 text-green-400"><Zap size={9} /> ×{block.demandBoost.toFixed(2)}</span>
+            )}
+            <span className="text-[9px] text-muted-foreground/60">
+              {block.slots.length} créneau{block.slots.length > 1 ? "x" : ""}
+            </span>
           </div>
 
-          <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground mb-1">
-            <span className="flex items-center gap-1">
-              <MapPin size={10} /> {zone.distanceKm} km
-            </span>
-            <span className="flex items-center gap-1">
-              <Clock size={10} /> ~{zone.etaMinutes} min
-            </span>
-            <span className="flex items-center gap-1">
-              <Zap size={10} /> ×{zone.surgeMultiplier}
-            </span>
-            <span className="flex items-center gap-1">
-              <TrendingUp size={10} /> {zone.ratioDO.toFixed(2)} D/O
-            </span>
+          {/* Prochain slot résumé */}
+          {nextSlot && !isExpanded && (
+            <div
+              className="mt-1 text-[10px] font-semibold flex items-center gap-1"
+              style={{ color: nextCfg?.color }}
+            >
+              <Timer size={9} />
+              Prochain : départ {fmtTime(nextSlot.departAt)}
+              {minutesFromNow(nextSlot.departAt) > 0
+                ? ` (dans ${minutesFromNow(nextSlot.departAt)}min)`
+                : " · MAINTENANT"
+              }
+            </div>
+          )}
+        </div>
+
+        <ChevronRight
+          size={16}
+          className={`flex-shrink-0 text-muted-foreground transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`}
+        />
+      </button>
+
+      {/* Slots dépliés */}
+      {isExpanded && (
+        <div className="px-4 pb-4 flex flex-col gap-2.5">
+          {/* Timestamp du clic */}
+          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground bg-muted/30 rounded-lg px-3 py-1.5">
+            <Crosshair size={9} className="text-blue-400" />
+            <span>Calculé depuis votre position GPS à <strong className="text-blue-400">{fmtTimeSec(block.clickedAt)}</strong></span>
           </div>
 
-          <p className="text-xs text-muted-foreground italic leading-tight">{zone.reason}</p>
-        </div>
+          {block.slots.map((slot) => (
+            <SlotCard
+              key={slot.slotId}
+              slot={slot}
+              zoneId={block.zoneId}
+              zoneLat={block.zoneLat}
+              zoneLng={block.zoneLng}
+              userLat={userPos.lat}
+              userLng={userPos.lng}
+            />
+          ))}
 
-        <div className="flex-shrink-0 text-right">
-          <div className="font-bold text-base" style={{ color }}>{zone.globalScore}</div>
-          <div className="text-[10px] text-muted-foreground">{getScoreLabel(zone.globalScore)}</div>
-          <div className="text-xs font-medium text-green-400 mt-0.5">~{zone.estimatedRevenue}€</div>
+          {/* Lien navigation général */}
+          <a
+            href={block.mapsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-center gap-2 w-full py-2 rounded-lg text-xs font-semibold border border-border text-muted-foreground hover:border-primary hover:text-primary transition-colors"
+          >
+            <Navigation size={12} />
+            Voir sur Google Maps
+          </a>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -213,57 +421,44 @@ export default function BestRoutePage() {
   const [position, setPosition] = useState<{ lat: number; lng: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<BestRouteResponse | null>(null);
+  const [eventSchedule, setEventSchedule] = useState<EventScheduleResponse | null>(null);
+  const [eventLoading, setEventLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedIdx, setSelectedIdx] = useState(0);
-  const [lastUpdate, setLastUpdate] = useState<string | null>(null);
+  const [expandedEvent, setExpandedEvent] = useState<string | number | null>(null);
   const watchIdRef = useRef<number | null>(null);
+  const lastComputeRef = useRef<number>(0);
+  const lastEventRef = useRef<number>(0);
 
-  // Géolocalisation continue (watch)
+  // Géolocalisation continue
   const startGeolocation = useCallback(() => {
-    if (!navigator.geolocation) {
-      setGpsStatus("error");
-      setError("La géolocalisation n'est pas disponible sur cet appareil.");
-      return;
-    }
+    if (!navigator.geolocation) { setGpsStatus("error"); setError("Géolocalisation non disponible."); return; }
     setGpsStatus("requesting");
     setError(null);
-
-    // Arrêter watch précédent
     if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
-
     watchIdRef.current = navigator.geolocation.watchPosition(
       (pos) => {
-        const newPos = {
+        setPosition({
           lat: Math.round(pos.coords.latitude * 100000) / 100000,
           lng: Math.round(pos.coords.longitude * 100000) / 100000,
-        };
-        setPosition(newPos);
+        });
         setGpsStatus("granted");
       },
       (err) => {
-        if (err.code === 1) {
-          setGpsStatus("denied");
-          setError("Accès à la position refusé. Veuillez autoriser la géolocalisation dans les paramètres de votre navigateur.");
-        } else {
-          setGpsStatus("error");
-          setError(`Erreur GPS : ${err.message}`);
-        }
+        setGpsStatus(err.code === 1 ? "denied" : "error");
+        setError(err.code === 1
+          ? "Accès à la position refusé. Autorisez la géolocalisation dans les paramètres."
+          : `Erreur GPS : ${err.message}`);
       },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 15000,
-        timeout: 20000,
-      }
+      { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
     );
   }, []);
 
-  useEffect(() => {
-    return () => {
-      if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
-    };
+  useEffect(() => () => {
+    if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
   }, []);
 
-  // Calcul du meilleur trajet
+  // Calcul best-route
   const compute = useCallback(async (pos: { lat: number; lng: number }) => {
     setLoading(true);
     setError(null);
@@ -272,7 +467,6 @@ export default function BestRoutePage() {
       const data: BestRouteResponse = await resp.json();
       setResult(data);
       setSelectedIdx(0);
-      setLastUpdate(new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
     } catch (e: any) {
       setError(`Erreur calcul itinéraire : ${e.message}`);
     } finally {
@@ -280,17 +474,36 @@ export default function BestRoutePage() {
     }
   }, []);
 
-  // Auto-calcul quand la position change (max 1 fois / 30s)
-  const lastComputeRef = useRef<number>(0);
+  // Calcul événements
+  const computeEvents = useCallback(async (pos: { lat: number; lng: number }) => {
+    setEventLoading(true);
+    try {
+      const clickedAt = new Date().toISOString();
+      const resp = await apiRequest("POST", "/api/best-route/event-schedule", { ...pos, clickedAt });
+      const data: EventScheduleResponse = await resp.json();
+      setEventSchedule(data);
+    } catch (e: any) {
+      console.warn("Event schedule error:", e.message);
+    } finally {
+      setEventLoading(false);
+    }
+  }, []);
+
+  // Auto-calcul sur changement position (max 1x/30s)
   useEffect(() => {
     if (!position || gpsStatus !== "granted") return;
     const now = Date.now();
     if (now - lastComputeRef.current < 30000 && result) return;
     lastComputeRef.current = now;
     compute(position);
+    // Événements : max 1x/60s
+    if (now - lastEventRef.current > 60000) {
+      lastEventRef.current = now;
+      computeEvents(position);
+    }
   }, [position]);
 
-  // ─── Rendu état initial ────────────────────────────────────────────────────
+  // ─── Etats d'attente ───────────────────────────────────────────────────────
 
   const renderIdle = () => (
     <div className="flex flex-col items-center justify-center py-16 px-6 text-center gap-6">
@@ -300,15 +513,15 @@ export default function BestRoutePage() {
       <div>
         <h2 className="text-xl font-bold mb-2">Meilleur Trajet</h2>
         <p className="text-sm text-muted-foreground max-w-xs">
-          Activez la géolocalisation pour découvrir les zones les plus rentables
-          depuis votre position actuelle, en temps réel.
+          Activez la géolocalisation pour voir les 4 meilleures zones + les créneaux de positionnement
+          pour chaque événement en temps réel.
         </p>
       </div>
       <div className="grid grid-cols-3 gap-3 w-full max-w-xs">
         {[
           { icon: <Crosshair size={16} />, label: "GPS temps réel" },
-          { icon: <TrendingUp size={16} />, label: "Score rentabilité" },
-          { icon: <Navigation size={16} />, label: "Itinéraire optimal" },
+          { icon: <TrendingUp size={16} />, label: "Top 4 zones" },
+          { icon: <CalendarClock size={16} />, label: "Créneaux vols" },
         ].map((f, i) => (
           <div key={i} className="flex flex-col items-center gap-1 p-3 rounded-lg bg-card border border-border text-xs text-muted-foreground">
             <span className="text-primary">{f.icon}</span>
@@ -316,17 +529,11 @@ export default function BestRoutePage() {
           </div>
         ))}
       </div>
-      <Button
-        onClick={startGeolocation}
-        size="lg"
-        className="gap-2 px-8"
-      >
+      <Button onClick={startGeolocation} size="lg" className="gap-2 px-8">
         <Crosshair size={18} />
         Activer la géolocalisation
       </Button>
-      <p className="text-xs text-muted-foreground opacity-60">
-        Fonctionne sur téléphone et ordinateur · Position jamais stockée
-      </p>
+      <p className="text-xs text-muted-foreground opacity-60">Position jamais stockée</p>
     </div>
   );
 
@@ -335,9 +542,7 @@ export default function BestRoutePage() {
       <div className="w-16 h-16 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
       <div>
         <p className="font-semibold">Acquisition de la position…</p>
-        <p className="text-sm text-muted-foreground mt-1">
-          Autorisez l'accès à votre position dans le popup du navigateur.
-        </p>
+        <p className="text-sm text-muted-foreground mt-1">Autorisez l'accès à votre position.</p>
       </div>
       {position && (
         <>
@@ -364,109 +569,56 @@ export default function BestRoutePage() {
     </div>
   );
 
+  // ─── Rendu résultat ────────────────────────────────────────────────────────
+
   const renderResult = (data: BestRouteResponse) => (
-    <div className="flex flex-col gap-4 pb-6">
-      {/* Header position + rafraîchissement */}
-      <div className="flex flex-col gap-1.5 px-4 pt-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full bg-blue-400 shadow-[0_0_0_4px_rgba(59,130,246,0.2)] animate-pulse" />
-            <span className="text-xs text-muted-foreground">
-              {data.userPosition.lat.toFixed(4)}, {data.userPosition.lng.toFixed(4)}
-            </span>
-            <span className="text-[10px] text-muted-foreground opacity-50">
-              {data.hour}h — {data.dayType}
-            </span>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => position && compute(position)}
-            disabled={loading}
-            className="h-7 gap-1.5 text-xs"
-          >
-            <RefreshCw size={12} className={loading ? "animate-spin" : ""} />
-            {loading ? "Calcul…" : "Rafraîchir"}
-          </Button>
+    <div className="flex flex-col gap-5 pb-8">
+
+      {/* ── Header position ────────────────────────────────────────────────────── */}
+      <div className="flex items-center justify-between px-4 pt-3">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_0_4px_rgba(59,130,246,0.2)] animate-pulse" />
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {data.userPosition.lat.toFixed(4)}, {data.userPosition.lng.toFixed(4)}
+          </span>
+          <span className="text-[10px] text-muted-foreground opacity-50">
+            {data.hour}h — {data.dayType === "weekday" ? "Semaine" : "Week-end"}
+          </span>
         </div>
-        {/* Widget MAJ Google Maps — compact dans le contexte résultat */}
+        <Button
+          variant="outline" size="sm"
+          onClick={() => position && (compute(position), computeEvents(position))}
+          disabled={loading || eventLoading}
+          className="h-7 gap-1.5 text-xs"
+        >
+          <RefreshCw size={12} className={(loading || eventLoading) ? "animate-spin" : ""} />
+          {(loading || eventLoading) ? "Calcul…" : "Rafraîchir"}
+        </Button>
+      </div>
+
+      <div className="px-4">
         <UpdateWidget compact={true} className="w-full" />
       </div>
 
-      {/* Carte */}
+      {/* ── TOP 4 ZONES — Scroll horizontal ─────────────────────────────────── */}
       <div className="px-4">
-        <BestRouteMap data={data} selectedIdx={selectedIdx} />
-      </div>
-
-      {/* Recommandation principale */}
-      <div className="px-4">
-        <div
-          className="rounded-2xl border p-4 relative overflow-hidden"
-          style={{
-            background: `linear-gradient(135deg, ${getScoreColor(data.recommendation.globalScore)}15, transparent)`,
-            borderColor: `${getScoreColor(data.recommendation.globalScore)}40`,
-          }}
-        >
-          <div className="flex items-start justify-between mb-3">
-            <div>
-              <div className="flex items-center gap-2 mb-0.5">
-                <span className="text-lg">{getZoneTypeIcon(data.recommendation.zone.type)}</span>
-                <span className="font-bold text-base">{data.recommendation.zone.name}</span>
-                <Badge className="text-[10px] bg-green-500/20 text-green-400 border-green-500/30">⭐ RECOMMANDÉ</Badge>
-              </div>
-              <p className="text-xs text-muted-foreground italic">{data.recommendation.reason}</p>
-            </div>
-            <div className="text-right flex-shrink-0 ml-3">
-              <div
-                className="text-3xl font-black leading-none"
-                style={{ color: getScoreColor(data.recommendation.globalScore) }}
-              >
-                {data.recommendation.globalScore}
-              </div>
-              <div className="text-xs text-muted-foreground">{getScoreLabel(data.recommendation.globalScore)}</div>
-            </div>
+        <div className="flex items-center gap-2 mb-3">
+          <TrendingUp size={14} className="text-primary" />
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+            Top 4 zones rentables
+          </h2>
+          <div className="text-[10px] text-muted-foreground opacity-50">
+            depuis {data.userPosition.lat.toFixed(3)}, {data.userPosition.lng.toFixed(3)}
           </div>
-
-          <div className="grid grid-cols-4 gap-2">
-            {[
-              { icon: <MapPin size={13} />, label: "Distance route", value: `${data.recommendation.distanceKm} km` },
-              { icon: <Clock size={13} />, label: "ETA", value: `~${data.recommendation.etaMinutes} min` },
-              { icon: <Zap size={13} />, label: "Surge", value: `×${data.recommendation.surgeMultiplier}` },
-              { icon: <Car size={13} />, label: "Tarif moy.", value: `~${data.recommendation.estimatedRevenue}€` },
-            ].map((m, i) => (
-              <div key={i} className="flex flex-col items-center gap-0.5 p-2 rounded-lg bg-background/50">
-                <span className="text-primary">{m.icon}</span>
-                <span className="text-[10px] text-muted-foreground">{m.label}</span>
-                <span className="text-xs font-bold">{m.value}</span>
-              </div>
-            ))}
-          </div>
-
-          {/* Lien navigation externe */}
-          <a
-            href={`https://www.google.com/maps/dir/${data.userPosition.lat},${data.userPosition.lng}/${data.recommendation.zone.lat},${data.recommendation.zone.lng}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-3 flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-semibold transition-colors"
-            style={{
-              background: getScoreColor(data.recommendation.globalScore),
-              color: "#000",
-            }}
-          >
-            <Navigation size={15} />
-            Ouvrir dans Google Maps
-          </a>
         </div>
-      </div>
 
-      {/* Top 5 */}
-      <div className="px-4">
-        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-          Top 5 zones rentables depuis votre position
-        </h3>
-        <div className="flex flex-col gap-2">
-          {data.top5.map((z, i) => (
-            <ZoneCard
+        {/* Scroll horizontal */}
+        <div
+          className="flex gap-3 overflow-x-auto pb-2"
+          style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
+        >
+          {data.top5.slice(0, 4).map((z, i) => (
+            <TopZoneCard
               key={z.zone.id}
               zone={z}
               rank={i + 1}
@@ -475,29 +627,129 @@ export default function BestRoutePage() {
             />
           ))}
         </div>
+
+        {/* Description zone sélectionnée */}
+        {data.top5[selectedIdx] && (
+          <div className="mt-3 p-3 rounded-xl border border-border bg-card">
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <div className="flex items-center gap-2">
+                <span className="text-base">{getZoneTypeIcon(data.top5[selectedIdx].zone.type)}</span>
+                <div>
+                  <div className="font-semibold text-sm">{data.top5[selectedIdx].zone.name}</div>
+                  <p className="text-[10px] text-muted-foreground italic mt-0.5">{data.top5[selectedIdx].reason}</p>
+                </div>
+              </div>
+              <div className="text-right flex-shrink-0">
+                <div className="font-black text-xl leading-none" style={{ color: getScoreColor(data.top5[selectedIdx].globalScore) }}>
+                  {data.top5[selectedIdx].globalScore}
+                </div>
+                <div className="text-[10px] text-muted-foreground">{getScoreLabel(data.top5[selectedIdx].globalScore)}</div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-4 gap-2 mb-3">
+              {[
+                { icon: <MapPin size={11} />, label: "Route", value: `${data.top5[selectedIdx].distanceKm}km` },
+                { icon: <Clock size={11} />, label: "ETA", value: `~${data.top5[selectedIdx].etaMinutes}min` },
+                { icon: <Zap size={11} />, label: "Surge", value: `×${data.top5[selectedIdx].surgeMultiplier}` },
+                { icon: <Car size={11} />, label: "Tarif", value: `~${data.top5[selectedIdx].estimatedRevenue}€` },
+              ].map((m, i) => (
+                <div key={i} className="flex flex-col items-center gap-0.5 p-2 rounded-lg bg-background/50 text-center">
+                  <span className="text-primary">{m.icon}</span>
+                  <span className="text-[9px] text-muted-foreground">{m.label}</span>
+                  <span className="text-xs font-bold">{m.value}</span>
+                </div>
+              ))}
+            </div>
+
+            <a
+              href={`https://www.google.com/maps/dir/${data.userPosition.lat},${data.userPosition.lng}/${data.top5[selectedIdx].zone.lat},${data.top5[selectedIdx].zone.lng}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-semibold text-black transition-opacity hover:opacity-90"
+              style={{ background: getScoreColor(data.top5[selectedIdx].globalScore) }}
+            >
+              <Navigation size={14} />
+              Ouvrir dans Google Maps
+            </a>
+          </div>
+        )}
       </div>
 
-      {/* Métadonnées */}
+      {/* ── Carte ──────────────────────────────────────────────────────────────── */}
       <div className="px-4">
-        <div className="text-[10px] text-muted-foreground opacity-50 text-center">
-          Calculé à {new Date(data.computedAt).toLocaleTimeString("fr-FR")} ·
-          Heure : {data.hour}h · {data.dayType === "weekday" ? "Jour semaine" : "Week-end"} ·
-          Mise à jour auto toutes les 30s
+        <BestRouteMap data={data} selectedIdx={selectedIdx} />
+      </div>
+
+      {/* ── ÉVÉNEMENTS — Propositions chronologiques ─────────────────────────── */}
+      <div className="px-4">
+        <div className="flex items-center gap-2 mb-3">
+          <CalendarClock size={14} className="text-primary" />
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+            Événements — Créneaux de positionnement
+          </h2>
+          {eventLoading && (
+            <RefreshCw size={10} className="animate-spin text-muted-foreground ml-auto" />
+          )}
         </div>
+
+        {!eventSchedule && !eventLoading && (
+          <div className="rounded-xl border border-dashed border-border p-6 text-center">
+            <p className="text-xs text-muted-foreground">Chargement des événements…</p>
+          </div>
+        )}
+
+        {eventSchedule && eventSchedule.eventBlocks.length === 0 && (
+          <div className="rounded-xl border border-dashed border-border p-6 text-center">
+            <CalendarClock size={24} className="text-muted-foreground mx-auto mb-2" />
+            <p className="text-xs text-muted-foreground">Aucun événement actif avec créneau disponible dans les 3h.</p>
+          </div>
+        )}
+
+        {eventSchedule && eventSchedule.eventBlocks.length > 0 && (
+          <div className="flex flex-col gap-3">
+            {/* Alerte si slot "now" ou "soon" */}
+            {eventSchedule.eventBlocks.some(b => b.slots.some(s => s.urgency === "now" || s.urgency === "soon")) && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-orange-500/10 border border-orange-500/30 text-xs text-orange-400">
+                <AlertTriangle size={13} />
+                <span className="font-semibold">Positionnement urgent recommandé sur une ou plusieurs zones</span>
+              </div>
+            )}
+
+            {eventSchedule.eventBlocks.map((block) => (
+              <EventBlock
+                key={block.eventId}
+                block={block}
+                userPos={data.userPosition}
+                isExpanded={expandedEvent === block.eventId}
+                onToggle={() => setExpandedEvent(prev => prev === block.eventId ? null : block.eventId)}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Note de calcul */}
+        {eventSchedule && (
+          <div className="mt-3 text-[10px] text-muted-foreground opacity-50 text-center">
+            Créneaux calculés à {fmtTimeSec(eventSchedule.computedAt)} ·
+            Position GPS : {eventSchedule.userPosition.lat.toFixed(4)}, {eventSchedule.userPosition.lng.toFixed(4)} ·
+            Mise à jour auto toutes les 60s
+          </div>
+        )}
       </div>
     </div>
   );
 
   return (
     <div className="min-h-full">
-      {/* Titre page */}
+      {/* Header sticky */}
       <div className="sticky top-0 z-30 bg-background/95 backdrop-blur border-b border-border px-4 py-3">
         <div className="flex items-center gap-2">
           <Route size={18} className="text-primary" />
           <div>
             <h1 className="font-bold text-sm leading-none">Meilleur Trajet</h1>
             <p className="text-[10px] text-muted-foreground mt-0.5">
-              Zone la plus rentable depuis votre position GPS
+              Top 4 zones + créneaux événements depuis votre GPS
             </p>
           </div>
           {gpsStatus === "granted" && position && (
@@ -509,7 +761,6 @@ export default function BestRoutePage() {
         </div>
       </div>
 
-      {/* Contenu selon état */}
       {gpsStatus === "idle" && renderIdle()}
       {gpsStatus === "requesting" && !result && renderRequesting()}
       {(gpsStatus === "denied" || gpsStatus === "error") && !result && renderDenied()}
@@ -524,7 +775,6 @@ export default function BestRoutePage() {
           <p className="text-sm text-muted-foreground">Calcul des zones rentables…</p>
         </div>
       )}
-      <UpdateWidget compact={true} className="mx-4 mt-2" />
       {result && renderResult(result)}
     </div>
   );

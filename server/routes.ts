@@ -576,5 +576,326 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       console.error("[best-route] error:", err);
       res.status(500).json({ error: String(err) });
     }
+
+
+  // ─── Propositions chronologiques par événement (Trajet enrichi) ──────────
+  // POST /api/best-route/event-schedule
+  // Body: { lat: number, lng: number, clickedAt: string (ISO) }
+  // Retourne, pour chaque événement actif, la liste des créneaux de positionnement
+  // triés chronologiquement avec heure de départ recommandée depuis la position GPS.
+  app.post("/api/best-route/event-schedule", async (req, res) => {
+    try {
+      const { lat, lng, clickedAt } = req.body as { lat: number; lng: number; clickedAt: string };
+      if (typeof lat !== "number" || typeof lng !== "number") {
+        return res.status(400).json({ error: "lat et lng requis" });
+      }
+
+      const clickTs = clickedAt ? new Date(clickedAt) : new Date();
+      const now = new Date();
+      const zones = storage.getAllZones() as any[];
+      const zoneMap: any = Object.fromEntries(zones.map((z: any) => [z.id, z]));
+
+      // ── Haversine helper ─────────────────────────────────────────────────────
+      const haversineKm = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
+        const R = 6371;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLng = (lng2 - lng1) * Math.PI / 180;
+        const a = Math.sin(dLat / 2) ** 2 +
+          Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+          Math.sin(dLng / 2) ** 2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      };
+
+      // ETA vers une zone (utilise le routingCache en priorité)
+      const getEtaToZone = (zoneId: string, zLat: number, zLng: number): { etaMin: number; distKm: number } => {
+        const cached = getCachedRoute(zoneId, lat, lng);
+        if (cached.etaMin > 0 && cached.roadKm > 0) {
+          return { etaMin: cached.etaMin, distKm: cached.roadKm };
+        }
+        const straightKm = haversineKm(lat, lng, zLat, zLng);
+        const road = Math.round(straightKm * (ROAD_FACTOR[zoneId] ?? 1.35) * 10) / 10;
+        const eta = Math.max(3, Math.round(road / 20 * 60));
+        return { etaMin: eta, distKm: road };
+      };
+
+      // ── Données de vols ───────────────────────────────────────────────────────
+      let flightData: any = null;
+      try { flightData = await getFlightData(); } catch {}
+
+      // ── Événements statiques DB ───────────────────────────────────────────────
+      const dbEvents = storage.getActiveEvents() as any[];
+
+      // ── Construction des blocs par événement ──────────────────────────────────
+      interface Slot {
+        slotId: string;
+        label: string;          // ex: "Vol AF447 — 14h35"
+        eventTime: string;      // ISO — heure de l'événement réel (atterrissage, concert, etc.)
+        departAt: string;       // ISO — quand le chauffeur doit partir
+        arriveBy: string;       // ISO — heure d'arrivée prévue sur zone
+        etaMin: number;
+        distKm: number;
+        bufferMin: number;      // marge tampon avant l'événement
+        urgency: "now" | "soon" | "upcoming" | "later";
+        detail?: string;        // infos complémentaires (provenance vol, etc.)
+        flightCallsign?: string;
+        flightOrigin?: string;
+      }
+
+      interface EventBlock {
+        eventId: string | number;
+        eventName: string;
+        zoneId: string;
+        zoneName: string;
+        zoneType: string;
+        zoneLat: number;
+        zoneLng: number;
+        etaMin: number;
+        distKm: number;
+        demandBoost: number;
+        eventType: string;
+        clickedAt: string;      // timestamp exact du clic chauffeur
+        slots: Slot[];          // propositions chronologiques
+        mapsUrl: string;
+      }
+
+      const eventBlocks: EventBlock[] = [];
+
+      // ── Helper urgency ─────────────────────────────────────────────────────────
+      const computeUrgency = (departAt: Date): Slot["urgency"] => {
+        const diffMin = (departAt.getTime() - now.getTime()) / 60000;
+        if (diffMin <= 5) return "now";
+        if (diffMin <= 20) return "soon";
+        if (diffMin <= 60) return "upcoming";
+        return "later";
+      };
+
+      const fmtTime = (d: Date) =>
+        d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+      // ── 1. Événements AÉROPORTS (CDG + Orly) avec vols réels ─────────────────
+      const airportZones = [
+        { id: "z_cdg",  label: "CDG — Charles-de-Gaulle", lat: 49.0097, lng: 2.5479, bufferMin: 20 },
+        { id: "z_orly", label: "Orly — Terminal Sud/Ouest", lat: 48.7262, lng: 2.3652, bufferMin: 15 },
+      ];
+
+      for (const ap of airportZones) {
+        const { etaMin, distKm } = getEtaToZone(ap.id, ap.lat, ap.lng);
+        const airportFlights = flightData?.flights?.filter((f: any) => f.airport === (ap.id === "z_cdg" ? "CDG" : "ORLY")) || [];
+        const apStats = ap.id === "z_cdg" ? flightData?.cdg : flightData?.orly;
+
+        // Générer les slots depuis les vols réels/simulés (triés par heure d'arrivée)
+        const slots: Slot[] = [];
+
+        if (airportFlights.length > 0) {
+          // Trier les vols par heure d'arrivée estimée
+          const sorted = [...airportFlights].sort((a: any, b: any) =>
+            (a.arrival_time || 0) - (b.arrival_time || 0)
+          );
+
+          for (const flight of sorted.slice(0, 6)) {
+            const arrEpoch = flight.arrival_time ? flight.arrival_time * 1000 : now.getTime() + 30 * 60000;
+            const arrivalDate = new Date(arrEpoch);
+
+            // Heure de départ = heure d'arrivée vol - ETA chauffeur - buffer
+            const departTs = new Date(arrivalDate.getTime() - (etaMin + ap.bufferMin) * 60000);
+            const arriveTs = new Date(departTs.getTime() + etaMin * 60000);
+
+            // Ne garder que les slots futurs (département dans les 3h)
+            const diffMin = (departTs.getTime() - now.getTime()) / 60000;
+            if (diffMin < -5 || diffMin > 180) continue;
+
+            slots.push({
+              slotId: `${ap.id}_${flight.callsign}`,
+              label: `✈️ ${flight.callsign} — arrivée ${fmtTime(arrivalDate)}`,
+              eventTime: arrivalDate.toISOString(),
+              departAt: departTs.toISOString(),
+              arriveBy: arriveTs.toISOString(),
+              etaMin,
+              distKm,
+              bufferMin: ap.bufferMin,
+              urgency: computeUrgency(departTs),
+              detail: flight.origin_airport ? `Provenance : ${flight.origin_airport}` : undefined,
+              flightCallsign: flight.callsign,
+              flightOrigin: flight.origin_airport,
+            });
+          }
+        }
+
+        // Toujours ajouter des slots heuristiques basés sur la prochaine vague
+        if (apStats?.next_wave_eta) {
+          const waveDate = new Date(apStats.next_wave_eta);
+          const departTs = new Date(waveDate.getTime() - (etaMin + ap.bufferMin) * 60000);
+          const arriveTs = new Date(departTs.getTime() + etaMin * 60000);
+          const diffMin = (departTs.getTime() - now.getTime()) / 60000;
+          if (diffMin > -5 && diffMin < 180) {
+            slots.push({
+              slotId: `${ap.id}_wave`,
+              label: `🌊 Vague d'arrivées — ${fmtTime(waveDate)}`,
+              eventTime: waveDate.toISOString(),
+              departAt: departTs.toISOString(),
+              arriveBy: arriveTs.toISOString(),
+              etaMin,
+              distKm,
+              bufferMin: ap.bufferMin,
+              urgency: computeUrgency(departTs),
+              detail: `${apStats.arrivals_next_hour} arrivées/h prévues — ${apStats.peak_level?.toUpperCase()}`,
+            });
+          }
+        }
+
+        // Fallback : créneaux toutes les 30min si pas de données
+        if (slots.length === 0) {
+          for (let delta = 30; delta <= 150; delta += 30) {
+            const eventDate = new Date(now.getTime() + delta * 60000);
+            const departTs = new Date(eventDate.getTime() - (etaMin + ap.bufferMin) * 60000);
+            const arriveTs = new Date(departTs.getTime() + etaMin * 60000);
+            if ((departTs.getTime() - now.getTime()) / 60000 < -5) continue;
+            slots.push({
+              slotId: `${ap.id}_t${delta}`,
+              label: `🕐 Créneau estimé — ${fmtTime(eventDate)}`,
+              eventTime: eventDate.toISOString(),
+              departAt: departTs.toISOString(),
+              arriveBy: arriveTs.toISOString(),
+              etaMin, distKm, bufferMin: ap.bufferMin,
+              urgency: computeUrgency(departTs),
+            });
+          }
+        }
+
+        // Trier par heure de départ
+        slots.sort((a, b) => new Date(a.departAt).getTime() - new Date(b.departAt).getTime());
+
+        if (slots.length > 0) {
+          eventBlocks.push({
+            eventId: ap.id,
+            eventName: ap.label,
+            zoneId: ap.id,
+            zoneName: ap.label,
+            zoneType: "airport",
+            zoneLat: ap.lat,
+            zoneLng: ap.lng,
+            etaMin,
+            distKm,
+            demandBoost: apStats?.vtc_demand_boost ?? 1.0,
+            eventType: "airport",
+            clickedAt: clickTs.toISOString(),
+            slots,
+            mapsUrl: `https://www.google.com/maps/dir/${lat},${lng}/${ap.lat},${ap.lng}`,
+          });
+        }
+      }
+
+      // ── 2. Événements statiques (matchs, concerts, salons) ────────────────────
+      for (const ev of dbEvents) {
+        // Skip les événements aéroport déjà traités
+        if (ev.zone_id === "z_cdg" || ev.zone_id === "z_orly") continue;
+
+        const zone = zoneMap[ev.zone_id];
+        if (!zone) continue;
+
+        const { etaMin, distKm } = getEtaToZone(zone.id, zone.lat, zone.lng);
+        const evStart = new Date(ev.start_time);
+        const evEnd = ev.end_time ? new Date(ev.end_time) : new Date(evStart.getTime() + 3 * 3600000);
+
+        // Buffer selon type d'événement
+        const bufferMap: Record<string, number> = {
+          match: 30, concert: 25, salon: 20, festival: 20,
+          congres: 15, transport: 10, default: 15
+        };
+        const bufferMin = bufferMap[ev.event_type] || bufferMap.default;
+
+        const slots: Slot[] = [];
+
+        // Slot 1 : Positionnement avant le début (entrée du public)
+        const preStart = new Date(evStart.getTime() - bufferMin * 60000);
+        const departPre = new Date(preStart.getTime() - etaMin * 60000);
+        if ((departPre.getTime() - now.getTime()) / 60000 > -10 &&
+            (departPre.getTime() - now.getTime()) / 60000 < 240) {
+          slots.push({
+            slotId: `${ev.id}_pre`,
+            label: `🟢 Avant début — arrivée prévue ${fmtTime(preStart)}`,
+            eventTime: evStart.toISOString(),
+            departAt: departPre.toISOString(),
+            arriveBy: new Date(departPre.getTime() + etaMin * 60000).toISOString(),
+            etaMin, distKm, bufferMin,
+            urgency: computeUrgency(departPre),
+            detail: `${ev.expected_attendance ? ev.expected_attendance.toLocaleString("fr-FR") + " personnes attendues" : ""}`,
+          });
+        }
+
+        // Slot 2 : Mi-événement (rotation chauffeurs)
+        const midEvent = new Date((evStart.getTime() + evEnd.getTime()) / 2);
+        const departMid = new Date(midEvent.getTime() - etaMin * 60000);
+        if ((departMid.getTime() - now.getTime()) / 60000 > -10 &&
+            (departMid.getTime() - now.getTime()) / 60000 < 240) {
+          slots.push({
+            slotId: `${ev.id}_mid`,
+            label: `🔄 Mi-événement — ${fmtTime(midEvent)}`,
+            eventTime: midEvent.toISOString(),
+            departAt: departMid.toISOString(),
+            arriveBy: new Date(departMid.getTime() + etaMin * 60000).toISOString(),
+            etaMin, distKm, bufferMin: 0,
+            urgency: computeUrgency(departMid),
+            detail: "Rotation — bonne densité de demande",
+          });
+        }
+
+        // Slot 3 : Fin d'événement (sortie masse)
+        const departEnd = new Date(evEnd.getTime() - etaMin * 60000 - 10 * 60000);
+        if ((departEnd.getTime() - now.getTime()) / 60000 > -10 &&
+            (departEnd.getTime() - now.getTime()) / 60000 < 240) {
+          slots.push({
+            slotId: `${ev.id}_end`,
+            label: `🏁 Sortie — ${fmtTime(evEnd)}`,
+            eventTime: evEnd.toISOString(),
+            departAt: departEnd.toISOString(),
+            arriveBy: new Date(departEnd.getTime() + etaMin * 60000).toISOString(),
+            etaMin, distKm, bufferMin: 10,
+            urgency: computeUrgency(departEnd),
+            detail: "Pic de demande à la sortie",
+          });
+        }
+
+        slots.sort((a, b) => new Date(a.departAt).getTime() - new Date(b.departAt).getTime());
+
+        if (slots.length > 0) {
+          eventBlocks.push({
+            eventId: ev.id,
+            eventName: ev.name,
+            zoneId: ev.zone_id,
+            zoneName: zone.name,
+            zoneType: zone.type || "entertainment",
+            zoneLat: zone.lat,
+            zoneLng: zone.lng,
+            etaMin,
+            distKm,
+            demandBoost: ev.demand_boost ?? 1.0,
+            eventType: ev.event_type,
+            clickedAt: clickTs.toISOString(),
+            slots,
+            mapsUrl: `https://www.google.com/maps/dir/${lat},${lng}/${zone.lat},${zone.lng}`,
+          });
+        }
+      }
+
+      // Trier les blocs par prochain slot disponible
+      eventBlocks.sort((a, b) => {
+        const aNext = a.slots[0]?.departAt || "9999";
+        const bNext = b.slots[0]?.departAt || "9999";
+        return aNext.localeCompare(bNext);
+      });
+
+      res.json({
+        userPosition: { lat, lng },
+        clickedAt: clickTs.toISOString(),
+        computedAt: new Date().toISOString(),
+        eventBlocks,
+      });
+
+    } catch (err) {
+      console.error("[event-schedule] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
   });
 }
