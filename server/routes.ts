@@ -903,4 +903,354 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       res.status(500).json({ error: String(err) });
     }
   });
+
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // POST /api/smart-plan
+  // Planification intelligente : croise vols temps réel CDG/Orly, position GPS,
+  // alertes top4, chronologie journée et calcule le créneau optimal de départ.
+  // Body: { lat: number, lng: number, clickedAt: string (ISO) }
+  // ═════════════════════════════════════════════════════════════════════════════
+  app.post("/api/smart-plan", async (req, res) => {
+    try {
+      const { lat, lng, clickedAt } = req.body as { lat: number; lng: number; clickedAt: string };
+      if (typeof lat !== "number" || typeof lng !== "number") {
+        return res.status(400).json({ error: "lat et lng requis" });
+      }
+
+      const clickTs    = clickedAt ? new Date(clickedAt) : new Date();
+      const now        = new Date();
+      const hour       = now.getHours();
+      const dayType    = [0, 6].includes(now.getDay()) ? "weekend" : "weekday";
+      const dayOfWeek  = now.getDay();
+
+      // ── Helpers puṙement locaux ──────────────────────────────────────────────
+      const haversineKm = (la1: number, ln1: number, la2: number, ln2: number) => {
+        const R = 6371, dLat = (la2 - la1) * Math.PI / 180, dLng = (ln2 - ln1) * Math.PI / 180;
+        const a = Math.sin(dLat / 2) ** 2 + Math.cos(la1 * Math.PI / 180) * Math.cos(la2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      };
+
+      const etaToZone = (zoneId: string, zLat: number, zLng: number): { etaMin: number; distKm: number } => {
+        const cached = getCachedRoute(zoneId, lat, lng);
+        if (cached.etaMin > 0 && cached.roadKm > 0) return { etaMin: cached.etaMin, distKm: cached.roadKm };
+        const straight = haversineKm(lat, lng, zLat, zLng);
+        const road     = Math.round(straight * (ROAD_FACTOR[zoneId] ?? 1.35) * 10) / 10;
+        const eta      = Math.max(3, Math.round(road / 20 * 60));
+        return { etaMin: eta, distKm: road };
+      };
+
+      const addMins = (base: Date, mins: number): Date => new Date(base.getTime() + mins * 60000);
+      const fmt     = (d: Date) => d.toISOString();
+      const fmtHM   = (d: Date) => d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Paris" });
+
+      // ── Données de vols (étapes) ────────────────────────────────────────────
+      let flightData: any = null;
+      try { flightData = await getFlightData(); } catch {}
+
+      // ── Zones de référence (étapes) ─────────────────────────────────────────
+      const zones = storage.getAllZones() as any[];
+      const zoneMap: Record<string, any> = Object.fromEntries(zones.map((z: any) => [z.id, z]));
+
+      // ── Alertes top 4 actives (étapes) ─────────────────────────────────────
+      const allAlerts = storage.getActiveAlerts() as any[];
+      const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
+      const top4Alerts = allAlerts
+        .filter((a: any) => !a.is_read && new Date(a.expires_at) > now)
+        .sort((a: any, b: any) => (PRIORITY_ORDER[a.priority as keyof typeof PRIORITY_ORDER] ?? 4) - (PRIORITY_ORDER[b.priority as keyof typeof PRIORITY_ORDER] ?? 4))
+        .slice(0, 4)
+        .map((a: any) => ({
+          id:               a.id,
+          type:             a.type,
+          title:            a.title,
+          message:          a.message,
+          zone_id:          a.zone_id,
+          priority:         a.priority,
+          estimated_revenue: a.estimated_revenue,
+          expires_at:       a.expires_at,
+          created_at:       a.created_at,
+          is_read:          a.is_read,
+          // Enrichir avec ETA depuis position GPS
+          ...(a.zone_id && zoneMap[a.zone_id] ? (() => {
+            const z = zoneMap[a.zone_id];
+            const { etaMin, distKm } = etaToZone(a.zone_id, z.lat, z.lng);
+            const departAt = addMins(now, Math.max(0, etaMin - 3));
+            return { etaMin, distKm, departAt: fmt(departAt), departAtHM: fmtHM(departAt) };
+          })() : {}),
+        }));
+
+      // ── Scores horairesp our chaque heure 6h-23h (étapes) ─────────────────
+      const AIRPORT_ZONES = [
+        { id: "z_cdg",  ap: "CDG", buffer: 20 },
+        { id: "z_orly", ap: "ORLY", buffer: 15 },
+      ];
+
+      // ── Événements DB actifs (étapes) ───────────────────────────────────────
+      const dbEvents = storage.getActiveEvents() as any[];
+
+      // ── CHRONOLOGIE JOURNÉE ──────────────────────────────────────────────
+      // Construit une timeline heure par heure jusqu'à 23h (depuis l'heure actuelle)
+      // en croisant : vols CDG/Orly + événements DB + pattern heuristique
+      interface TimelineEntry {
+        time:          string;          // ISO
+        timeHM:        string;          // "HH:MM"
+        hour:          number;
+        type:          "flight_wave" | "event_start" | "event_end" | "peak_start" | "peak_end" | "rush" | "dead_zone";
+        label:         string;
+        zoneId:        string;
+        zoneName:      string;
+        etaMin:        number;
+        distKm:        number;
+        expectedDemand:  number;         // score 0-100
+        estimatedRevenue: number;        // €/h estimé
+        recommendation: string;          // texte action
+        priority:      "critical" | "high" | "medium" | "low";
+        departAt:      string;           // ISO
+        departAtHM:    string;           // "HH:MM"
+        flightData?:   { arrivals: number; peak: string; nextWave?: string; paxVtc: number };
+        isNow:         boolean;
+        isPast:        boolean;
+      }
+
+      const timeline: TimelineEntry[] = [];
+
+      // — Vols CDG/Orly : scanner chaque heure restante dans la journée
+      const CDG_PAX_PER_FLIGHT_RATE = 165 * 0.12;  // ~20 passagers VTC/vol
+      const ORLY_PAX_PER_FLIGHT_RATE = 140 * 0.09; // ~13 passagers VTC/vol
+
+      const CDG_HOURLY: Record<number, number> = {
+        6:12, 7:18, 8:22, 9:24, 10:26, 11:24, 12:22, 13:24, 14:26, 15:28, 16:30, 17:28, 18:26, 19:24, 20:22, 21:18, 22:12, 23:6
+      };
+      const ORLY_HOURLY: Record<number, number> = {
+        6:2, 7:6, 8:10, 9:12, 10:10, 11:8, 12:8, 13:10, 14:12, 15:14, 16:16, 17:14, 18:12, 19:10, 20:8, 21:6, 22:4, 23:2
+      };
+
+      // ETA vers CDG et Orly depuis la position actuelle
+      const cdgZone  = zoneMap["z_cdg"];
+      const orlyZone = zoneMap["z_orly"];
+      const etaCdg   = cdgZone  ? etaToZone("z_cdg",  cdgZone.lat,  cdgZone.lng)  : { etaMin: 25, distKm: 26 };
+      const etaOrly  = orlyZone ? etaToZone("z_orly", orlyZone.lat, orlyZone.lng) : { etaMin: 35, distKm: 30 };
+
+      // Pour chaque heure à venir (et actuelle)
+      for (let h = Math.max(6, hour); h <= 23; h++) {
+        const slotTime = new Date(now);
+        slotTime.setHours(h, 0, 0, 0);
+        const isPast = slotTime < now && h < hour;
+        const isNow  = h === hour;
+
+        // — CDG —
+        const cdgArrivals = CDG_HOURLY[h] ?? 0;
+        if (cdgArrivals > 0 && cdgZone) {
+          const vtcPax = Math.round(cdgArrivals * CDG_PAX_PER_FLIGHT_RATE);
+          const demand = Math.min(100, Math.round(cdgArrivals / 30 * 100));
+          const flightPeak = cdgArrivals >= 26 ? "surge" : cdgArrivals >= 18 ? "high" : "medium";
+          const surgeBoost = cdgArrivals >= 26 ? 3.5 : cdgArrivals >= 18 ? 2.4 : 1.6;
+          const netH = 62 * surgeBoost * 0.75 - etaCdg.distKm * 0.224 / Math.max((80 + etaCdg.etaMin) / 60, 0.5);
+          // Départ recommandé : arriver 20min avant l'heure d'arrivée des vols (buffer CDG)
+          const idealArrival   = new Date(slotTime.getTime() - 20 * 60000);
+          const departForCdg   = new Date(idealArrival.getTime() - etaCdg.etaMin * 60000);
+          const depInFuture    = departForCdg > now;
+          const urgency: "critical"|"high"|"medium"|"low" = !depInFuture ? "critical"
+            : (departForCdg.getTime() - now.getTime()) < 15 * 60000 ? "critical"
+            : (departForCdg.getTime() - now.getTime()) < 30 * 60000 ? "high"
+            : (departForCdg.getTime() - now.getTime()) < 60 * 60000 ? "medium" : "low";
+
+          timeline.push({
+            time:         fmt(slotTime),
+            timeHM:       fmtHM(slotTime),
+            hour:         h,
+            type:         cdgArrivals >= 26 ? "flight_wave" : "peak_start",
+            label:        `CDG — ${cdgArrivals} arrivées (${vtcPax} passagers VTC estimés)`,
+            zoneId:       "z_cdg",
+            zoneName:     "CDG — Charles-de-Gaulle",
+            etaMin:       etaCdg.etaMin,
+            distKm:       etaCdg.distKm,
+            expectedDemand: demand,
+            estimatedRevenue: Math.round(netH * 10) / 10,
+            recommendation: `Partir à ${fmtHM(departForCdg)} → arriver avant ${fmtHM(idealArrival)} (buffer 20min)`,
+            priority:     urgency,
+            departAt:     fmt(departForCdg),
+            departAtHM:   fmtHM(departForCdg),
+            flightData:   { arrivals: cdgArrivals, peak: flightPeak, paxVtc: vtcPax,
+                           nextWave: flightData?.cdg?.next_wave_eta },
+            isNow,
+            isPast,
+          });
+        }
+
+        // — Orly —
+        const orlyArrivals = ORLY_HOURLY[h] ?? 0;
+        if (orlyArrivals > 0 && orlyZone) {
+          const vtcPax = Math.round(orlyArrivals * ORLY_PAX_PER_FLIGHT_RATE);
+          const demand = Math.min(100, Math.round(orlyArrivals / 16 * 100));
+          const flightPeak = orlyArrivals >= 14 ? "surge" : orlyArrivals >= 9 ? "high" : "medium";
+          const surgeBoost = orlyArrivals >= 14 ? 2.8 : orlyArrivals >= 9 ? 2.0 : 1.4;
+          const netH = 44 * surgeBoost * 0.75 - etaOrly.distKm * 0.224 / Math.max((60 + etaOrly.etaMin) / 60, 0.5);
+          const idealArrival = new Date(slotTime.getTime() - 15 * 60000);
+          const departForOrly = new Date(idealArrival.getTime() - etaOrly.etaMin * 60000);
+          const depInFuture = departForOrly > now;
+          const urgency: "critical"|"high"|"medium"|"low" = !depInFuture ? "critical"
+            : (departForOrly.getTime() - now.getTime()) < 15 * 60000 ? "critical"
+            : (departForOrly.getTime() - now.getTime()) < 30 * 60000 ? "high"
+            : (departForOrly.getTime() - now.getTime()) < 60 * 60000 ? "medium" : "low";
+
+          timeline.push({
+            time:         fmt(slotTime),
+            timeHM:       fmtHM(slotTime),
+            hour:         h,
+            type:         orlyArrivals >= 12 ? "flight_wave" : "peak_start",
+            label:        `Orly — ${orlyArrivals} arrivées (${vtcPax} passagers VTC estimés)`,
+            zoneId:       "z_orly",
+            zoneName:     "Orly — Terminal Sud/Ouest",
+            etaMin:       etaOrly.etaMin,
+            distKm:       etaOrly.distKm,
+            expectedDemand: demand,
+            estimatedRevenue: Math.round(netH * 10) / 10,
+            recommendation: `Partir à ${fmtHM(departForOrly)} → arriver avant ${fmtHM(idealArrival)} (buffer 15min)`,
+            priority:     urgency,
+            departAt:     fmt(departForOrly),
+            departAtHM:   fmtHM(departForOrly),
+            flightData:   { arrivals: orlyArrivals, peak: flightPeak, paxVtc: vtcPax,
+                           nextWave: flightData?.orly?.next_wave_eta },
+            isNow,
+            isPast,
+          });
+        }
+
+        // — Événements DB actifs sur ce créneau —
+        for (const ev of dbEvents) {
+          const evStart = new Date(ev.start_time);
+          const evEnd   = new Date(ev.end_time);
+          const evH     = evStart.getHours();
+          const evZ     = zoneMap[ev.zone_id];
+          if (!evZ || ev.zone_id === "z_cdg" || ev.zone_id === "z_orly") continue;
+
+          // Générer 3 créneaux : ouverture, milieu, sortie
+          const evSlots: Array<{ t: Date; type: TimelineEntry["type"]; label: string; rec: string }> = [
+            { t: evStart, type: "event_start", label: `${ev.name} — Ouverture`, rec: `Se positionner près ${evZ.name} avant ${fmtHM(evStart)}` },
+          ];
+          const midTime = new Date((evStart.getTime() + evEnd.getTime()) / 2);
+          evSlots.push({ t: midTime, type: "rush", label: `${ev.name} — Pic activité`, rec: `Zone ${evZ.name} — surge actif` });
+          evSlots.push({ t: new Date(evEnd.getTime() - 30*60000), type: "event_end", label: `${ev.name} — Sortie imminente`, rec: `Positionner 30min avant la fin pour capter la vague sortie` });
+
+          for (const sl of evSlots) {
+            if (sl.t.getHours() !== h) continue;
+            const { etaMin, distKm } = etaToZone(ev.zone_id, evZ.lat, evZ.lng);
+            const departAt = new Date(sl.t.getTime() - etaMin * 60000 - 10 * 60000);
+            const minsUntil = (departAt.getTime() - now.getTime()) / 60000;
+            const evUrgency: "critical"|"high"|"medium"|"low" =
+              minsUntil < 10 ? "critical" : minsUntil < 25 ? "high" : minsUntil < 55 ? "medium" : "low";
+            const evBoost = ev.demand_boost ?? 1.0;
+            timeline.push({
+              time:            fmt(sl.t),
+              timeHM:          fmtHM(sl.t),
+              hour:            h,
+              type:            sl.type,
+              label:           sl.label,
+              zoneId:          ev.zone_id,
+              zoneName:        evZ.name,
+              etaMin,
+              distKm,
+              expectedDemand:  Math.min(100, Math.round(evBoost * 35)),
+              estimatedRevenue: Math.round(evBoost * 28 * 10) / 10,
+              recommendation:  sl.rec,
+              priority:        evUrgency,
+              departAt:        fmt(departAt),
+              departAtHM:      fmtHM(departAt),
+              isNow:           h === hour,
+              isPast:          sl.t < now,
+            });
+          }
+        }
+      }
+
+      // Trier la timeline chronologiquement
+      timeline.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+
+      // ── CRÉNEAU OPTIMAL ─────────────────────────────────────────────────────────
+      // Trouver la prochaine opportunité maximale parmi les créneaux futurs
+      // Score = expectedDemand × urgencyWeight × revenueWeight
+      const URGENCY_W = { critical: 2.0, high: 1.5, medium: 1.0, low: 0.5 };
+      const futurSlots = timeline.filter(t => !t.isPast && new Date(t.departAt) > now);
+
+      let bestSlot = futurSlots[0] ?? null;
+      let bestScore = -1;
+      for (const slot of futurSlots) {
+        const minutesUntilDepart = (new Date(slot.departAt).getTime() - now.getTime()) / 60000;
+        const recencyBonus = minutesUntilDepart < 60 ? 1.3 : 1.0; // favoriser le proche
+        const score = slot.expectedDemand
+          * (URGENCY_W[slot.priority] ?? 1)
+          * Math.min(slot.estimatedRevenue / 40, 2.5)
+          * recencyBonus;
+        if (score > bestScore) { bestScore = score; bestSlot = slot; }
+      }
+
+      // ── SCORE RENTABILITÉ GLOBAL 6h-23h (étapes) ────────────────────────────
+      // Récupérer les scores horaires de toutes les zones pour la heatmap
+      const hourlyScores: Record<number, { topZone: string; topScore: number; mean: number }> = {};
+      for (let h2 = hour; h2 <= 23; h2++) {
+        const sc = storage.getProfitabilityByHour(h2, dayType) as any[];
+        if (sc && sc.length > 0) {
+          const sorted = [...sc].sort((a, b) => b.profitability_index - a.profitability_index);
+          const mean = sc.reduce((s: number, r: any) => s + r.profitability_index, 0) / sc.length;
+          hourlyScores[h2] = {
+            topZone:  sorted[0]?.zone_id ?? "",
+            topScore: sorted[0]?.profitability_index ?? 0,
+            mean:     Math.round(mean * 10) / 10,
+          };
+        }
+      }
+
+      // ── SCORES TOP ZONES MAINTENANT (étapes) ──────────────────────────────
+      const currentScores = storage.getProfitabilityByHour(hour, dayType) as any[];
+      const topZonesNow = (currentScores || []).slice(0, 5).map((s: any) => ({
+        zoneId:   s.zone_id,
+        zoneName: s.zone_name ?? s.zone_id,
+        score:    s.profitability_index,
+        surge:    s.surge_multiplier,
+        fare:     s.avg_fare,
+        ...etaToZone(s.zone_id, zoneMap[s.zone_id]?.lat ?? 0, zoneMap[s.zone_id]?.lng ?? 0),
+      }));
+
+      // ── TEMPS RÉEL VOLS (CDG/Orly, prochain créneau concret) (étapes) ──────
+      const realFlights = (flightData?.flights ?? []).filter((f: any) => f.status === "arriving").slice(0, 6).map((f: any) => ({
+        callsign:         f.callsign,
+        airport:          f.airport,
+        estimatedArrival: f.estimated_arrival,
+        origin:           f.origin_airport ?? f.origin_country,
+        paxVtc:           Math.round((f.passengers_estimate ?? 150) * (f.airport === "CDG" ? 0.12 : 0.09)),
+        vtcBoost:         f.vtc_demand_boost,
+      }));
+
+      // ── RÉPONSE ────────────────────────────────────────────────────────────
+      res.json({
+        userPosition:   { lat, lng },
+        clickedAt:      clickTs.toISOString(),
+        computedAt:     now.toISOString(),
+        currentHour:    hour,
+        dayType,
+        // Top 4 alertes prioritaires enrichies GPS
+        top4Alerts,
+        // Créneau optimal calculé
+        bestSlot,
+        bestScore: Math.round(bestScore * 10) / 10,
+        // Chronologie complète de la journée
+        timeline,
+        // ETA aimaéroports depuis position
+        etaCdg:   { ...etaCdg,  zone: "z_cdg",  name: "CDG — Charles-de-Gaulle" },
+        etaOrly:  { ...etaOrly, zone: "z_orly", name: "Orly — Terminal Sud/Ouest" },
+        // Top zones maintenant
+        topZonesNow,
+        // Heatmap rentabilité horaire
+        hourlyScores,
+        // Vols temps réel
+        realFlights,
+        flightSource: flightData?.source ?? "heuristic",
+      });
+
+    } catch (err) {
+      console.error("[smart-plan] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
 }

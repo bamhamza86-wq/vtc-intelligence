@@ -12,6 +12,7 @@ import AlertsPage from "./pages/AlertsPage";
 import DataSourcesPage from "./pages/DataSourcesPage";
 import ProfilePage from "./pages/ProfilePage";
 import BestRoutePage from "./pages/BestRoutePage";
+import SmartPlanPage from "./pages/SmartPlanPage";
 import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/not-found";
 
@@ -93,6 +94,7 @@ export default function App() {
               <Switch>
                 <Route path="/" component={MapPage} />
                 <Route path="/best-route" component={BestRoutePage} />
+                <Route path="/smart-plan" component={SmartPlanPage} />
                 <Route path="/simulator" component={SimulatorPage} />
                 <Route path="/alerts" component={AlertsPage} />
                 <Route path="/sources" component={DataSourcesPage} />
