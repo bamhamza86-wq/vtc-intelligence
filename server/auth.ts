@@ -112,9 +112,9 @@ export function handleLogin(req: Request, res: Response): void {
   }
 
   // Revoke old tokens for this user
-  for (const [t, entry] of tokenStore.entries()) {
+  Array.from(tokenStore.entries()).forEach(([t, entry]) => {
     if (entry.username === username) tokenStore.delete(t);
-  }
+  });
 
   const token = generateToken();
   tokenStore.set(token, { username, expiresAt: Date.now() + TOKEN_TTL_MS });

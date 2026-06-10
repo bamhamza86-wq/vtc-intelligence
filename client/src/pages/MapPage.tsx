@@ -6,6 +6,7 @@ import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TrendingUp, Clock, Zap, Plane, ChevronDown, ChevronUp } from "lucide-react";
+import { UpdateWidget } from "@/components/UpdateWidget";
 
 const COLORS = { ultraHigh: "#22c55e", high: "#86efac", medium: "#fbbf24", low: "#f97316", veryLow: "#ef4444" };
 
@@ -364,6 +365,9 @@ export default function MapPage() {
             <SelectItem value="weekend">Weekend</SelectItem>
           </SelectContent>
         </Select>
+        <div className="ml-auto">
+          <UpdateWidget compact={true} />
+        </div>
       </div>
 
       {/* Panel vols temps réel */}

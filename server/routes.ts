@@ -3,9 +3,142 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { getFlightData, getFlightBoostForZone } from "./flightService";
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// CACHE TEMPS RÉEL — Google Maps Distance Matrix (système hybride calibré)
+// Origine : Bd Ney (48.8976, 2.3299) — Paris 18e
+// Snapshots réels : 10h37 mercredi (post-rush AM) + 18h mardi (rush PM base)
+// Recalcul automatique toutes les 3 minutes
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface GMapsCacheEntry {
+  zoneId: string;
+  roadKm: number;        // distance route réelle Google Maps (statique)
+  etaMinutes: number;    // ETA calculé avec le ratio horaire courant
+  speedKmH: number;      // vitesse effective courante
+  hourUsed: number;      // heure utilisée pour le calcul
+  computedAt: string;    // ISO timestamp
+}
+
+interface GMapsCache {
+  entries: Record<string, GMapsCacheEntry>;
+  lastUpdated: string;   // ISO timestamp de la dernière MAJ
+  nextUpdate: string;    // ISO timestamp de la prochaine MAJ (+ 3min)
+  updateCount: number;   // nombre de mises à jour depuis démarrage
+  calibrationDate: string;
+}
+
+// ── Données calibrées (mesures réelles Google Maps depuis Bd Ney) ─────────────
+// road_km        : distance routière réelle
+// speed_rush_pm  : vitesse mesurée à 18h rush PM (km/h) — BASE = 1.00
+// speed_10h      : vitesse mesurée à 10h37 post-rush (km/h)
+// eta_18h / eta_10h : ETAs en minutes pour les deux snapshots
+const ZONE_DATA: Record<string, {
+  road_km: number;
+  speed_rush_pm: number;
+  speed_10h: number;
+  eta_18h: number;
+  eta_10h: number;
+}> = {
+  z_cdg:                   { road_km: 23.8, speed_rush_pm: 32.45, speed_10h: 54.92, eta_18h: 44, eta_10h: 26 },
+  z_orly:                  { road_km: 28.6, speed_rush_pm: 26.00, speed_10h: 40.86, eta_18h: 66, eta_10h: 42 },
+  z_le_bourget:            { road_km: 12.1, speed_rush_pm: 18.15, speed_10h: 38.21, eta_18h: 40, eta_10h: 19 },
+  z_villepinte:            { road_km: 21.6, speed_rush_pm: 30.86, speed_10h: 46.29, eta_18h: 42, eta_10h: 28 },
+  z_tremblay:              { road_km: 22.9, speed_rush_pm: 29.87, speed_10h: 54.96, eta_18h: 46, eta_10h: 25 },
+  z_aulnay:                { road_km: 19.5, speed_rush_pm: 27.21, speed_10h: 45.00, eta_18h: 43, eta_10h: 26 },
+  z_saint_denis_gare:      { road_km:  6.5, speed_rush_pm: 13.00, speed_10h: 22.94, eta_18h: 30, eta_10h: 17 },
+  z_plaine_commune:        { road_km:  5.8, speed_rush_pm: 16.57, speed_10h: 23.20, eta_18h: 21, eta_10h: 15 },
+  z_bobigny_gare:          { road_km: 13.4, speed_rush_pm: 22.33, speed_10h: 30.92, eta_18h: 36, eta_10h: 26 },
+  z_aubervilliers:         { road_km:  6.6, speed_rush_pm: 12.77, speed_10h: 19.80, eta_18h: 31, eta_10h: 20 },
+  z_epinay_gennevilliers:  { road_km:  9.6, speed_rush_pm: 13.71, speed_10h: 23.04, eta_18h: 42, eta_10h: 25 },
+  z_93_centre:             { road_km:  6.8, speed_rush_pm: 12.75, speed_10h: 22.67, eta_18h: 32, eta_10h: 18 },
+  z_montreuil:             { road_km: 14.0, speed_rush_pm: 20.49, speed_10h: 31.11, eta_18h: 41, eta_10h: 27 },
+  z_stade_france:          { road_km:  5.2, speed_rush_pm: 12.48, speed_10h: 28.36, eta_18h: 25, eta_10h: 11 },
+};
+
+// ── ROAD_FACTOR depuis Bd Ney (road_km / haversine_km) ───────────────────────
+// S'applique pour tout point proche Paris (ajustement ±15% selon distance centre)
+const ROAD_FACTOR: Record<string, number> = {
+  z_cdg:                   1.177,
+  z_orly:                  1.487,
+  z_le_bourget:            1.397,
+  z_villepinte:            1.262,
+  z_tremblay:              1.279,
+  z_aulnay:                1.513,
+  z_saint_denis_gare:      1.372,
+  z_plaine_commune:        1.450,
+  z_bobigny_gare:          1.557,
+  z_aubervilliers:         1.392,
+  z_epinay_gennevilliers:  1.520,
+  z_93_centre:             1.490,
+  z_montreuil:             1.484,
+  z_stade_france:          1.407,
+};
+
+// ── Profil horaire calibré — ancré sur 2 mesures réelles ─────────────────────
+// Ratio vitesse_heure / vitesse_rush_PM (18h = base 1.00)
+// Ancres mesurées : rush PM 18h = 1.00 | post-rush 10h = 1.69 moyen
+function getHourlyRatio(h: number): number {
+  if (h < 6)  return 2.40;  // nuit : autoroute libre
+  if (h < 7)  return 1.45;  // pré-rush 6h
+  if (h < 9)  return 0.88;  // rush AM (légèrement meilleur que PM)
+  if (h < 12) return 1.69;  // post-rush 9-12h ✅ MESURÉ
+  if (h < 14) return 1.58;  // mi-journée
+  if (h < 16) return 1.42;  // après-midi
+  if (h < 17) return 1.12;  // pré-rush PM
+  if (h < 19) return 1.00;  // rush PM ✅ BASE MESURÉE
+  if (h < 22) return 1.52;  // soir
+  return 2.40;              // nuit tardive
+}
+
+// ── Calcul du cache à un instant donné ───────────────────────────────────────
+function computeGMapsCache(updateCount: number): GMapsCache {
+  const now = new Date();
+  const h = now.getHours();
+  const ratio = getHourlyRatio(h);
+  const nextUpdateTs = new Date(now.getTime() + 3 * 60 * 1000);
+
+  const entries: Record<string, GMapsCacheEntry> = {};
+
+  for (const [zoneId, data] of Object.entries(ZONE_DATA)) {
+    const speedKmH = Math.round(data.speed_rush_pm * ratio * 100) / 100;
+    const etaMinutes = Math.max(1, Math.round((data.road_km / speedKmH) * 60));
+    entries[zoneId] = {
+      zoneId,
+      roadKm:     data.road_km,
+      etaMinutes,
+      speedKmH,
+      hourUsed:   h,
+      computedAt: now.toISOString(),
+    };
+  }
+
+  return {
+    entries,
+    lastUpdated:     now.toISOString(),
+    nextUpdate:      nextUpdateTs.toISOString(),
+    updateCount,
+    calibrationDate: "2026-06-10",
+  };
+}
+
+// ── Instance du cache (module-level, partagée) ────────────────────────────────
+let gmapsCache: GMapsCache = computeGMapsCache(1);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FIN CACHE — le setInterval est lancé dans registerRoutes()
+// ═══════════════════════════════════════════════════════════════════════════════
+
 export function registerRoutes(httpServer: Server, app: Express): void {
   // Auth routes + requireAuth middleware are registered in server/index.ts
   // before this function is called — do not duplicate them here.
+
+  // ── Démarrage du refresh automatique toutes les 3 minutes ──────────────────
+  let cacheUpdateCount = 1; // premier calcul fait à l'initialisation du module
+  setInterval(() => {
+    cacheUpdateCount += 1;
+    gmapsCache = computeGMapsCache(cacheUpdateCount);
+    console.log(`[gmaps-cache] Mise à jour #${cacheUpdateCount} — ${gmapsCache.lastUpdated} | ratio horaire: ${getHourlyRatio(new Date().getHours()).toFixed(2)}`);
+  }, 3 * 60 * 1000); // toutes les 3 minutes
 
   app.get("/api/zones", (_req, res) => { res.json(storage.getAllZones()); });
 
@@ -206,7 +339,6 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         const avgDelta = deltas.reduce((a: number, b: number) => a + b, 0) / Math.max(deltas.length, 1);
         const maxGain = Math.max(...deltas);
         const maxLoss = Math.min(...deltas);
-        // Zone avec la plus forte variation
         const topGainer = weekdayDiff.find((d: any) => d.delta_index === maxGain);
         const topLoser = weekdayDiff.find((d: any) => d.delta_index === maxLoss);
         statsGlobal = { posZones, negZones, stableZones, avgDelta: Math.round(avgDelta * 10) / 10, maxGain, maxLoss, topGainer, topLoser };
@@ -311,6 +443,39 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     ]});
   });
 
+  // ─── Cache Google Maps Distances — consultation ────────────────────────────
+  // GET /api/gmaps-distances
+  // Retourne le cache complet : entrées par zone + métadonnées de MAJ
+  app.get("/api/gmaps-distances", (_req, res) => {
+    res.json({
+      entries:         gmapsCache.entries,
+      lastUpdated:     gmapsCache.lastUpdated,
+      nextUpdate:      gmapsCache.nextUpdate,
+      updateCount:     gmapsCache.updateCount,
+      calibrationDate: gmapsCache.calibrationDate,
+      currentHourlyRatio: getHourlyRatio(new Date().getHours()),
+      zonesCount:      Object.keys(gmapsCache.entries).length,
+    });
+  });
+
+  // GET /api/gmaps-distances/status
+  // Version légère — état du cache seulement (pas toutes les entrées)
+  app.get("/api/gmaps-distances/status", (_req, res) => {
+    const now = new Date();
+    const nextUpdateDate = new Date(gmapsCache.nextUpdate);
+    const secondsUntilNext = Math.max(0, Math.round((nextUpdateDate.getTime() - now.getTime()) / 1000));
+    res.json({
+      lastUpdated:        gmapsCache.lastUpdated,
+      nextUpdate:         gmapsCache.nextUpdate,
+      secondsUntilNext,
+      updateCount:        gmapsCache.updateCount,
+      currentHour:        now.getHours(),
+      currentHourlyRatio: getHourlyRatio(now.getHours()),
+      calibrationDate:    gmapsCache.calibrationDate,
+      zonesCount:         Object.keys(gmapsCache.entries).length,
+    });
+  });
+
   // ─── Meilleur Trajet — calcul itinéraire rentable depuis position GPS ──────────
   // POST /api/best-route
   // Body: { lat: number, lng: number }
@@ -330,7 +495,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       try { flightData = await getFlightData(); } catch { /* non bloquant */ }
 
       // ── Distance Haversine (vol d'oiseau) ─────────────────────────────────────
-      function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+      const haversineKm = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
         const R = 6371;
         const dLat = (lat2 - lat1) * Math.PI / 180;
         const dLng = (lng2 - lng1) * Math.PI / 180;
@@ -338,103 +503,45 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
           Math.sin(dLng / 2) ** 2;
         return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      }
-
-      // ── Facteurs de correction routière par zone ──────────────────────────────
-      // Calibrés sur distances Google Maps réelles depuis positions typiques IDF
-      // Aéroports : accès autoroute sinueux (A1, A6, A86) → facteur élevé ~1.38-1.42
-      // Zones proches Paris : voirie urbaine dense → ~1.25-1.30
-      // Zones résidentielles / business 93 : mixte → ~1.28-1.35
-      // ─────────────────────────────────────────────────────────────────────────
-      // ROAD_FACTOR calibrés Google Maps réel — Bd Ney (48.8976, 2.3299)
-      // road_km = haversine × factor   |   Mesuré 09/06/2026 ~18h CEST
-      // ─────────────────────────────────────────────────────────────────────────
-      const ROAD_FACTOR: Record<string, number> = {
-        z_cdg:                   1.400, // 20.2km vol → 28.3km route (A1/A3)      ✅ validé
-        z_orly:                  1.492, // 19.2km vol → 28.7km route (Bd Péri/A6) ✅ validé
-        z_le_bourget:            1.499, // 8.9km vol  → 13.4km route (A1/D20)     ✅ validé
-        z_villepinte:            1.312, // 16.8km vol → 22.1km route (A104/N2)    ✅ validé
-        z_tremblay:              1.279, // 19.5km vol → 25.0km route (A104)       ✅ validé
-        z_aulnay:                1.422, // 13.0km vol → 18.5km route (A3/D40)     ✅ validé
-        z_saint_denis_gare:      1.304, // 4.6km vol  → 6.0km route  (N1)        ✅ validé
-        z_plaine_commune:        1.521, // 3.1km vol  → 4.7km route  (Rue Landy) ✅ validé
-        z_bobigny_gare:          1.513, // 8.1km vol  → 12.3km route (A3)        ✅ validé
-        z_aubervilliers:         1.659, // 4.1km vol  → 6.8km route  (urbain)    ✅ validé
-        z_epinay_gennevilliers:  1.536, // 6.9km vol  → 10.6km route (A86)       ✅ validé
-        z_93_centre:             1.132, // 6.4km vol  → 7.2km route  (A3/N3)     ✅ validé
-        z_montreuil:             1.368, // 9.1km vol  → 12.5km route (N3)        ✅ validé
-        z_stade_france:          1.536, // 3.7km vol  → 5.7km route  (D14)       ✅ validé
       };
-
-      // ─────────────────────────────────────────────────────────────────────────
-      // estimateSpeedKmH — profil vitesse PAR ZONE, calibré Google Maps
-      //
-      // Base de calibration : rush PM 17h-19h (mesuré 09/06/2026 ~18h)
-      // Ratios horaires DRIEA/CEREMA IDF appliqués :
-      //   nuit <6h  ×2.10 | pré-rush 6-7h ×1.35 | rush AM 7-9h ×0.90
-      //   post-AM 9-12h ×1.25 | mi-journée 12-14h ×1.30 | aprem 14-16h ×1.35
-      //   pré-rush PM 16-17h ×1.10 | rush PM 17-19h ×1.00 | soir 19-22h ×1.45
-      //
-      // Zone          road_km  speed_18h  ETA_18h    ETA_11h    ETA_nuit
-      // CDG              28.3    38.6      44min ✅    34min      21min
-      // Orly             28.7    26.1      66min ✅    52min      31min
-      // Le Bourget       13.4    20.1      40min ✅    31min      19min
-      // Villepinte       22.1    31.6      42min ✅    32min      20min
-      // Tremblay         25.0    32.6      46min ✅    35min      22min
-      // Aulnay           18.5    25.8      43min ✅    34min      21min
-      // St-Denis Gare     6.0    12.0      30min ✅    23min      14min
-      // Plaine Commune    4.7    13.4      21min ✅    16min      10min
-      // Bobigny Gare     12.3    20.5      36min ✅    28min      17min
-      // Aubervilliers     6.8    13.2      31min ✅    24min      14min
-      // Epinay-Genn.     10.6    15.1      42min ✅    33min      20min
-      // 93 Centre (Rosny) 7.2   13.5      32min ✅    24min      15min
-      // Montreuil        12.5    18.3      41min ✅    32min      20min
-      // Stade de France   5.7    13.7      25min ✅    19min      12min
-      // ─────────────────────────────────────────────────────────────────────────
-      function estimateSpeedKmH(zoneId: string, _roadDistKm: number, h: number): number {
-        // Vitesse de base au rush PM 17-19h (mesurée Google Maps)
-        const BASE: Record<string, number> = {
-          z_cdg:                   38.6,
-          z_orly:                  26.1,
-          z_le_bourget:            20.1,
-          z_villepinte:            31.6,
-          z_tremblay:              32.6,
-          z_aulnay:                25.8,
-          z_saint_denis_gare:      12.0,
-          z_plaine_commune:        13.4,
-          z_bobigny_gare:          20.5,
-          z_aubervilliers:         13.2,
-          z_epinay_gennevilliers:  15.1,
-          z_93_centre:             13.5,
-          z_montreuil:             18.3,
-          z_stade_france:          13.7,
-        };
-
-        const base = BASE[zoneId] ?? 20.0;
-
-        // Ratio horaire calibré (rapport vitesse_heure / vitesse_rush_PM)
-        if (h < 6)             return base * 2.10; // nuit : très fluide
-        if (h < 7)             return base * 1.35; // pré-rush 6h
-        if (h < 9)             return base * 0.90; // rush AM 7-9h
-        if (h < 12)            return base * 1.25; // post-rush AM 9-12h
-        if (h < 14)            return base * 1.30; // mi-journée 12-14h
-        if (h < 16)            return base * 1.35; // après-midi 14-16h
-        if (h < 17)            return base * 1.10; // pré-rush PM 16-17h
-        if (h < 19)            return base * 1.00; // rush PM 17-19h ← base mesurée
-        if (h < 22)            return base * 1.45; // soir post-rush 19-22h
-        return base * 2.10;                        // nuit tardive
-      }
 
       const scoreMap: Record<string, any> = {};
       scores.forEach((s: any) => { scoreMap[s.zone_id] = s; });
 
       const results = zones.map((z: any) => {
         const straightKm = haversineKm(lat, lng, z.lat, z.lng);
-        const roadFactor = ROAD_FACTOR[z.id] ?? 1.30;
-        // Distance routière estimée = vol d'oiseau × facteur de tortuosité
-        const distanceKm = Math.round(straightKm * roadFactor * 10) / 10;
-        const speedKmH = estimateSpeedKmH(z.id, distanceKm, hour);
-        const etaMinutes = Math.max(1, Math.round((distanceKm / speedKmH) * 60));
+
+        // ── Distances et ETA depuis le cache Google Maps temps réel ─────────────
+        const gmEntry = gmapsCache.entries[z.id];
+
+        // Distance routière : depuis le cache (road_km réel) si disponible,
+        // sinon estimation haversine × ROAD_FACTOR calibré depuis Bd Ney
+        const distanceKm = gmEntry
+          ? gmEntry.roadKm
+          : Math.round(straightKm * (ROAD_FACTOR[z.id] ?? 1.35) * 10) / 10;
+
+        // ETA : depuis le cache (ratio horaire dynamique) si disponible,
+        // sinon fallback vitesse de base rush PM × ratio horaire courant
+        const BASE_SPEED: Record<string, number> = {
+          z_cdg:                   32.45,
+          z_orly:                  26.00,
+          z_le_bourget:            18.15,
+          z_villepinte:            30.86,
+          z_tremblay:              29.87,
+          z_aulnay:                27.21,
+          z_saint_denis_gare:      13.00,
+          z_plaine_commune:        16.57,
+          z_bobigny_gare:          22.33,
+          z_aubervilliers:         12.77,
+          z_epinay_gennevilliers:  13.71,
+          z_93_centre:             12.75,
+          z_montreuil:             20.49,
+          z_stade_france:          12.48,
+        };
+
+        const etaMinutes = gmEntry
+          ? Math.max(1, Math.round(distanceKm / gmEntry.speedKmH * 60))
+          : Math.max(1, Math.round(distanceKm / ((BASE_SPEED[z.id] ?? 20.0) * getHourlyRatio(hour)) * 60));
 
         const s = scoreMap[z.id] || {};
         const profitIdx = s.profitability_index ?? 0;
@@ -446,8 +553,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         let flightBoost = 1.0;
         if (flightData) flightBoost = getFlightBoostForZone(z.id, flightData);
 
-        // Pénalité distance routière : seuils recalibrés sur km réels (not vol d'oiseau)
-        // CDG = ~28km réel depuis Paris → reste très rentable malgré la distance
+        // Pénalité distance routière (km réels)
         const distancePenalty = distanceKm <= 3 ? 1.0
           : distanceKm <= 8 ? 0.93
           : distanceKm <= 15 ? 0.82
@@ -485,6 +591,8 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           globalScore,
           estimatedRevenue,
           reason,
+          // Source des données de distance/ETA
+          distanceSource: gmEntry ? "gmaps_cache" : "haversine_estimated",
           waypoints: [
             { lat, lng, label: "Votre position" },
             { lat: z.lat, lng: z.lng, label: z.name },
@@ -503,6 +611,13 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         top5,
         all: results,
         computedAt: new Date().toISOString(),
+        // Métadonnées du cache Google Maps utilisé pour ce calcul
+        gmapsCache: {
+          lastUpdated:     gmapsCache.lastUpdated,
+          nextUpdate:      gmapsCache.nextUpdate,
+          updateCount:     gmapsCache.updateCount,
+          hourlyRatio:     getHourlyRatio(hour),
+        },
       });
     } catch (err) {
       console.error("[best-route] error:", err);

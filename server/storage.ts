@@ -48,6 +48,8 @@ const patterns: Record<string, {
   // Boosts horaires spécifiques 11h-18h (corrélation Parc Expo / events)
   demandBoost11_14?: number;   // boost demande 11h-14h
   demandBoost14_18?: number;   // boost demande 14h-18h (Parc Expo, business)
+  // Boost corrélation 6h-10h (rush AM + aéroports matinaux) — mesuré 10/06/2026
+  demandBoost6_10?: number;
 }> = {
   // ── Aéroports ─────────────────────────────────────────────────────────────
   // CDG : trafic intercontinental 11h-14h (arrivées long-courriers)
@@ -57,6 +59,7 @@ const patterns: Record<string, {
     baseAvgDist: 42, baseLongRide: 0.94, demandCap: 98,
     demandBoost11_14: 6,    // arrivées intercontinentales 11h-13h
     demandBoost14_18: 8,    // pic départs PM + navettes
+    demandBoost6_10: 8,     // départs matinaux intercontinentaux + arrivées early ✅
   },
   // Orly : DOM-TOM 11h-14h, départs 16h-18h
   z_orly: {
@@ -64,6 +67,7 @@ const patterns: Record<string, {
     baseAvgDist: 27, baseLongRide: 0.84, demandCap: 94,
     demandBoost11_14: 4,
     demandBoost14_18: 7,
+    demandBoost6_10: 5,     // DOM-TOM matinaux, présence 7h-10h forte ✅
   },
   // ── Hubs transport / banlieue proche ─────────────────────────────────────
   // St-Denis : trafic commute + tourisme Basilique / Stade France 13h-17h
@@ -72,24 +76,28 @@ const patterns: Record<string, {
     baseAvgDist: 16, baseLongRide: 0.40,
     demandBoost11_14: 3,
     demandBoost14_18: 5,
+    demandBoost6_10: 6,     // rush commute fort 7h-9h ✅
   },
   z_bobigny_gare: {
     peakHours: [7,8,9,12,13,17,18,19],
     baseAvgDist: 13, baseLongRide: 0.32,
     demandBoost11_14: 2,
     demandBoost14_18: 3,
+    demandBoost6_10: 6,     // rush commute fort 7h-9h ✅
   },
   z_aubervilliers: {
     peakHours: [7,8,9,11,12,17,18,19,22,23],
     baseAvgDist: 15, baseLongRide: 0.37,
     demandBoost11_14: 3,
     demandBoost14_18: 4,
+    demandBoost6_10: 6,     // rush commute fort 7h-9h ✅
   },
   z_epinay_gennevilliers: {
     peakHours: [6,7,8,9,17,18,19],
     baseAvgDist: 19, baseLongRide: 0.44,
     demandBoost11_14: 1,
     demandBoost14_18: 2,
+    demandBoost6_10: 3,     // commute modéré banlieue nord-ouest
   },
   // Plaine Commune : zone business active 11h-17h (sièges sociaux)
   z_plaine_commune: {
@@ -97,6 +105,7 @@ const patterns: Record<string, {
     baseAvgDist: 18, baseLongRide: 0.48,
     demandBoost11_14: 8,    // déjeuners d'affaires, réunions
     demandBoost14_18: 10,   // retour fin journée travail flexible
+    demandBoost6_10: 4,     // arrivées employés sièges sociaux 7h-9h
   },
   // ── Hubs business / exposition ────────────────────────────────────────────
   // Le Bourget : parc expo adjacente, trafic business 10h-17h
@@ -105,6 +114,7 @@ const patterns: Record<string, {
     baseAvgDist: 24, baseLongRide: 0.58,
     demandBoost11_14: 10,   // Parc Expo / Bourget Aéroport affaires
     demandBoost14_18: 12,   // pic retour exposants + navettes
+    demandBoost6_10: 2,     // peu actif 6h-9h (pas de vols 6h-9h) ✅
   },
   // Villepinte : Parc des Expos Paris Nord Villepinte — très actif 11h-18h
   z_villepinte: {
@@ -112,6 +122,7 @@ const patterns: Record<string, {
     baseAvgDist: 32, baseLongRide: 0.68,
     demandBoost11_14: 12,   // salons professionnels 11h-14h
     demandBoost14_18: 15,   // sortie salons + navettes hôtel
+    demandBoost6_10: 3,     // ouverture exposants / montage tôt
   },
   // Tremblay : entre CDG et Villepinte, hub logistique + résidentiel
   z_tremblay: {
@@ -119,6 +130,7 @@ const patterns: Record<string, {
     baseAvgDist: 35, baseLongRide: 0.78,
     demandBoost11_14: 5,
     demandBoost14_18: 6,
+    demandBoost6_10: 4,     // travailleurs CDG / logistique tôt
   },
   // ── Zones culturelles / événementielles ───────────────────────────────────
   // Stade de France : événements 18h+, calme 11h-17h sauf matchs
@@ -127,6 +139,7 @@ const patterns: Record<string, {
     baseAvgDist: 14, baseLongRide: 0.32,
     demandBoost11_14: 2,    // visites stade / offices tourisme
     demandBoost14_18: 5,    // pré-event + entraînements
+    demandBoost6_10: 2,     // commute résidentiel secteur
   },
   // ── Zones résidentielles / mixtes ─────────────────────────────────────────
   z_93_centre: {
@@ -134,36 +147,41 @@ const patterns: Record<string, {
     baseAvgDist: 14, baseLongRide: 0.30,
     demandBoost11_14: 5,    // lunch + commerces actifs
     demandBoost14_18: 6,
+    demandBoost6_10: 3,     // commute centre-ville 7h-9h
   },
   z_montreuil: {
     peakHours: [7,8,9,12,13,17,18,19],
     baseAvgDist: 12, baseLongRide: 0.26,
     demandBoost11_14: 4,
     demandBoost14_18: 5,
+    demandBoost6_10: 3,     // commute résidentiel est parisien
   },
   z_aulnay: {
     peakHours: [6,7,8,9,12,17,18,22,23],
     baseAvgDist: 22, baseLongRide: 0.52,
     demandBoost11_14: 3,
     demandBoost14_18: 5,    // proximité CDG / sorties salariés
+    demandBoost6_10: 3,     // commute résidentiel nord-est
   },
 };
 
 // ─── Coefficients par jour de semaine ─────────────────────────────────────────
 // Recalibrés 09/06/2026 — corrélation 6h-18h
 // 11h-18h mardi : supply +5% par rapport à matin (chauffeurs mid-day shift)
+// supply_morning ajouté 10/06/2026 — corrélation 6h-10h mercredi
 const DAY_COEFFICIENTS: Record<number, {
   demand: number; supply: number; surge: number;
   supply_midday: number;  // supply 11h-18h (mid-day shift différent)
+  supply_morning: number; // supply 6h-10h (rush AM, peu de chauffeurs)
   label: string;
 }> = {
-  0: { demand: 0.74, supply: 0.58, surge: 1.14, supply_midday: 0.62, label: "Dimanche"  },
-  1: { demand: 0.93, supply: 0.88, surge: 1.08, supply_midday: 0.90, label: "Lundi"     },
-  2: { demand: 1.03, supply: 0.78, surge: 1.18, supply_midday: 0.82, label: "Mardi"     },
-  3: { demand: 1.04, supply: 0.90, surge: 1.15, supply_midday: 0.93, label: "Mercredi"  },
-  4: { demand: 1.07, supply: 0.93, surge: 1.18, supply_midday: 0.96, label: "Jeudi"     },
-  5: { demand: 1.10, supply: 0.85, surge: 1.28, supply_midday: 0.88, label: "Vendredi"  },
-  6: { demand: 0.82, supply: 0.62, surge: 1.22, supply_midday: 0.65, label: "Samedi"    },
+  0: { demand: 0.74, supply: 0.58, surge: 1.14, supply_midday: 0.62, supply_morning: 0.55, label: "Dimanche"  },
+  1: { demand: 0.93, supply: 0.88, surge: 1.08, supply_midday: 0.90, supply_morning: 0.72, label: "Lundi"     },
+  2: { demand: 1.03, supply: 0.78, surge: 1.18, supply_midday: 0.82, supply_morning: 0.65, label: "Mardi"     },
+  3: { demand: 1.04, supply: 0.90, surge: 1.15, supply_midday: 0.93, supply_morning: 0.78, label: "Mercredi"  },
+  4: { demand: 1.07, supply: 0.93, surge: 1.18, supply_midday: 0.96, supply_morning: 0.80, label: "Jeudi"     },
+  5: { demand: 1.10, supply: 0.85, surge: 1.28, supply_midday: 0.88, supply_morning: 0.75, label: "Vendredi"  },
+  6: { demand: 0.82, supply: 0.62, surge: 1.22, supply_midday: 0.65, supply_morning: 0.52, label: "Samedi"    },
 };
 
 function getTodayStr(): string {
@@ -206,6 +224,11 @@ function computeScore(
     demandBase += (pat as any).demandBoost14_18 ?? 0;
   }
 
+  // Boost corrélation 6h-10h (rush AM + aéroports matinaux) — mesuré 10/06/2026
+  if (h >= 6 && h < 10) {
+    demandBase += (pat as any).demandBoost6_10 ?? 0;
+  }
+
   // Ajustements ponctuels validés
   if (zone.id === "z_cdg"  && h >= 6  && h <= 8)  demandBase = Math.min(demandBase + 4, 98);
   if (zone.id === "z_orly" && h === 8)             demandBase = Math.min(demandBase + 3, 94);
@@ -218,7 +241,11 @@ function computeScore(
 
   // ── Offre — mid-day shift différencié 11h-18h ─────────────────────────────
   // 11h-18h : davantage de chauffeurs actifs (shift journée) → supply plus haute
-  const supplyCoeff = isMidDay ? dayCo.supply_midday : dayCo.supply;
+  // 6h-10h  : peu de chauffeurs (heure creuse chauffeurs) → supply_morning basse
+  const isMorning = h >= 6 && h < 10;
+  const supplyCoeff = isMorning ? dayCo.supply_morning
+    : isMidDay ? dayCo.supply_midday
+    : dayCo.supply;
   let supplyBase = isPeak ? 58 : (isNight ? 16 : 48);
   if (zone.type === "airport") supplyBase = isPeak ? 48 : 34;
   if (zone.id === "z_stade_france" && !isPeak) supplyBase = 64;
@@ -235,26 +262,34 @@ function computeScore(
 
   // ── Distance & tarifs — calibrés distances Google Maps réelles ────────────
   // Distances réelles par zone (road_km Google Maps, pas haversine)
+  // Distances réelles (road_km Google Maps) — recalibrées 10/06/2026 (Bd Ney → destination)
   const REAL_DIST_KM: Record<string, number> = {
-    z_cdg: 28.3, z_orly: 28.7, z_le_bourget: 13.4, z_villepinte: 22.1,
-    z_tremblay: 25.0, z_aulnay: 18.5, z_saint_denis_gare: 6.0,
-    z_plaine_commune: 4.7, z_bobigny_gare: 12.3, z_aubervilliers: 6.8,
-    z_epinay_gennevilliers: 10.6, z_93_centre: 7.2,
-    z_montreuil: 12.5, z_stade_france: 5.7,
+    z_cdg: 23.8, z_orly: 28.6, z_le_bourget: 12.1, z_villepinte: 21.6,
+    z_tremblay: 22.9, z_aulnay: 19.5, z_saint_denis_gare: 6.5,
+    z_plaine_commune: 5.8, z_bobigny_gare: 13.4, z_aubervilliers: 6.6,
+    z_epinay_gennevilliers: 9.6, z_93_centre: 6.8,
+    z_montreuil: 14.0, z_stade_france: 5.2,
   };
-  // Vitesse de base (rush PM 17-19h, Google Maps)
+  // Vitesse de base (rush PM 17-19h, Google Maps) — recalibrées 10/06/2026
   const SPEED_RUSH_PM: Record<string, number> = {
-    z_cdg: 38.6, z_orly: 26.1, z_le_bourget: 20.1, z_villepinte: 31.6,
-    z_tremblay: 32.6, z_aulnay: 25.8, z_saint_denis_gare: 12.0,
-    z_plaine_commune: 13.4, z_bobigny_gare: 20.5, z_aubervilliers: 13.2,
-    z_epinay_gennevilliers: 15.1, z_93_centre: 13.5,
-    z_montreuil: 18.3, z_stade_france: 13.7,
+    z_cdg: 32.45, z_orly: 26.00, z_le_bourget: 18.15, z_villepinte: 30.86,
+    z_tremblay: 29.87, z_aulnay: 27.21, z_saint_denis_gare: 13.00,
+    z_plaine_commune: 16.57, z_bobigny_gare: 22.33, z_aubervilliers: 12.77,
+    z_epinay_gennevilliers: 13.71, z_93_centre: 12.75,
+    z_montreuil: 20.49, z_stade_france: 12.48,
   };
-  const getRatioH = (hh: number) => {
-    if (hh < 6)  return 2.10; if (hh < 7)  return 1.35; if (hh < 9)  return 0.90;
-    if (hh < 12) return 1.25; if (hh < 14) return 1.30; if (hh < 16) return 1.35;
-    if (hh < 17) return 1.10; if (hh < 19) return 1.00; if (hh < 22) return 1.45;
-    return 2.10;
+  // getRatioH — recalibré 10/06/2026 (corrélation 6h-10h mesurée à 10h37)
+  const getRatioH = (hh: number): number => {
+    if (hh < 6)  return 2.40;  // nuit
+    if (hh < 7)  return 1.45;  // pré-rush 6h ✅ corrélation 6h-10h
+    if (hh < 9)  return 0.88;  // rush AM
+    if (hh < 12) return 1.69;  // post-rush 9-12h ✅ MESURÉ 10h37
+    if (hh < 14) return 1.58;  // mi-journée
+    if (hh < 16) return 1.42;  // après-midi
+    if (hh < 17) return 1.12;  // pré-rush PM
+    if (hh < 19) return 1.00;  // rush PM ✅ BASE
+    if (hh < 22) return 1.52;  // soir
+    return 2.40;
   };
   const baseSpeed = SPEED_RUSH_PM[zone.id] ?? 20.0;
   const effSpeed = baseSpeed * getRatioH(h);
@@ -476,6 +511,7 @@ export interface IStorage {
   getActiveEvents(): any[];
   getActiveAlerts(): any[];
   clearExpiredAlerts(): void;
+  markAlertRead(id: number): void;
   createAlert(alert: any): any;
   createRide(ride: any): any;
   getRideStats(): any;
@@ -517,6 +553,7 @@ export const storage: IStorage = {
     "SELECT * FROM alerts WHERE expires_at>? ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC"
   ).all(new Date().toISOString()),
 
+  markAlertRead: (id: number) => sqlite.prepare("UPDATE alerts SET is_read=1 WHERE id=?").run(id),
   clearExpiredAlerts: () => sqlite.prepare("DELETE FROM alerts WHERE expires_at<?").run(new Date().toISOString()),
 
   createAlert: (alert) =>

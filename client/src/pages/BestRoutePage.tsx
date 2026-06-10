@@ -7,6 +7,7 @@ import {
   Navigation, MapPin, TrendingUp, Clock, Zap, Car,
   RefreshCw, AlertCircle, CheckCircle2, Crosshair, Route
 } from "lucide-react";
+import { UpdateWidget } from "@/components/UpdateWidget";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -366,17 +367,17 @@ export default function BestRoutePage() {
   const renderResult = (data: BestRouteResponse) => (
     <div className="flex flex-col gap-4 pb-6">
       {/* Header position + rafraîchissement */}
-      <div className="flex items-center justify-between px-4 pt-4">
-        <div className="flex items-center gap-2">
-          <div className="w-2.5 h-2.5 rounded-full bg-blue-400 shadow-[0_0_0_4px_rgba(59,130,246,0.2)] animate-pulse" />
-          <span className="text-xs text-muted-foreground">
-            {data.userPosition.lat.toFixed(4)}, {data.userPosition.lng.toFixed(4)}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          {lastUpdate && (
-            <span className="text-[10px] text-muted-foreground opacity-60">MAJ {lastUpdate}</span>
-          )}
+      <div className="flex flex-col gap-1.5 px-4 pt-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-2.5 h-2.5 rounded-full bg-blue-400 shadow-[0_0_0_4px_rgba(59,130,246,0.2)] animate-pulse" />
+            <span className="text-xs text-muted-foreground">
+              {data.userPosition.lat.toFixed(4)}, {data.userPosition.lng.toFixed(4)}
+            </span>
+            <span className="text-[10px] text-muted-foreground opacity-50">
+              {data.hour}h — {data.dayType}
+            </span>
+          </div>
           <Button
             variant="outline"
             size="sm"
@@ -388,6 +389,8 @@ export default function BestRoutePage() {
             {loading ? "Calcul…" : "Rafraîchir"}
           </Button>
         </div>
+        {/* Widget MAJ Google Maps — compact dans le contexte résultat */}
+        <UpdateWidget compact={true} className="w-full" />
       </div>
 
       {/* Carte */}
@@ -521,6 +524,7 @@ export default function BestRoutePage() {
           <p className="text-sm text-muted-foreground">Calcul des zones rentables…</p>
         </div>
       )}
+      <UpdateWidget compact={true} className="mx-4 mt-2" />
       {result && renderResult(result)}
     </div>
   );
