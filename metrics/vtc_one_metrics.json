@@ -1,0 +1,148 @@
+{
+  "_schema": "vtc_one_metrics_v1",
+  "_description": "Métriques de performance du module VTC ONE par version déployée. Ce fichier est committé dans metrics/vtc_one_metrics.json après chaque déploiement en production.",
+  "versions": [
+    {
+      "version": "1.0.0",
+      "deployed_at": "2026-05-19T08:00:00Z",
+      "git_sha": "a1b2c3d",
+      "environment": "production",
+      "evaluation_window": "2026-05-19/2026-05-26",
+      "global_metrics": {
+        "mape_duree_trajet_pct": 14.2,
+        "mape_demande_20min_pct": 13.8,
+        "mae_score_composite": 0.082,
+        "precision_top1_zone_pct": 61.4,
+        "precision_top3_zones_pct": 88.7,
+        "latence_cycle_p50_ms": 9.2,
+        "latence_cycle_p95_ms": 18.6,
+        "latence_cycle_p99_ms": 31.4,
+        "nb_cycles_total": 12480,
+        "nb_cycles_timeout": 4,
+        "taux_timeout_pct": 0.032,
+        "nb_zones_evaluees_moy": 124.3,
+        "rentabilite_moyenne_recommandee_eur_h": 28.4,
+        "rentabilite_realisee_eur_h": 25.1,
+        "ecart_rentabilite_pct": 11.6
+      },
+      "zones_h3": [
+        {
+          "zone_h3": "891fb466653ffff",
+          "label": "Paris 9e — Opéra",
+          "score_composite_moyen": 0.7821,
+          "score_composite_std": 0.0512,
+          "nb_evaluations": 1248,
+          "precision_recommandation_pct": 64.2,
+          "rentabilite_nette_moy_eur_h": 31.2
+        },
+        {
+          "zone_h3": "891fb475b37ffff",
+          "label": "Paris 8e — Champs-Élysées",
+          "score_composite_moyen": 0.8104,
+          "score_composite_std": 0.0489,
+          "nb_evaluations": 986,
+          "precision_recommandation_pct": 68.1,
+          "rentabilite_nette_moy_eur_h": 34.5
+        },
+        {
+          "zone_h3": "891fb4662cbffff",
+          "label": "Paris 1er — Châtelet",
+          "score_composite_moyen": 0.7634,
+          "score_composite_std": 0.0598,
+          "nb_evaluations": 1102,
+          "precision_recommandation_pct": 59.8,
+          "rentabilite_nette_moy_eur_h": 27.8
+        },
+        {
+          "zone_h3": "891fb46628fffff",
+          "label": "Paris 11e — Bastille",
+          "score_composite_moyen": 0.7290,
+          "score_composite_std": 0.0631,
+          "nb_evaluations": 874,
+          "precision_recommandation_pct": 57.3,
+          "rentabilite_nette_moy_eur_h": 24.9
+        },
+        {
+          "zone_h3": "891fb4664abffff",
+          "label": "Paris 18e — Montmartre",
+          "score_composite_moyen": 0.6812,
+          "score_composite_std": 0.0712,
+          "nb_evaluations": 763,
+          "precision_recommandation_pct": 52.1,
+          "rentabilite_nette_moy_eur_h": 21.3
+        }
+      ]
+    },
+    {
+      "version": "2.0.0",
+      "deployed_at": "2026-06-03T09:15:00Z",
+      "git_sha": "e4f5g6h",
+      "environment": "production",
+      "evaluation_window": "2026-06-03/2026-06-10",
+      "global_metrics": {
+        "mape_duree_trajet_pct": 11.7,
+        "mape_demande_20min_pct": 10.9,
+        "mae_score_composite": 0.061,
+        "precision_top1_zone_pct": 67.2,
+        "precision_top3_zones_pct": 91.4,
+        "latence_cycle_p50_ms": 8.1,
+        "latence_cycle_p95_ms": 15.3,
+        "latence_cycle_p99_ms": 24.7,
+        "nb_cycles_total": 13104,
+        "nb_cycles_timeout": 2,
+        "taux_timeout_pct": 0.015,
+        "nb_zones_evaluees_moy": 127.8,
+        "rentabilite_moyenne_recommandee_eur_h": 31.2,
+        "rentabilite_realisee_eur_h": 28.4,
+        "ecart_rentabilite_pct": 9.0
+      },
+      "zones_h3": [
+        {
+          "zone_h3": "891fb466653ffff",
+          "label": "Paris 9e — Opéra",
+          "score_composite_moyen": 0.8143,
+          "score_composite_std": 0.0441,
+          "nb_evaluations": 1312,
+          "precision_recommandation_pct": 69.4,
+          "rentabilite_nette_moy_eur_h": 33.8
+        },
+        {
+          "zone_h3": "891fb475b37ffff",
+          "label": "Paris 8e — Champs-Élysées",
+          "score_composite_moyen": 0.8312,
+          "score_composite_std": 0.0398,
+          "nb_evaluations": 1048,
+          "precision_recommandation_pct": 71.6,
+          "rentabilite_nette_moy_eur_h": 36.1
+        },
+        {
+          "zone_h3": "891fb4662cbffff",
+          "label": "Paris 1er — Châtelet",
+          "score_composite_moyen": 0.7198,
+          "score_composite_std": 0.0821,
+          "nb_evaluations": 1089,
+          "precision_recommandation_pct": 54.2,
+          "rentabilite_nette_moy_eur_h": 24.1
+        },
+        {
+          "zone_h3": "891fb46628fffff",
+          "label": "Paris 11e — Bastille",
+          "score_composite_moyen": 0.7541,
+          "score_composite_std": 0.0558,
+          "nb_evaluations": 921,
+          "precision_recommandation_pct": 61.8,
+          "rentabilite_nette_moy_eur_h": 27.2
+        },
+        {
+          "zone_h3": "891fb4664abffff",
+          "label": "Paris 18e — Montmartre",
+          "score_composite_moyen": 0.6594,
+          "score_composite_std": 0.0834,
+          "nb_evaluations": 801,
+          "precision_recommandation_pct": 49.7,
+          "rentabilite_nette_moy_eur_h": 19.8
+        }
+      ]
+    }
+  ]
+}
