@@ -85,7 +85,30 @@ function fmtChrono(totalSec: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
-// ─── Carte Google Maps embed (trajet GPS → zone → destination ou direct) ──────
+// ─── Helper Leaflet chargement CDN ───────────────────────────────────────────
+
+async function ensureLeaflet(): Promise<any> {
+  if ((window as any).L) return (window as any).L;
+  if (!document.getElementById("leaflet-css")) {
+    const link = document.createElement("link");
+    link.id = "leaflet-css";
+    link.rel = "stylesheet";
+    link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    document.head.appendChild(link);
+  }
+  await new Promise<void>((resolve, reject) => {
+    if (document.getElementById("leaflet-js")) { resolve(); return; }
+    const script = document.createElement("script");
+    script.id = "leaflet-js";
+    script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+    script.onload = () => resolve();
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+  return (window as any).L;
+}
+
+// ─── Carte Leaflet OSM — trajet retour (user → zone → destination) ────────────
 
 function JourneyMap({
   userPos, dest, selectedZone,
@@ -94,38 +117,69 @@ function JourneyMap({
   dest: { lat: number; lng: number };
   selectedZone: RouteZone | null;
 }) {
-  const src = selectedZone
-    ? `https://maps.google.com/maps/dir/${userPos.lat},${userPos.lng}/${selectedZone.zone.lat},${selectedZone.zone.lng}/${dest.lat},${dest.lng}&output=embed&hl=fr`
-    : `https://maps.google.com/maps/dir/${userPos.lat},${userPos.lng}/${dest.lat},${dest.lng}&output=embed&hl=fr`;
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<any>(null);
+
+  useEffect(() => {
+    ensureLeaflet().then((L: any) => {
+      if (!containerRef.current) return;
+      if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+
+      const points: [number, number][] = [[userPos.lat, userPos.lng]];
+      if (selectedZone) points.push([selectedZone.zone.lat, selectedZone.zone.lng]);
+      points.push([dest.lat, dest.lng]);
+
+      const map = L.map(containerRef.current, { zoomControl: true, attributionControl: false });
+      mapRef.current = map;
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18 }).addTo(map);
+
+      // Marqueur utilisateur
+      const userIcon = L.divIcon({ html: `<div style="width:14px;height:14px;background:#3b82f6;border:2px solid white;border-radius:50%;box-shadow:0 0 0 6px rgba(59,130,246,0.2);"></div>`, className: "", iconAnchor: [7,7] });
+      L.marker([userPos.lat, userPos.lng], { icon: userIcon }).addTo(map).bindPopup("📍 Votre position");
+
+      // Marqueur zone (si sélectionnée)
+      if (selectedZone) {
+        const zIcon = L.divIcon({ html: `<div style="width:16px;height:16px;background:#22c55e;border:2px solid white;border-radius:50%;box-shadow:0 0 0 5px rgba(34,197,94,0.2);"></div>`, className: "", iconAnchor: [8,8] });
+        L.marker([selectedZone.zone.lat, selectedZone.zone.lng], { icon: zIcon }).addTo(map).bindPopup(`🎯 ${selectedZone.zone.name}`);
+      }
+
+      // Marqueur destination
+      const destIcon = L.divIcon({ html: `<div style="width:18px;height:18px;background:#f97316;border:2px solid white;border-radius:4px;box-shadow:0 0 0 4px rgba(249,115,22,0.2);transform:rotate(45deg);"></div>`, className: "", iconAnchor: [9,9] });
+      L.marker([dest.lat, dest.lng], { icon: destIcon }).addTo(map).bindPopup("🏠 Destination");
+
+      // Trajet polyline
+      L.polyline(points, { color: "#22c55e", weight: 3, dashArray: selectedZone ? "8 4" : undefined, opacity: 0.85 }).addTo(map);
+
+      const bounds = L.latLngBounds(points);
+      map.fitBounds(bounds, { padding: [40, 40] });
+    }).catch(() => {});
+    return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
+  }, [userPos.lat, userPos.lng, dest.lat, dest.lng, selectedZone?.zone.id]);
+
   return (
-    <div className="relative" style={{ height: "280px", borderRadius: "12px", overflow: "hidden" }}>
-      <iframe
-        key={`jmap-${selectedZone?.zone.id ?? "direct"}`}
-        title="Trajet Google Maps"
-        src={src}
-        width="100%" height="100%"
-        style={{ border: 0, display: "block" }}
-        loading="lazy"
-        referrerPolicy="no-referrer-when-downgrade"
-        allowFullScreen
-      />
-    </div>
+    <div ref={containerRef} style={{ height: "280px", borderRadius: "12px", overflow: "hidden", background: "#1e293b" }} className="border border-border" />
   );
 }
 
 function DestPreviewMap({ dest }: { dest: { lat: number; lng: number } }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<any>(null);
+
+  useEffect(() => {
+    ensureLeaflet().then((L: any) => {
+      if (!containerRef.current || mapRef.current) return;
+      const map = L.map(containerRef.current, { zoomControl: false, attributionControl: false });
+      mapRef.current = map;
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18 }).addTo(map);
+      const destIcon = L.divIcon({ html: `<div style="width:16px;height:16px;background:#f97316;border:2px solid white;border-radius:4px;transform:rotate(45deg);"></div>`, className: "", iconAnchor: [8,8] });
+      L.marker([dest.lat, dest.lng], { icon: destIcon }).addTo(map).bindPopup("🏠 Destination");
+      map.setView([dest.lat, dest.lng], 14);
+    }).catch(() => {});
+    return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
+  }, [dest.lat, dest.lng]);
+
   return (
-    <div style={{ height: "160px", borderRadius: "10px", overflow: "hidden" }} className="border border-border mt-3">
-      <iframe
-        key={`destmap-${dest.lat}-${dest.lng}`}
-        title="Destination"
-        src={`https://maps.google.com/maps?q=${dest.lat},${dest.lng}&z=14&output=embed&hl=fr`}
-        width="100%" height="100%"
-        style={{ border: 0, display: "block" }}
-        loading="lazy"
-        referrerPolicy="no-referrer-when-downgrade"
-      />
-    </div>
+    <div ref={containerRef} style={{ height: "160px", borderRadius: "10px", overflow: "hidden", background: "#1e293b" }} className="border border-border mt-3" />
   );
 }
 

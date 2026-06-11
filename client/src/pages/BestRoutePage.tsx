@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import {
   Navigation, MapPin, TrendingUp, Clock, Zap, Car,
   RefreshCw, AlertCircle, CheckCircle2, Crosshair, Route,
-  Plane, CalendarClock, ChevronRight, Timer, AlertTriangle
+  Plane, CalendarClock, ChevronRight, Timer, AlertTriangle,
+  Star, Euro, Activity
 } from "lucide-react";
 import { UpdateWidget } from "@/components/UpdateWidget";
 
@@ -132,104 +133,203 @@ function minutesFromNow(iso: string): number {
   return Math.round((new Date(iso).getTime() - Date.now()) / 60000);
 }
 
-// ─── Carte Google Maps embed ──────────────────────────────────────────────────
+// ─── Carte OpenStreetMap (Leaflet via CDN — pas de refus connexion) ──────────
 
-function BestRouteMap({ data, selectedIdx }: { data: BestRouteResponse; selectedIdx: number }) {
-  const selectedZone = data.top5[selectedIdx];
-  const { lat, lng } = data.userPosition;
-  const distDeg = Math.max(Math.abs(lat - selectedZone.zone.lat), Math.abs(lng - selectedZone.zone.lng));
-  const zoom = distDeg > 0.5 ? 10 : distDeg > 0.2 ? 11 : 12;
-  const iframeSrc = `https://maps.google.com/maps?q=${selectedZone.zone.lat},${selectedZone.zone.lng}&z=${zoom}&output=embed&hl=fr`;
+function LeafletMap({ userPos, zonePos, zoneName }: {
+  userPos: { lat: number; lng: number };
+  zonePos?: { lat: number; lng: number; name: string };
+  height?: number;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<any>(null);
+  const markersRef = useRef<any[]>([]);
+
+  useEffect(() => {
+    // Charger Leaflet via CDN si pas encore chargé
+    const loadLeaflet = async () => {
+      if (!(window as any).L) {
+        // CSS
+        if (!document.getElementById("leaflet-css")) {
+          const link = document.createElement("link");
+          link.id = "leaflet-css";
+          link.rel = "stylesheet";
+          link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+          document.head.appendChild(link);
+        }
+        // JS
+        await new Promise<void>((resolve, reject) => {
+          if (document.getElementById("leaflet-js")) { resolve(); return; }
+          const script = document.createElement("script");
+          script.id = "leaflet-js";
+          script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+          script.onload = () => resolve();
+          script.onerror = reject;
+          document.head.appendChild(script);
+        });
+      }
+      return (window as any).L;
+    };
+
+    loadLeaflet().then((L: any) => {
+      if (!containerRef.current || mapRef.current) return;
+
+      const centerLat = zonePos ? (userPos.lat + zonePos.lat) / 2 : userPos.lat;
+      const centerLng = zonePos ? (userPos.lng + zonePos.lng) / 2 : userPos.lng;
+
+      const map = L.map(containerRef.current, { zoomControl: true, attributionControl: false });
+      mapRef.current = map;
+
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 18,
+      }).addTo(map);
+
+      // Marqueur utilisateur (bleu pulsé)
+      const userIcon = L.divIcon({
+        html: `<div style="width:14px;height:14px;background:#3b82f6;border:2px solid white;border-radius:50%;box-shadow:0 0 0 6px rgba(59,130,246,0.25);"></div>`,
+        className: "", iconAnchor: [7, 7],
+      });
+      L.marker([userPos.lat, userPos.lng], { icon: userIcon })
+        .addTo(map)
+        .bindPopup("📍 Votre position");
+
+      if (zonePos) {
+        const zoneIcon = L.divIcon({
+          html: `<div style="width:18px;height:18px;background:#22c55e;border:2px solid white;border-radius:50%;box-shadow:0 0 0 5px rgba(34,197,94,0.25);"></div>`,
+          className: "", iconAnchor: [9, 9],
+        });
+        L.marker([zonePos.lat, zonePos.lng], { icon: zoneIcon })
+          .addTo(map)
+          .bindPopup(`🎯 ${zoneName}`);
+
+        // Ligne entre user et zone
+        L.polyline([[userPos.lat, userPos.lng], [zonePos.lat, zonePos.lng]], {
+          color: "#22c55e", weight: 2, dashArray: "6 4", opacity: 0.8,
+        }).addTo(map);
+
+        // Fit bounds
+        const bounds = L.latLngBounds(
+          [userPos.lat, userPos.lng],
+          [zonePos.lat, zonePos.lng]
+        );
+        map.fitBounds(bounds, { padding: [40, 40] });
+      } else {
+        map.setView([userPos.lat, userPos.lng], 14);
+      }
+    }).catch(() => {});
+
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, [userPos.lat, userPos.lng, zonePos?.lat, zonePos?.lng]);
+
   return (
-    <div className="relative" style={{ height: "280px", borderRadius: "12px", overflow: "hidden" }}>
-      <iframe
-        key={`map-${selectedZone.zone.id}`}
-        title="Google Maps"
-        src={iframeSrc}
-        width="100%" height="100%"
-        style={{ border: 0, display: "block" }}
-        loading="lazy"
-        referrerPolicy="no-referrer-when-downgrade"
-        allowFullScreen
-      />
-    </div>
+    <div
+      ref={containerRef}
+      style={{ height: "260px", borderRadius: "12px", overflow: "hidden", background: "#1e293b" }}
+      className="border border-border"
+    />
   );
 }
+
+// ─── Carte petite pour GPS wait ───────────────────────────────────────────────
 
 function GpsWaitMap({ pos }: { pos: { lat: number; lng: number } | null }) {
   if (!pos) return null;
   return (
     <div style={{ height: "140px", borderRadius: "10px", overflow: "hidden" }} className="border border-border mt-3">
-      <iframe
-        key={`gps-${pos.lat}-${pos.lng}`}
-        title="Position GPS"
-        src={`https://maps.google.com/maps?q=${pos.lat},${pos.lng}&z=15&output=embed&hl=fr`}
-        width="100%" height="100%"
-        style={{ border: 0, display: "block" }}
-        loading="lazy"
-        referrerPolicy="no-referrer-when-downgrade"
-      />
+      <LeafletMap userPos={pos} zoneName="" />
     </div>
   );
 }
 
-// ─── Top 4 zone card (horizontale) ───────────────────────────────────────────
+// ─── Carte zone verticale (sous la map principale) ───────────────────────────
 
-function TopZoneCard({ zone, rank, isSelected, onClick }: {
+function ZoneCardVertical({ zone, rank, isSelected, onClick, userPos }: {
   zone: ZoneResult; rank: number; isSelected: boolean; onClick: () => void;
+  userPos: { lat: number; lng: number };
 }) {
   const color = getScoreColor(zone.globalScore);
   return (
     <div
       onClick={onClick}
       style={{
-        minWidth: "148px",
-        maxWidth: "148px",
         borderColor: isSelected ? color : undefined,
-        boxShadow: isSelected ? `0 0 0 2px ${color}40` : undefined,
+        boxShadow: isSelected ? `0 0 0 2px ${color}30` : undefined,
+        background: isSelected ? `${color}08` : undefined,
       }}
-      className={`cursor-pointer flex-shrink-0 rounded-xl border p-3 transition-all duration-200 ${
-        isSelected ? "bg-primary/5" : "border-border bg-card hover:border-muted-foreground/40"
-      }`}
+      className="cursor-pointer rounded-2xl border border-border p-4 transition-all duration-200 hover:border-muted-foreground/40"
     >
-      {/* Rank + score */}
-      <div className="flex items-center justify-between mb-2">
-        <div
-          className="w-7 h-7 rounded-full flex items-center justify-center font-black text-xs text-black flex-shrink-0"
-          style={{ background: color }}
-        >
-          {rank}
+      {/* Header */}
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="flex items-center gap-2">
+          <div
+            className="w-8 h-8 rounded-full flex items-center justify-center font-black text-xs text-black flex-shrink-0"
+            style={{ background: color }}
+          >
+            {rank === 1 ? <Star size={14} fill="black" /> : rank}
+          </div>
+          <div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm">{getZoneTypeIcon(zone.zone.type)}</span>
+              <span className="font-semibold text-sm leading-tight">{zone.zone.name}</span>
+              {rank === 1 && (
+                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400">TOP</span>
+              )}
+            </div>
+            <p className="text-[10px] text-muted-foreground italic mt-0.5 leading-tight">{zone.reason}</p>
+          </div>
         </div>
-        <div className="text-right">
-          <div className="font-black text-lg leading-none" style={{ color }}>{zone.globalScore}</div>
-          <div className="text-[9px] text-muted-foreground leading-none mt-0.5">{getScoreLabel(zone.globalScore)}</div>
-        </div>
-      </div>
-
-      {/* Zone name */}
-      <div className="flex items-center gap-1 mb-1.5">
-        <span className="text-xs">{getZoneTypeIcon(zone.zone.type)}</span>
-        <span className="text-xs font-semibold leading-tight line-clamp-2">{zone.zone.name}</span>
-      </div>
-
-      {/* Distance + ETA */}
-      <div className="flex flex-col gap-0.5 mb-2">
-        <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-          <MapPin size={9} /> {zone.distanceKm} km
-        </div>
-        <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-          <Clock size={9} /> ~{zone.etaMinutes} min
-        </div>
-        <div className="flex items-center gap-1 text-[10px] text-green-400 font-semibold">
-          <TrendingUp size={9} /> ~{zone.estimatedRevenue}€
+        <div className="text-right flex-shrink-0">
+          <div className="font-black text-2xl leading-none" style={{ color }}>{zone.globalScore}</div>
+          <div className="text-[10px] text-muted-foreground">{getScoreLabel(zone.globalScore)}</div>
         </div>
       </div>
 
-      {rank === 1 && (
-        <div className="text-[9px] text-center font-bold px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400">
-          ⭐ TOP
+      {/* KPIs grid */}
+      <div className="grid grid-cols-4 gap-2 mb-3">
+        {[
+          { icon: <MapPin size={11} />, label: "Route", value: `${zone.distanceKm}km` },
+          { icon: <Clock size={11} />, label: "ETA", value: `~${zone.etaMinutes}min` },
+          { icon: <Zap size={11} />, label: "Surge", value: `×${zone.surgeMultiplier}` },
+          { icon: <Euro size={11} />, label: "Tarif", value: `~${zone.estimatedRevenue}€` },
+        ].map((m, i) => (
+          <div key={i} className="flex flex-col items-center gap-0.5 p-2 rounded-lg bg-background/50 text-center">
+            <span className="text-primary">{m.icon}</span>
+            <span className="text-[9px] text-muted-foreground">{m.label}</span>
+            <span className="text-xs font-bold">{m.value}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Rentabilité bar */}
+      <div className="mb-3">
+        <div className="flex justify-between text-[9px] text-muted-foreground mb-1">
+          <span>Rentabilité</span>
+          <span style={{ color }}>{zone.profitabilityIndex}/100</span>
         </div>
-      )}
+        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+          <div
+            className="h-full rounded-full transition-all duration-500"
+            style={{ width: `${zone.profitabilityIndex}%`, background: color }}
+          />
+        </div>
+      </div>
+
+      {/* Bouton Google Maps (lien externe — pas iframe) */}
+      <a
+        href={`https://www.google.com/maps/dir/${userPos.lat},${userPos.lng}/${zone.zone.lat},${zone.zone.lng}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center justify-center gap-2 w-full py-2 rounded-xl text-sm font-semibold text-black transition-opacity hover:opacity-90"
+        style={{ background: color }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Navigation size={14} />
+        Naviguer — Google Maps
+      </a>
     </div>
   );
 }
@@ -265,10 +365,7 @@ function SlotCard({ slot, zoneId, zoneLat, zoneLng, userLat, userLng }: {
       <div className="grid grid-cols-3 gap-1 mb-2.5">
         <div className="flex flex-col items-center text-center">
           <div className="text-[9px] text-muted-foreground mb-0.5">Partez à</div>
-          <div
-            className="text-sm font-black tabular-nums"
-            style={{ color: cfg.color }}
-          >
+          <div className="text-sm font-black tabular-nums" style={{ color: cfg.color }}>
             {fmtTime(slot.departAt)}
           </div>
           {minsUntilDepart > 0 && (
@@ -278,7 +375,6 @@ function SlotCard({ slot, zoneId, zoneLat, zoneLng, userLat, userLng }: {
             <div className="text-[9px] font-bold" style={{ color: cfg.color }}>MAINTENANT</div>
           )}
         </div>
-
         <div className="flex flex-col items-center justify-center">
           <div className="flex items-center gap-1 text-muted-foreground">
             <div className="h-px w-4 bg-muted-foreground/40" />
@@ -287,7 +383,6 @@ function SlotCard({ slot, zoneId, zoneLat, zoneLng, userLat, userLng }: {
           </div>
           <div className="text-[9px] text-muted-foreground">{slot.distKm}km</div>
         </div>
-
         <div className="flex flex-col items-center text-center">
           <div className="text-[9px] text-muted-foreground mb-0.5">Arrivée</div>
           <div className="text-sm font-black tabular-nums text-blue-400">{fmtTime(slot.arriveBy)}</div>
@@ -314,7 +409,7 @@ function SlotCard({ slot, zoneId, zoneLat, zoneLng, userLat, userLng }: {
 
 // ─── Bloc événement complet ───────────────────────────────────────────────────
 
-function EventBlock({ block, userPos, isExpanded, onToggle }: {
+function EventBlockComponent({ block, userPos, isExpanded, onToggle }: {
   block: EventBlock; userPos: { lat: number; lng: number }; isExpanded: boolean; onToggle: () => void;
 }) {
   const nextSlot = block.slots[0];
@@ -325,23 +420,18 @@ function EventBlock({ block, userPos, isExpanded, onToggle }: {
     <div className={`rounded-2xl border overflow-hidden transition-all duration-300 ${
       hasUrgent ? "border-orange-500/40" : "border-border"
     }`}>
-      {/* Header cliquable */}
       <button
         onClick={onToggle}
         className="w-full text-left p-4 flex items-center gap-3 hover:bg-muted/30 transition-colors"
       >
-        {/* Icon type */}
         <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center text-lg flex-shrink-0">
           {getEventTypeIcon(block.eventType)}
         </div>
-
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 mb-0.5">
             <span className="font-semibold text-sm leading-tight truncate">{block.eventName}</span>
             {hasUrgent && (
-              <span className="flex-shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-orange-500/20 text-orange-400 border border-orange-500/30">
-                URGENT
-              </span>
+              <span className="flex-shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-orange-500/20 text-orange-400 border border-orange-500/30">URGENT</span>
             )}
           </div>
           <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
@@ -354,38 +444,28 @@ function EventBlock({ block, userPos, isExpanded, onToggle }: {
               {block.slots.length} créneau{block.slots.length > 1 ? "x" : ""}
             </span>
           </div>
-
-          {/* Prochain slot résumé */}
           {nextSlot && !isExpanded && (
-            <div
-              className="mt-1 text-[10px] font-semibold flex items-center gap-1"
-              style={{ color: nextCfg?.color }}
-            >
+            <div className="mt-1 text-[10px] font-semibold flex items-center gap-1" style={{ color: nextCfg?.color }}>
               <Timer size={9} />
-              Prochain : départ {fmtTime(nextSlot.departAt)}
+              Prochain départ : {fmtTime(nextSlot.departAt)}
               {minutesFromNow(nextSlot.departAt) > 0
                 ? ` (dans ${minutesFromNow(nextSlot.departAt)}min)`
-                : " · MAINTENANT"
-              }
+                : " · MAINTENANT"}
             </div>
           )}
         </div>
-
         <ChevronRight
           size={16}
           className={`flex-shrink-0 text-muted-foreground transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`}
         />
       </button>
 
-      {/* Slots dépliés */}
       {isExpanded && (
         <div className="px-4 pb-4 flex flex-col gap-2.5">
-          {/* Timestamp du clic */}
           <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground bg-muted/30 rounded-lg px-3 py-1.5">
             <Crosshair size={9} className="text-blue-400" />
-            <span>Calculé depuis votre position GPS à <strong className="text-blue-400">{fmtTimeSec(block.clickedAt)}</strong></span>
+            <span>Calculé à <strong className="text-blue-400">{fmtTimeSec(block.clickedAt)}</strong> depuis votre GPS</span>
           </div>
-
           {block.slots.map((slot) => (
             <SlotCard
               key={slot.slotId}
@@ -397,8 +477,6 @@ function EventBlock({ block, userPos, isExpanded, onToggle }: {
               userLng={userPos.lng}
             />
           ))}
-
-          {/* Lien navigation général */}
           <a
             href={block.mapsUrl}
             target="_blank"
@@ -430,7 +508,6 @@ export default function BestRoutePage() {
   const lastComputeRef = useRef<number>(0);
   const lastEventRef = useRef<number>(0);
 
-  // Géolocalisation continue
   const startGeolocation = useCallback(() => {
     if (!navigator.geolocation) { setGpsStatus("error"); setError("Géolocalisation non disponible."); return; }
     setGpsStatus("requesting");
@@ -447,7 +524,7 @@ export default function BestRoutePage() {
       (err) => {
         setGpsStatus(err.code === 1 ? "denied" : "error");
         setError(err.code === 1
-          ? "Accès à la position refusé. Autorisez la géolocalisation dans les paramètres."
+          ? "Accès à la position refusé. Autorisez la géolocalisation."
           : `Erreur GPS : ${err.message}`);
       },
       { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
@@ -458,23 +535,17 @@ export default function BestRoutePage() {
     if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
   }, []);
 
-  // Calcul best-route
   const compute = useCallback(async (pos: { lat: number; lng: number }) => {
-    setLoading(true);
-    setError(null);
+    setLoading(true); setError(null);
     try {
       const resp = await apiRequest("POST", "/api/best-route", pos);
       const data: BestRouteResponse = await resp.json();
-      setResult(data);
-      setSelectedIdx(0);
+      setResult(data); setSelectedIdx(0);
     } catch (e: any) {
-      setError(`Erreur calcul itinéraire : ${e.message}`);
-    } finally {
-      setLoading(false);
-    }
+      setError(`Erreur calcul : ${e.message}`);
+    } finally { setLoading(false); }
   }, []);
 
-  // Calcul événements
   const computeEvents = useCallback(async (pos: { lat: number; lng: number }) => {
     setEventLoading(true);
     try {
@@ -484,26 +555,22 @@ export default function BestRoutePage() {
       setEventSchedule(data);
     } catch (e: any) {
       console.warn("Event schedule error:", e.message);
-    } finally {
-      setEventLoading(false);
-    }
+    } finally { setEventLoading(false); }
   }, []);
 
-  // Auto-calcul sur changement position (max 1x/30s)
   useEffect(() => {
     if (!position || gpsStatus !== "granted") return;
     const now = Date.now();
     if (now - lastComputeRef.current < 30000 && result) return;
     lastComputeRef.current = now;
     compute(position);
-    // Événements : max 1x/60s
     if (now - lastEventRef.current > 60000) {
       lastEventRef.current = now;
       computeEvents(position);
     }
   }, [position]);
 
-  // ─── Etats d'attente ───────────────────────────────────────────────────────
+  // ─── États d'attente ───────────────────────────────────────────────────────
 
   const renderIdle = () => (
     <div className="flex flex-col items-center justify-center py-16 px-6 text-center gap-6">
@@ -513,8 +580,7 @@ export default function BestRoutePage() {
       <div>
         <h2 className="text-xl font-bold mb-2">Meilleur Trajet</h2>
         <p className="text-sm text-muted-foreground max-w-xs">
-          Activez la géolocalisation pour voir les 4 meilleures zones + les créneaux de positionnement
-          pour chaque événement en temps réel.
+          Activez la géolocalisation pour voir les 4 meilleures zones + créneaux en temps réel.
         </p>
       </div>
       <div className="grid grid-cols-3 gap-3 w-full max-w-xs">
@@ -530,8 +596,7 @@ export default function BestRoutePage() {
         ))}
       </div>
       <Button onClick={startGeolocation} size="lg" className="gap-2 px-8">
-        <Crosshair size={18} />
-        Activer la géolocalisation
+        <Crosshair size={18} /> Activer la géolocalisation
       </Button>
       <p className="text-xs text-muted-foreground opacity-60">Position jamais stockée</p>
     </div>
@@ -571,174 +636,131 @@ export default function BestRoutePage() {
 
   // ─── Rendu résultat ────────────────────────────────────────────────────────
 
-  const renderResult = (data: BestRouteResponse) => (
-    <div className="flex flex-col gap-5 pb-8">
+  const renderResult = (data: BestRouteResponse) => {
+    const selectedZone = data.top5[selectedIdx];
+    return (
+      <div className="flex flex-col gap-5 pb-8">
 
-      {/* ── Header position ────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-4 pt-3">
-        <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_0_4px_rgba(59,130,246,0.2)] animate-pulse" />
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {data.userPosition.lat.toFixed(4)}, {data.userPosition.lng.toFixed(4)}
-          </span>
-          <span className="text-[10px] text-muted-foreground opacity-50">
-            {data.hour}h — {data.dayType === "weekday" ? "Semaine" : "Week-end"}
-          </span>
-        </div>
-        <Button
-          variant="outline" size="sm"
-          onClick={() => position && (compute(position), computeEvents(position))}
-          disabled={loading || eventLoading}
-          className="h-7 gap-1.5 text-xs"
-        >
-          <RefreshCw size={12} className={(loading || eventLoading) ? "animate-spin" : ""} />
-          {(loading || eventLoading) ? "Calcul…" : "Rafraîchir"}
-        </Button>
-      </div>
-
-      <div className="px-4">
-        <UpdateWidget compact={true} className="w-full" />
-      </div>
-
-      {/* ── TOP 4 ZONES — Scroll horizontal ─────────────────────────────────── */}
-      <div className="px-4">
-        <div className="flex items-center gap-2 mb-3">
-          <TrendingUp size={14} className="text-primary" />
-          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-            Top 4 zones rentables
-          </h2>
-          <div className="text-[10px] text-muted-foreground opacity-50">
-            depuis {data.userPosition.lat.toFixed(3)}, {data.userPosition.lng.toFixed(3)}
+        {/* Header position + rafraîchir */}
+        <div className="flex items-center justify-between px-4 pt-3">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_0_4px_rgba(59,130,246,0.2)] animate-pulse" />
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {data.userPosition.lat.toFixed(4)}, {data.userPosition.lng.toFixed(4)}
+            </span>
+            <span className="text-[10px] text-muted-foreground opacity-50">
+              {data.hour}h — {data.dayType === "weekday" ? "Semaine" : "Week-end"}
+            </span>
           </div>
+          <Button
+            variant="outline" size="sm"
+            onClick={() => position && (compute(position), computeEvents(position))}
+            disabled={loading || eventLoading}
+            className="h-7 gap-1.5 text-xs"
+          >
+            <RefreshCw size={12} className={(loading || eventLoading) ? "animate-spin" : ""} />
+            {(loading || eventLoading) ? "Calcul…" : "Rafraîchir"}
+          </Button>
         </div>
 
-        {/* Scroll horizontal */}
-        <div
-          className="flex gap-3 overflow-x-auto pb-2"
-          style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
-        >
-          {data.top5.slice(0, 4).map((z, i) => (
-            <TopZoneCard
-              key={z.zone.id}
-              zone={z}
-              rank={i + 1}
-              isSelected={selectedIdx === i}
-              onClick={() => setSelectedIdx(i)}
-            />
-          ))}
+        <div className="px-4">
+          <UpdateWidget compact={true} className="w-full" />
         </div>
 
-        {/* Description zone sélectionnée */}
-        {data.top5[selectedIdx] && (
-          <div className="mt-3 p-3 rounded-xl border border-border bg-card">
-            <div className="flex items-start justify-between gap-3 mb-2">
-              <div className="flex items-center gap-2">
-                <span className="text-base">{getZoneTypeIcon(data.top5[selectedIdx].zone.type)}</span>
-                <div>
-                  <div className="font-semibold text-sm">{data.top5[selectedIdx].zone.name}</div>
-                  <p className="text-[10px] text-muted-foreground italic mt-0.5">{data.top5[selectedIdx].reason}</p>
-                </div>
-              </div>
-              <div className="text-right flex-shrink-0">
-                <div className="font-black text-xl leading-none" style={{ color: getScoreColor(data.top5[selectedIdx].globalScore) }}>
-                  {data.top5[selectedIdx].globalScore}
-                </div>
-                <div className="text-[10px] text-muted-foreground">{getScoreLabel(data.top5[selectedIdx].globalScore)}</div>
-              </div>
+        {/* ── CARTE OSM (Leaflet) ───────────────────────────────────────────── */}
+        <div className="px-4">
+          <div className="flex items-center gap-2 mb-2">
+            <MapPin size={13} className="text-primary" />
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Carte — {selectedZone?.zone.name ?? "Votre position"}
+            </span>
+          </div>
+          <LeafletMap
+            userPos={data.userPosition}
+            zonePos={selectedZone ? { lat: selectedZone.zone.lat, lng: selectedZone.zone.lng, name: selectedZone.zone.name } : undefined}
+            zoneName={selectedZone?.zone.name ?? ""}
+          />
+        </div>
+
+        {/* ── TOP 4 ZONES — Cartes verticales sous la map ─────────────────── */}
+        <div className="px-4">
+          <div className="flex items-center gap-2 mb-3">
+            <TrendingUp size={14} className="text-primary" />
+            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Top 4 zones rentables
+            </h2>
+            <div className="text-[10px] text-muted-foreground opacity-50 ml-auto">
+              {data.top5.length} zones analysées
             </div>
-
-            <div className="grid grid-cols-4 gap-2 mb-3">
-              {[
-                { icon: <MapPin size={11} />, label: "Route", value: `${data.top5[selectedIdx].distanceKm}km` },
-                { icon: <Clock size={11} />, label: "ETA", value: `~${data.top5[selectedIdx].etaMinutes}min` },
-                { icon: <Zap size={11} />, label: "Surge", value: `×${data.top5[selectedIdx].surgeMultiplier}` },
-                { icon: <Car size={11} />, label: "Tarif", value: `~${data.top5[selectedIdx].estimatedRevenue}€` },
-              ].map((m, i) => (
-                <div key={i} className="flex flex-col items-center gap-0.5 p-2 rounded-lg bg-background/50 text-center">
-                  <span className="text-primary">{m.icon}</span>
-                  <span className="text-[9px] text-muted-foreground">{m.label}</span>
-                  <span className="text-xs font-bold">{m.value}</span>
-                </div>
-              ))}
-            </div>
-
-            <a
-              href={`https://www.google.com/maps/dir/${data.userPosition.lat},${data.userPosition.lng}/${data.top5[selectedIdx].zone.lat},${data.top5[selectedIdx].zone.lng}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-semibold text-black transition-opacity hover:opacity-90"
-              style={{ background: getScoreColor(data.top5[selectedIdx].globalScore) }}
-            >
-              <Navigation size={14} />
-              Ouvrir dans Google Maps
-            </a>
           </div>
-        )}
-      </div>
 
-      {/* ── Carte ──────────────────────────────────────────────────────────────── */}
-      <div className="px-4">
-        <BestRouteMap data={data} selectedIdx={selectedIdx} />
-      </div>
-
-      {/* ── ÉVÉNEMENTS — Propositions chronologiques ─────────────────────────── */}
-      <div className="px-4">
-        <div className="flex items-center gap-2 mb-3">
-          <CalendarClock size={14} className="text-primary" />
-          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-            Événements — Créneaux de positionnement
-          </h2>
-          {eventLoading && (
-            <RefreshCw size={10} className="animate-spin text-muted-foreground ml-auto" />
-          )}
-        </div>
-
-        {!eventSchedule && !eventLoading && (
-          <div className="rounded-xl border border-dashed border-border p-6 text-center">
-            <p className="text-xs text-muted-foreground">Chargement des événements…</p>
-          </div>
-        )}
-
-        {eventSchedule && eventSchedule.eventBlocks.length === 0 && (
-          <div className="rounded-xl border border-dashed border-border p-6 text-center">
-            <CalendarClock size={24} className="text-muted-foreground mx-auto mb-2" />
-            <p className="text-xs text-muted-foreground">Aucun événement actif avec créneau disponible dans les 3h.</p>
-          </div>
-        )}
-
-        {eventSchedule && eventSchedule.eventBlocks.length > 0 && (
           <div className="flex flex-col gap-3">
-            {/* Alerte si slot "now" ou "soon" */}
-            {eventSchedule.eventBlocks.some(b => b.slots.some(s => s.urgency === "now" || s.urgency === "soon")) && (
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-orange-500/10 border border-orange-500/30 text-xs text-orange-400">
-                <AlertTriangle size={13} />
-                <span className="font-semibold">Positionnement urgent recommandé sur une ou plusieurs zones</span>
-              </div>
-            )}
-
-            {eventSchedule.eventBlocks.map((block) => (
-              <EventBlock
-                key={block.eventId}
-                block={block}
+            {data.top5.slice(0, 4).map((z, i) => (
+              <ZoneCardVertical
+                key={z.zone.id}
+                zone={z}
+                rank={i + 1}
+                isSelected={selectedIdx === i}
+                onClick={() => setSelectedIdx(i)}
                 userPos={data.userPosition}
-                isExpanded={expandedEvent === block.eventId}
-                onToggle={() => setExpandedEvent(prev => prev === block.eventId ? null : block.eventId)}
               />
             ))}
           </div>
-        )}
+        </div>
 
-        {/* Note de calcul */}
-        {eventSchedule && (
-          <div className="mt-3 text-[10px] text-muted-foreground opacity-50 text-center">
-            Créneaux calculés à {fmtTimeSec(eventSchedule.computedAt)} ·
-            Position GPS : {eventSchedule.userPosition.lat.toFixed(4)}, {eventSchedule.userPosition.lng.toFixed(4)} ·
-            Mise à jour auto toutes les 60s
+        {/* ── ÉVÉNEMENTS — Créneaux chronologiques ─────────────────────────── */}
+        <div className="px-4">
+          <div className="flex items-center gap-2 mb-3">
+            <CalendarClock size={14} className="text-primary" />
+            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              Événements — Créneaux de positionnement
+            </h2>
+            {eventLoading && <RefreshCw size={10} className="animate-spin text-muted-foreground ml-auto" />}
           </div>
-        )}
+
+          {!eventSchedule && !eventLoading && (
+            <div className="rounded-xl border border-dashed border-border p-6 text-center">
+              <p className="text-xs text-muted-foreground">Chargement des événements…</p>
+            </div>
+          )}
+
+          {eventSchedule && eventSchedule.eventBlocks.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border p-6 text-center">
+              <CalendarClock size={24} className="text-muted-foreground mx-auto mb-2" />
+              <p className="text-xs text-muted-foreground">Aucun événement actif avec créneau disponible dans les 3h.</p>
+            </div>
+          )}
+
+          {eventSchedule && eventSchedule.eventBlocks.length > 0 && (
+            <div className="flex flex-col gap-3">
+              {eventSchedule.eventBlocks.some(b => b.slots.some(s => s.urgency === "now" || s.urgency === "soon")) && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-orange-500/10 border border-orange-500/30 text-xs text-orange-400">
+                  <AlertTriangle size={13} />
+                  <span className="font-semibold">Positionnement urgent recommandé sur une ou plusieurs zones</span>
+                </div>
+              )}
+              {eventSchedule.eventBlocks.map((block) => (
+                <EventBlockComponent
+                  key={block.eventId}
+                  block={block}
+                  userPos={data.userPosition}
+                  isExpanded={expandedEvent === block.eventId}
+                  onToggle={() => setExpandedEvent(prev => prev === block.eventId ? null : block.eventId)}
+                />
+              ))}
+            </div>
+          )}
+
+          {eventSchedule && (
+            <div className="mt-3 text-[10px] text-muted-foreground opacity-50 text-center">
+              Créneaux calculés à {fmtTimeSec(eventSchedule.computedAt)} ·
+              Mise à jour auto toutes les 60s
+            </div>
+          )}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="min-h-full">
@@ -749,7 +771,7 @@ export default function BestRoutePage() {
           <div>
             <h1 className="font-bold text-sm leading-none">Meilleur Trajet</h1>
             <p className="text-[10px] text-muted-foreground mt-0.5">
-              Top 4 zones + créneaux événements depuis votre GPS
+              Top 4 zones + créneaux depuis votre GPS
             </p>
           </div>
           {gpsStatus === "granted" && position && (

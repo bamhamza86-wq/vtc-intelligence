@@ -59,7 +59,7 @@ const patterns: Record<string, {
     baseAvgDist: 42, baseLongRide: 0.94, demandCap: 98,
     demandBoost11_14: 6,    // arrivées intercontinentales 11h-13h
     demandBoost14_18: 8,    // pic départs PM + navettes
-    demandBoost6_10: 8,     // départs matinaux intercontinentaux + arrivées early ✅
+    demandBoost6_10: 12,    // départs matinaux intercontinentaux + arrivées long-courrier 7h-9h ✅ ADP données réelles
   },
   // Orly : DOM-TOM 11h-14h, départs 16h-18h
   z_orly: {
@@ -67,7 +67,7 @@ const patterns: Record<string, {
     baseAvgDist: 27, baseLongRide: 0.84, demandCap: 94,
     demandBoost11_14: 4,
     demandBoost14_18: 7,
-    demandBoost6_10: 5,     // DOM-TOM matinaux, présence 7h-10h forte ✅
+    demandBoost6_10: 7,     // DOM-TOM matinaux + navettes business jeudi ✅
   },
   // ── Hubs transport / banlieue proche ─────────────────────────────────────
   // St-Denis : trafic commute + tourisme Basilique / Stade France 13h-17h
@@ -76,21 +76,21 @@ const patterns: Record<string, {
     baseAvgDist: 16, baseLongRide: 0.40,
     demandBoost11_14: 3,
     demandBoost14_18: 5,
-    demandBoost6_10: 6,     // rush commute fort 7h-9h ✅
+    demandBoost6_10: 10,    // rush commute fort 7h-9h ✅ + grève RER D 11/06 (reports modaux)
   },
   z_bobigny_gare: {
     peakHours: [7,8,9,12,13,17,18,19],
     baseAvgDist: 13, baseLongRide: 0.32,
     demandBoost11_14: 2,
     demandBoost14_18: 3,
-    demandBoost6_10: 6,     // rush commute fort 7h-9h ✅
+    demandBoost6_10: 8,     // rush commute fort 7h-9h ✅ + résidu grève RER D
   },
   z_aubervilliers: {
     peakHours: [7,8,9,11,12,17,18,19,22,23],
     baseAvgDist: 15, baseLongRide: 0.37,
     demandBoost11_14: 3,
     demandBoost14_18: 4,
-    demandBoost6_10: 6,     // rush commute fort 7h-9h ✅
+    demandBoost6_10: 8,     // rush commute fort + zones chaudes 11/06 (pluie + grève)
   },
   z_epinay_gennevilliers: {
     peakHours: [6,7,8,9,17,18,19],
@@ -103,7 +103,7 @@ const patterns: Record<string, {
   z_plaine_commune: {
     peakHours: [7,8,9,10,11,12,13,14,15,16,17,18,19],
     baseAvgDist: 18, baseLongRide: 0.48,
-    demandBoost11_14: 8,    // déjeuners d'affaires, réunions
+    demandBoost11_14: 6,    // déjeuners d'affaires sièges sociaux (normal — pas de salon)
     demandBoost14_18: 10,   // retour fin journée travail flexible
     demandBoost6_10: 4,     // arrivées employés sièges sociaux 7h-9h
   },
@@ -112,17 +112,17 @@ const patterns: Record<string, {
   z_le_bourget: {
     peakHours: [7,8,9,10,11,12,13,14,15,16,17,18,19,20],
     baseAvgDist: 24, baseLongRide: 0.58,
-    demandBoost11_14: 10,   // Parc Expo / Bourget Aéroport affaires
-    demandBoost14_18: 12,   // pic retour exposants + navettes
-    demandBoost6_10: 2,     // peu actif 6h-9h (pas de vols 6h-9h) ✅
+    demandBoost11_14: 4,    // aviation d'affaires seulement (pas de Paris Air Show en 2026 — prochain 2027)
+    demandBoost14_18: 6,    // vols d'affaires PM + retours
+    demandBoost6_10: 3,     // premiers vols business (Bourget = affaires uniquement)
   },
   // Villepinte : Parc des Expos Paris Nord Villepinte — très actif 11h-18h
   z_villepinte: {
     peakHours: [7,8,9,10,11,12,13,14,15,16,17,18,19,20],
     baseAvgDist: 32, baseLongRide: 0.68,
-    demandBoost11_14: 12,   // salons professionnels 11h-14h
-    demandBoost14_18: 15,   // sortie salons + navettes hôtel
-    demandBoost6_10: 3,     // ouverture exposants / montage tôt
+    demandBoost11_14: 2,    // Villepinte VIDE 11/06 (Eurosatory démarre le 15/06/2026)
+    demandBoost14_18: 3,    // faible — quelques séminaires hors salon
+    demandBoost6_10: 1,     // minimal — pas de salon actif
   },
   // Tremblay : entre CDG et Villepinte, hub logistique + résidentiel
   z_tremblay: {
@@ -138,8 +138,8 @@ const patterns: Record<string, {
     peakHours: [16,17,18,19,20,21,22,23],
     baseAvgDist: 14, baseLongRide: 0.32,
     demandBoost11_14: 2,    // visites stade / offices tourisme
-    demandBoost14_18: 5,    // pré-event + entraînements
-    demandBoost6_10: 2,     // commute résidentiel secteur
+    demandBoost14_18: 18,   // CONCERT DAVID GUETTA 11/06 — portes 16h30 → surge massif ✅
+    demandBoost6_10: 2,     // commute résidentiel secteur (calme matin)
   },
   // ── Zones résidentielles / mixtes ─────────────────────────────────────────
   z_93_centre: {
@@ -179,7 +179,8 @@ const DAY_COEFFICIENTS: Record<number, {
   1: { demand: 0.93, supply: 0.88, surge: 1.08, supply_midday: 0.90, supply_morning: 0.72, label: "Lundi"     },
   2: { demand: 1.03, supply: 0.78, surge: 1.18, supply_midday: 0.82, supply_morning: 0.65, label: "Mardi"     },
   3: { demand: 1.04, supply: 0.90, surge: 1.15, supply_midday: 0.93, supply_morning: 0.78, label: "Mercredi"  },
-  4: { demand: 1.07, supply: 0.93, surge: 1.18, supply_midday: 0.96, supply_morning: 0.80, label: "Jeudi"     },
+  4: { demand: 1.18, supply: 0.91, surge: 1.28, supply_midday: 0.93, supply_morning: 0.68, label: "Jeudi"     },
+  // 11/06/2026 : grève RER D (×demande ↑) + pluie (×demande ↑) + supply_morning basse (chauffeurs absents tôt)
   5: { demand: 1.10, supply: 0.85, surge: 1.28, supply_midday: 0.88, supply_morning: 0.75, label: "Vendredi"  },
   6: { demand: 0.82, supply: 0.62, surge: 1.22, supply_midday: 0.65, supply_morning: 0.52, label: "Samedi"    },
 };
@@ -280,16 +281,26 @@ function computeScore(
   };
   // getRatioH — recalibré 10/06/2026 (corrélation 6h-10h mesurée à 10h37)
   const getRatioH = (hh: number): number => {
-    if (hh < 6)  return 2.40;  // nuit
-    if (hh < 7)  return 1.45;  // pré-rush 6h ✅ corrélation 6h-10h
-    if (hh < 9)  return 0.88;  // rush AM
-    if (hh < 12) return 1.69;  // post-rush 9-12h ✅ MESURÉ 10h37
-    if (hh < 14) return 1.58;  // mi-journée
-    if (hh < 16) return 1.42;  // après-midi
-    if (hh < 17) return 1.12;  // pré-rush PM
-    if (hh < 19) return 1.00;  // rush PM ✅ BASE
-    if (hh < 22) return 1.52;  // soir
-    return 2.40;
+    // ─── Recalibré 11/06/2026 — données réelles croisées ───────────────────
+    // Sources : ADP trafic aéro, Sytadin/DiRIF, grève RER D 11/06, météo
+    // Ratio = vitesse effective / vitesse rush PM (BASE 1.0 = 17h-19h)
+    // Rush AM = embouteillages → vitesse basse → ratio < 1.0
+    // Nuit/post-rush = routes libres → vitesse haute → ratio > 1.0
+    if (hh < 6)  return 2.20;  // nuit profonde — trafic nul, vitesse max
+    if (hh < 7)  return 1.32;  // 6h : démarrage, flux CDG départs, A1 léger
+    if (hh < 8)  return 0.80;  // 7h : rush AM début — A86/A1/A3 se remplissent ✅
+    if (hh < 9)  return 0.72;  // 8h : PIC ABSOLU — grève RER D + pluie + pendulaires (×1.60 demande)
+    if (hh < 10) return 0.85;  // 9h : déclin rush mais encore dense — arrivées CDG soutenues
+    if (hh < 11) return 1.38;  // 10h : décongestion — post-rush ✅ (mesuré 10h37 = 1.69 zone par zone)
+    if (hh < 12) return 1.62;  // 11h : creux trafic (creux demande aussi) — routes fluides
+    if (hh < 13) return 1.55;  // 12h : reprise légère — déjeuner d'affaires, banque midi CDG
+    if (hh < 14) return 1.48;  // 13h : flux modéré — restrictions début Stade de France
+    if (hh < 15) return 1.38;  // 14h : reprise douce — montée événement Stade de France
+    if (hh < 16) return 1.22;  // 15h : pré-rush + préparatifs concert
+    if (hh < 17) return 1.08;  // 16h : pré-rush PM — Guetta portes 16h30
+    if (hh < 19) return 1.00;  // rush PM 17-19h ✅ BASE MESURÉE
+    if (hh < 22) return 1.52;  // soir — Guetta/Stade de France boost 20h-23h
+    return 2.20;                // nuit 22h+
   };
   const baseSpeed = SPEED_RUSH_PM[zone.id] ?? 20.0;
   const effSpeed = baseSpeed * getRatioH(h);
@@ -305,9 +316,10 @@ function computeScore(
   // ── Surge — calibré 11h-18h ────────────────────────────────────────────────
   // Rush PM 17h+ : surge déclenché plus tôt (observé terrain)
   // Mi-journée : surge modéré mais réel sur zones business
-  const surgeThreshold1 = isMidDay ? 1.9 : 2.2;  // seuils abaissés 11h-18h
-  const surgeThreshold2 = isMidDay ? 1.4 : 1.7;
-  const surgeThreshold3 = isMidDay ? 1.1 : 1.3;
+  const isMorningRush = h >= 6 && h < 9; // Rush AM — demande >>> offre
+  const surgeThreshold1 = isMorningRush ? 1.5 : isMidDay ? 1.9 : 2.2; // Rush AM déclenché plus tôt
+  const surgeThreshold2 = isMorningRush ? 1.1 : isMidDay ? 1.4 : 1.7;
+  const surgeThreshold3 = isMorningRush ? 0.9 : isMidDay ? 1.1 : 1.3;
   const surgeMult = ratio > surgeThreshold1 ? 1.90 * dayCo.surge
     : ratio > surgeThreshold2 ? 1.48 * dayCo.surge
     : ratio > surgeThreshold3 ? 1.20 * dayCo.surge
@@ -487,12 +499,13 @@ function seedEvents(today: string, now: Date) {
   const insE = sqlite.prepare("INSERT INTO events (name,zone_id,event_type,start_time,end_time,expected_attendance,demand_boost,is_active) VALUES (?,?,?,?,?,?,?,1)");
 
   // Événements fixes de la semaine (mise à jour avec date du jour)
-  insE.run("Match Équipe de France — Stade de France", "z_stade_france", "match",
-    `${today}T10:00:00`, `${today}T23:30:00`, 80000, 4.2);
-  insE.run("Paris Air Show — Le Bourget", "z_le_bourget", "conference",
-    `${today}T09:00:00`, `${today}T19:00:00`, 12000, 2.4);
-  insE.run("Salon Paris Nord Villepinte", "z_villepinte", "conference",
-    `${today}T09:00:00`, `${today}T18:00:00`, 8000, 2.0);
+  // ── Événements réels vérifiés 11/06/2026 ────────────────────────────────
+  // Concert David Guetta — Stade de France (portes 16h30, concert 21h)
+  // Boost massif 14h-23h : restrictions circulation + 55 000 spectateurs
+  insE.run("Concert David Guetta — Stade de France", "z_stade_france", "concert",
+    `${today}T14:00:00`, `${today}T23:59:00`, 55000, 4.8);
+  // Note : Paris Air Show N'EST PAS EN 2026 (biennal 2025/2027) — Le Bourget = aviation d'affaires seulement
+  // Note : Eurosatory Villepinte commence le 15/06/2026 — PAS actif le 11/06
   insE.run("Flux CDG — Arrivées intercontinentales 24h", "z_cdg", "transport",
     `${today}T00:00:00`, `${today}T23:59:00`, 0, 1.0); // boost dynamique via flightService
   insE.run("Flux Orly — Vols domestiques & Maghreb", "z_orly", "transport",
@@ -646,6 +659,27 @@ function generateDynamicAlerts(): void {
       `${names} : saturation chauffeurs. D/O < 0.8. Préférer CDG, Stade ou zones rush.`,
       lowZones[0].zone_id, "low", null, expires, now.toISOString()
     );
+  }
+
+  // ── RÈGLE 5 : Perturbation transports (grève, incidents) ───────────────────
+  // Injecter une alerte info si perturbation connue (données statiques horaires)
+  // RER D perturbé 11/06/2026 → alerte matin 6h-12h
+  const isGrevePeriod = h >= 6 && h <= 12;
+  const dayOfWeekNow = now.getDay();
+  if (isGrevePeriod && dayOfWeekNow === 4 && alertsGenerated.length < 8) {
+    // Jeudi 11/06 : résidu grève SNCF, RER D 3 trains sur 4
+    const expires = new Date(now.getTime() + 2 * 3600000).toISOString();
+    const alreadyHasGreve = (sqlite.prepare("SELECT 1 FROM alerts WHERE type='transport_disruption' AND is_read=0 LIMIT 1").get() as any);
+    if (!alreadyHasGreve) {
+      insA.run(
+        "transport_disruption",
+        "⚠️ RER D perturbé — Reports VTC élevés",
+        "Résidu grève SNCF 10/06 : RER D = 3 trains sur 4 (axes Creil/Goussainville/Corbeil). " +
+        "Reports modaux vers VTC sur Saint-Denis, Bobigny, Aubervilliers, Montreuil. " +
+        "Zones chaudes : Saint-Denis Gare, Bobigny, Pantin.",
+        "z_saint_denis_gare", "high", 0, expires, now.toISOString()
+      );
+    }
   }
 
   console.log(`[storage] generateDynamicAlerts: ${alertsGenerated.length} alertes générées (h=${h}, dayType=${dayType})`);
