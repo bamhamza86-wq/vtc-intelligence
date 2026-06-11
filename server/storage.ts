@@ -111,23 +111,25 @@ const patterns: Record<string, {
   // Le Bourget : parc expo adjacente, trafic business 10h-17h
   z_le_bourget: {
     peakHours: [7,8,9,10,11,12,13,14,15,16,17,18,19,20],
-    baseAvgDist: 24, baseLongRide: 0.58,
+    baseAvgDist: 14, baseLongRide: 0.32,      // ← backtest P2b: affaires uniquement, réel 12.1km
+    baseAvgDistSalon: 22, baseLongRideSalon: 0.54,  // ← backtest P2b: profil salon/show actif
     demandBoost11_14: 4,    // aviation d'affaires seulement (pas de Paris Air Show en 2026 — prochain 2027)
     demandBoost14_18: 6,    // vols d'affaires PM + retours
     demandBoost6_10: 3,     // premiers vols business (Bourget = affaires uniquement)
   },
   // Villepinte : Parc des Expos Paris Nord Villepinte — très actif 11h-18h
   z_villepinte: {
-    peakHours: [7,8,9,10,11,12,13,14,15,16,17,18,19,20],
-    baseAvgDist: 32, baseLongRide: 0.68,
+    peakHours: [7,8,9,17,18,19],              // ← backtest P1a: retiré 10h-16h (zone vide sans salon)
+    baseAvgDist: 14, baseLongRide: 0.20,      // ← backtest P1a: réduit — pas de salon actif
+    baseAvgDistSalon: 28, baseLongRideSalon: 0.62,  // ← backtest P2b: profil salon actif (Eurosatory+)
     demandBoost11_14: 2,    // Villepinte VIDE 11/06 (Eurosatory démarre le 15/06/2026)
     demandBoost14_18: 3,    // faible — quelques séminaires hors salon
     demandBoost6_10: 1,     // minimal — pas de salon actif
   },
   // Tremblay : entre CDG et Villepinte, hub logistique + résidentiel
   z_tremblay: {
-    peakHours: [6,7,8,9,12,13,17,18,19],
-    baseAvgDist: 35, baseLongRide: 0.78,
+    peakHours: [6,7,8,9,12,17,18,19],         // ← backtest P3b: retiré 13h (creux post-déjeuner)
+    baseAvgDist: 18, baseLongRide: 0.42,      // ← backtest P3b: recalibré zone logistique mixte
     demandBoost11_14: 5,
     demandBoost14_18: 6,
     demandBoost6_10: 4,     // travailleurs CDG / logistique tôt
@@ -135,7 +137,7 @@ const patterns: Record<string, {
   // ── Zones culturelles / événementielles ───────────────────────────────────
   // Stade de France : événements 18h+, calme 11h-17h sauf matchs
   z_stade_france: {
-    peakHours: [16,17,18,19,20,21,22,23],
+    peakHours: [13,16,17,18,19,20,21,22,23],  // ← backtest P1b: ajout 13h (montée charge concert 3h avant)
     baseAvgDist: 14, baseLongRide: 0.32,
     demandBoost11_14: 2,    // visites stade / offices tourisme
     demandBoost14_18: 18,   // CONCERT DAVID GUETTA 11/06 — portes 16h30 → surge massif ✅
@@ -143,22 +145,22 @@ const patterns: Record<string, {
   },
   // ── Zones résidentielles / mixtes ─────────────────────────────────────────
   z_93_centre: {
-    peakHours: [9,10,11,12,13,14,17,18,20,21,22],
-    baseAvgDist: 14, baseLongRide: 0.30,
+    peakHours: [9,10,11,12,17,18,20,21],    // ← backtest P3c: retiré 13h,14h,22h (creux confirmé)
+    baseAvgDist: 12, baseLongRide: 0.28,
     demandBoost11_14: 5,    // lunch + commerces actifs
     demandBoost14_18: 6,
     demandBoost6_10: 3,     // commute centre-ville 7h-9h
   },
   z_montreuil: {
-    peakHours: [7,8,9,12,13,17,18,19],
-    baseAvgDist: 12, baseLongRide: 0.26,
+    peakHours: [7,8,9,17,18,19],            // ← backtest P3c: retiré 12h,13h (overfit déjeuner)
+    baseAvgDist: 11, baseLongRide: 0.24,    // légèrement réduit — zone résidentielle est
     demandBoost11_14: 4,
     demandBoost14_18: 5,
     demandBoost6_10: 3,     // commute résidentiel est parisien
   },
   z_aulnay: {
-    peakHours: [6,7,8,9,12,17,18,22,23],
-    baseAvgDist: 22, baseLongRide: 0.52,
+    peakHours: [6,7,8,9,17,18],             // ← backtest P3b: retiré 12h,22h,23h (overfit résidentiel)
+    baseAvgDist: 20, baseLongRide: 0.48,    // légèrement réduit (sans flux Bourget/Tremblay directement)
     demandBoost11_14: 3,
     demandBoost14_18: 5,    // proximité CDG / sorties salariés
     demandBoost6_10: 3,     // commute résidentiel nord-est
@@ -202,7 +204,26 @@ function computeScore(
   dayOfWeek: number,
   seedVariance: number
 ) {
-  const pat = patterns[zone.id] || { peakHours: [8,12,18], baseAvgDist: 15, baseLongRide: 0.30 };
+  const patBase = patterns[zone.id] || { peakHours: [8,12,18], baseAvgDist: 15, baseLongRide: 0.30 };
+
+  // ── P2b context-aware patterns : salon actif → profil event, sinon base ───
+  // Récupérer les événements actifs pour cette zone
+  const zoneActiveEvents = sqlite
+    .prepare("SELECT event_type, demand_boost FROM events WHERE zone_id=? AND is_active=1 AND start_time <= ? AND end_time >= ?")
+    .all(zone.id, new Date().toISOString(), new Date().toISOString()) as any[];
+  const hasSalonActif = zoneActiveEvents.some((e: any) =>
+    ["salon","conference","congres","exhibition"].includes(e.event_type) && e.demand_boost >= 1.5
+  );
+
+  // Switcher les paramètres selon présence de salon
+  const pat = {
+    ...patBase,
+    baseAvgDist:   hasSalonActif ? ((patBase as any).baseAvgDistSalon   ?? patBase.baseAvgDist)   : patBase.baseAvgDist,
+    baseLongRide:  hasSalonActif ? ((patBase as any).baseLongRideSalon  ?? patBase.baseLongRide)  : patBase.baseLongRide,
+    demandBoost11_14: hasSalonActif ? ((patBase as any).demandBoost11_14Salon ?? (patBase as any).demandBoost11_14) : (patBase as any).demandBoost11_14,
+    demandBoost14_18: hasSalonActif ? ((patBase as any).demandBoost14_18Salon ?? (patBase as any).demandBoost14_18) : (patBase as any).demandBoost14_18,
+  };
+
   const isPeak = pat.peakHours.includes(h);
   const isNight = h >= 0 && h < 5;
   const isMidDay = h >= 11 && h <= 18;           // plage corrélée 11h-18h
@@ -235,6 +256,18 @@ function computeScore(
   if (zone.id === "z_orly" && h === 8)             demandBase = Math.min(demandBase + 3, 94);
   if (zone.id === "z_stade_france" && !isPeak)     demandBase = 20;
   if (isWeekendNight) demandBase += 24;
+
+  // ── P3a : Perturbation transport (grève, incident) → boost demande zones RER ─
+  // Si alerte transport_disruption active en heure de rush → ×1.4 sur corridors RER D
+  const RER_D_ZONES = ["z_saint_denis_gare","z_bobigny_gare","z_aubervilliers","z_93_centre","z_epinay_gennevilliers"];
+  if (h >= 6 && h <= 12 && RER_D_ZONES.includes(zone.id)) {
+    const disruption = sqlite
+      .prepare("SELECT 1 FROM alerts WHERE type='transport_disruption' AND is_read=0 AND expires_at > ? LIMIT 1")
+      .get(new Date().toISOString()) as any;
+    if (disruption) {
+      demandBase = Math.min(demandBase * 1.40, 98); // +40% demande zones impactées grève RER D
+    }
+  }
 
   demandBase *= dayCo.demand;
   const v = Math.sin(seedVariance * 7.3 + h * 0.5) * 0.07;
@@ -303,14 +336,24 @@ function computeScore(
     return 2.20;                // nuit 22h+
   };
   const baseSpeed = SPEED_RUSH_PM[zone.id] ?? 20.0;
-  const effSpeed = baseSpeed * getRatioH(h);
   const realDist = REAL_DIST_KM[zone.id] ?? pat.baseAvgDist;
+
+  // ── P2a backtest : rideSpeedFactor ≠ repoSpeedFactor ─────────────────────
+  // Correction du paradoxe : ratio_h bas (rush AM) allongeait l'avgDur du trajet chargé
+  // → moins de courses/heure → score bas même avec surge élevé
+  // Réalité : le TRAJET CHARGÉ est 22% plus rapide que le ratio trafic brut
+  // (GPS optimal, priorité, moins d'arrêts). Le REPO à vide est encore plus lent.
+  const rawRatio = getRatioH(h);
+  const rideRatio = Math.min(rawRatio * 1.22, 1.05); // trajet chargé — plancher 88% rush PM
+  const repoRatio = rawRatio * 0.82;                  // repo à vide — encore plus lent que trafic moyen
+  const effRideSpeed = Math.max(baseSpeed * rideRatio, baseSpeed * 0.88);
+  const effRepoSpeed = Math.max(baseSpeed * repoRatio, 4.0);  // min 4 km/h (embouteillage extrême)
 
   // avgDist = distance moyenne d'une COURSE depuis cette zone (pas le trajet aller)
   // calibré : CDG→Paris ~42km, Orly→Paris ~30km, zones 93 ~12-18km
   const distMultiplier = isPeak ? 1.12 : (isMidDay ? 1.05 : 0.92);
   const avgDist = pat.baseAvgDist * distMultiplier + Math.sin(seedVariance + h) * 1.5;
-  const avgDur = (avgDist / effSpeed) * 60; // minutes
+  const avgDur = (avgDist / effRideSpeed) * 60; // minutes — vitesse trajet chargé
   const avgFare = avgDist * 1.30 + 2.80;
 
   // ── Surge — calibré 11h-18h ────────────────────────────────────────────────
@@ -338,7 +381,9 @@ function computeScore(
   const grossWithSurge = avgFare * surge;
   const costKm = 0.224; // carburant 0.144 + usure 0.08
   const netFare = grossWithSurge * (1 - 0.25) - avgDist * costKm;
-  const repoMin = Math.max(4, avgDist * 0.6); // repositionnement calibré
+  // P2a: repoMin calculé avec effRepoSpeed (affecté par trafic) — pas rideSpeed
+  const repoKm = Math.max(3, avgDist * 0.55);              // km de repositionnement estimé
+  const repoMin = Math.max(3, (repoKm / effRepoSpeed) * 60); // minutes réelles à vide
   const cycleMins = avgDur + repoMin;
   const coursesPerHour = 60 / Math.max(cycleMins, 8);
   const netHourly = netFare * coursesPerHour; // €/h réel avec surge
@@ -357,6 +402,14 @@ function computeScore(
   // CDG(64-70€/h) → 76-80, Orly(38-63€/h) → 48-72, zones€modestes(13-38€/h) → 12-48
   const sigRent = 1 / (1 + Math.exp(-0.08 * (netHourly - 45)));
 
+  // ── Bonus court-trajet + surge élevé (backtest P1c) ───────────────────────
+  // Zones < 12km avec surge > ×1.5 : le modèle sous-estimait leur rentabilité
+  // car netHourly absolu faible même si les courses s'enchaînent vite
+  // Corrigé: jusqu'à +8 pts bonus pour surge ×2.5 sur zone courte
+  const shortRideBonus = (avgDist < 12 && surge > 1.5)
+    ? Math.min(8, (surge - 1.5) * 6.4)
+    : 0;
+
   // Ratio D/O log-normalisé [0-1] — cap à ratio=6 (au lieu de saturer à ratio>2)
   const ratioNorm = Math.min(Math.log1p(ratio) / Math.log1p(6), 1.0);
 
@@ -367,22 +420,25 @@ function computeScore(
   // Surge log-scale [0-1] — cap à surge=4
   const surgeNorm = surge > 1 ? Math.min(Math.log(surge) / Math.log(4), 1.0) : 0;
 
-  // Event boost zones actives (Paris Air Show, Villepinte, Stade France soirée)
+  // Event boost zones actives — recalibré backtest 11/06/2026
+  // (Paris Air Show N'EXISTE PAS en 2026, Eurosatory démarre 15/06)
   const EVENT_BOOST_BY_ZONE: Record<string, number> = {
-    z_stade_france: 0.8,   // match soir → peu d'impact journée
-    z_le_bourget: 0.6,     // Paris Air Show actif
-    z_villepinte: 0.7,     // Salon Villepinte actif
-    z_93_centre: 0.3,      // Soirée Saint-Denis
+    z_stade_france: 0.85,  // Concert Guetta 11/06 — boost soirée réel
+    z_le_bourget: 0.25,    // aviation d'affaires uniquement (pas de salon) — réduit
+    z_villepinte: 0.15,    // VIDE 11/06 (Eurosatory le 15/06) — très réduit
+    z_93_centre: 0.30,     // Soirée Saint-Denis
   };
   const eventNorm = EVENT_BOOST_BY_ZONE[zone.id] ?? 0;
 
   // Score composite [0-95] — cap 95 pour garder granularité visible
+  // ← backtest P1c: surgeNorm 0.10→0.14, ratioNorm 0.20→0.16 (+shortRideBonus injecté directement)
   const profIdx = Math.min(95, Math.max(5, Math.round((
     0.50 * sigRent * 100 +
-    0.20 * ratioNorm * 100 +
+    0.16 * ratioNorm * 100 +
     0.15 * longScore * 100 +
-    0.10 * surgeNorm * 100 +
-    0.05 * eventNorm * 100
+    0.14 * surgeNorm * 100 +
+    0.05 * eventNorm * 100 +
+    shortRideBonus
   ) * 10) / 10));
 
   return {
@@ -591,7 +647,15 @@ function generateDynamicAlerts(): void {
     const ttlMs = Math.min(minutesLeft * 60000, 4 * 3600000);
     const expires = new Date(now.getTime() + ttlMs).toISOString();
 
-    const priority = ev.demand_boost >= 3.0 ? "critical"
+    // ── Backtest P1b/P1c : concert_day_boost — si concert dans < 8h → boost +12 ─
+    const hoursUntilEvent = (new Date(ev.start_time).getTime() - now.getTime()) / 3600000;
+    const concertDayBoost = (ev.event_type === "concert" && hoursUntilEvent < 8 && hoursUntilEvent > -1)
+      ? 12 : 0;
+    const effectiveBoost = ev.demand_boost + concertDayBoost * 0.1;
+
+    const priority = effectiveBoost >= 3.5 ? "critical"
+      : effectiveBoost >= 2.5 ? "critical"
+      : ev.demand_boost >= 3.0 ? "critical"
       : ev.demand_boost >= 2.0 ? "high" : "medium";
 
     const attendanceStr = ev.expected_attendance > 0

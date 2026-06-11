@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { RefreshCw, Clock } from "lucide-react";
-import { apiRequest, API_BASE } from "@/lib/queryClient";
+import { apiRequest, API_BASE, getAuthToken } from "@/lib/queryClient";
 
 interface CacheStatus {
   lastUpdated: string;
@@ -24,7 +24,7 @@ export function UpdateWidget({ compact = false, showCount = false, className = "
   const fetchStatus = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/gmaps-distances/status`, {
-        headers: { "Authorization": `Bearer ${localStorage.getItem("vtc_token") || ""}` }
+        headers: { "Authorization": `Bearer ${getAuthToken() || ""}` }
       });
       if (res.ok) {
         const data = await res.json();
@@ -74,7 +74,7 @@ export function UpdateWidget({ compact = false, showCount = false, className = "
     try {
       await fetch(`${API_BASE}/api/analytics/force-refresh`, {
         method: "POST",
-        headers: { "Authorization": `Bearer ${localStorage.getItem("vtc_token") || ""}` }
+        headers: { "Authorization": `Bearer ${getAuthToken() || ""}` }
       });
       await fetchStatus();
       setSecondsLeft(180);

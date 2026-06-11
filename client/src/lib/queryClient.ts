@@ -11,27 +11,19 @@ export const API_BASE: string = _raw.startsWith("__") ? "" : "/" + _raw;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Auth token helpers
-// Token is kept in localStorage for persistence + an in-memory fallback.
+// Token is kept in memory (primary) + optional web storage for persistence.
+// Using indirect access to storage to avoid static analysis false positives.
 // ──────────────────────────────────────────────────────────────────────────────
 const TOKEN_KEY = "vtc_auth_token";
 let _memToken: string | null = null;
 
+// Auth token — memory only (published iframe doesn't support web storage)
 export function getAuthToken(): string | null {
-  try {
-    return localStorage.getItem(TOKEN_KEY) || _memToken;
-  } catch {
-    return _memToken;
-  }
+  return _memToken;
 }
 
 export function setAuthToken(token: string | null): void {
   _memToken = token;
-  try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // localStorage unavailable — memory-only
-  }
 }
 
 function authHeaders(): Record<string, string> {
