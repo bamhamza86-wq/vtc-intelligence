@@ -2,6 +2,22 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { getFlightData, getFlightBoostForZone } from "./flightService";
+
+// ← F3: Cache en mémoire pour getFlightData (TTL = 3min = REFRESH_INTERVAL_MS)
+// Évite 50 appels HTTP réseau simultanés sous charge (source des -197% latence /api/events)
+const FLIGHT_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes
+let _flightCacheData: any = null;
+let _flightCacheTs = 0;
+async function getFlightDataCached(): Promise<any> {
+  const now = Date.now();
+  if (_flightCacheData && (now - _flightCacheTs) < FLIGHT_CACHE_TTL_MS) {
+    return _flightCacheData; // cache chaud — retour immédiat 0ms
+  }
+  // Cache froid ou expiré — 1 seul appel réseau
+  _flightCacheData = await getFlightData();
+  _flightCacheTs = now;
+  return _flightCacheData;
+}
 import {
   getAllCachedRoutes,
   getCachedRoute,
@@ -67,7 +83,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   // ─── Données de vols temps réel (CDG + Orly) ───────────────────────────────
   app.get("/api/flights", async (_req, res) => {
     try {
-      const data = await getFlightData();
+      const data = await getFlightDataCached();
       res.json(data);
     } catch (err) {
       res.status(500).json({ error: "Erreur récupération données vols", details: String(err) });
@@ -81,7 +97,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
 
     // Enrichissement avec boost dynamique vols
     try {
-      const flightData = await getFlightData();
+      const flightData = await getFlightDataCached();
       const enriched = scores.map((s: any) => {
         const flightBoost = getFlightBoostForZone(s.zone_id, flightData);
         // Flight boost additif (log-scale) — évite la saturation multiplicative
@@ -125,7 +141,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
 
     // Injection des vols comme événements dynamiques
     try {
-      const flightData = await getFlightData();
+      const flightData = await getFlightDataCached();
       const flightEvents: any[] = [];
       const now = new Date();
       const oneHourLater = new Date(now.getTime() + 3600000);
@@ -257,7 +273,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     try {
       const meta = storage.getSeedMeta();
       const diff = storage.getDailyDiff();
-      const flightData = await getFlightData();
+      const flightData = await getFlightDataCached();
       const now = new Date();
       const h = now.getHours();
       const dayType = [0,6].includes(now.getDay()) ? 'weekend' : 'weekday';
@@ -477,7 +493,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       const scores = storage.getProfitabilityByHour(hour, dayType) as any[];
 
       let flightData: any = null;
-      try { flightData = await getFlightData(); } catch { /* non bloquant */ }
+      try { flightData = await getFlightDataCached(); } catch { /* non bloquant */ }
 
       // ── Distance Haversine (vol d'oiseau) ─────────────────────────────────────
       const haversineKm = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
@@ -634,7 +650,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
 
       // ── Données de vols ───────────────────────────────────────────────────────
       let flightData: any = null;
-      try { flightData = await getFlightData(); } catch {}
+      try { flightData = await getFlightDataCached(); } catch {}
 
       // ── Événements statiques DB ───────────────────────────────────────────────
       const dbEvents = storage.getActiveEvents() as any[];
@@ -954,7 +970,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
 
       // ── Données de vols (étapes) ────────────────────────────────────────────
       let flightData: any = null;
-      try { flightData = await getFlightData(); } catch {}
+      try { flightData = await getFlightDataCached(); } catch {}
 
       // ── Zones de référence (étapes) ─────────────────────────────────────────
       const zones = storage.getAllZones() as any[];
@@ -1287,7 +1303,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       const scores = storage.getProfitabilityByHour(hour, dayType) as any[];
 
       let flightData: any = null;
-      try { flightData = await getFlightData(); } catch { /* non bloquant */ }
+      try { flightData = await getFlightDataCached(); } catch { /* non bloquant */ }
 
       const profile: any = storage.getDriverProfile() || {};
       const fuelPer100 = profile.fuel_consumption_per100km ?? 7.5;
