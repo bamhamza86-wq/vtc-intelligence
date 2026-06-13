@@ -1056,7 +1056,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
 
       const addMins = (base: Date, mins: number): Date => new Date(base.getTime() + mins * 60000);
       const fmt     = (d: Date) => d.toISOString();
-      const fmtHM   = (d: Date) => d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Paris" });
+      const fmtHM   = (d: Date) => d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Europe/Paris" });
 
       // ── Données de vols (étapes) ────────────────────────────────────────────
       let flightData: any = null;
@@ -1433,7 +1433,17 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       // ── Trajet direct position → destination ───────────────────────────────────
       const directStraightKm = haversineKm(lat, lng, destLat, destLng);
       const directDistanceKm = Math.round(directStraightKm * 1.35 * 10) / 10;
-      const directEtaMin = Math.max(1, Math.round(directDistanceKm / 22 * 60));
+      // ETA trajet direct — utilise routingCache si dispo, sinon haversine/vitesse moyenne
+      const _directCached = getCachedRoute("_direct_", lat, lng);
+      const directEtaMin = (() => {
+        // Pas de cache pour trajet direct générique → utiliser distance routière / vitesse réelle
+        // Vitesse moyenne pondérée selon heure : rush → 18km/h, normal → 28km/h, off → 35km/h
+        const _h = new Date().getHours();
+        const _speedKmH = (_h >= 7 && _h <= 9) || (_h >= 17 && _h <= 19) ? 18
+          : (_h >= 10 && _h <= 16) ? 28
+          : 35;
+        return Math.max(1, Math.round(directDistanceKm / _speedKmH * 60));
+      })();
 
       // ── Analyse de chaque zone par rapport au segment origine→destination ──────
       const routeZones = zones.map((z: any) => {

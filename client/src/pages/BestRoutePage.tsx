@@ -366,7 +366,7 @@ function SlotCard({ slot, zoneId, zoneLat, zoneLng, userLat, userLng }: {
         <div className="flex flex-col items-center text-center">
           <div className="text-[9px] text-muted-foreground mb-0.5">Partez à</div>
           <div className="text-sm font-black tabular-nums" style={{ color: cfg.color }}>
-            {fmtTime(slot.departAt)}
+            {fmtTimeSec(slot.departAt)}
           </div>
           {minsUntilDepart > 0 && (
             <div className="text-[9px] text-muted-foreground">dans {minsUntilDepart}min</div>
@@ -385,7 +385,7 @@ function SlotCard({ slot, zoneId, zoneLat, zoneLng, userLat, userLng }: {
         </div>
         <div className="flex flex-col items-center text-center">
           <div className="text-[9px] text-muted-foreground mb-0.5">Arrivée</div>
-          <div className="text-sm font-black tabular-nums text-blue-400">{fmtTime(slot.arriveBy)}</div>
+          <div className="text-sm font-black tabular-nums text-blue-400">{fmtTimeSec(slot.arriveBy)}</div>
           {slot.bufferMin > 0 && (
             <div className="text-[9px] text-muted-foreground">{slot.bufferMin}min avant</div>
           )}
@@ -447,7 +447,7 @@ function EventBlockComponent({ block, userPos, isExpanded, onToggle }: {
           {nextSlot && !isExpanded && (
             <div className="mt-1 text-[10px] font-semibold flex items-center gap-1" style={{ color: nextCfg?.color }}>
               <Timer size={9} />
-              Prochain départ : {fmtTime(nextSlot.departAt)}
+              Prochain départ : {fmtTimeSec(nextSlot.departAt)}
               {minutesFromNow(nextSlot.departAt) > 0
                 ? ` (dans ${minutesFromNow(nextSlot.departAt)}min)`
                 : " · MAINTENANT"}

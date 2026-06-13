@@ -727,6 +727,8 @@ export default function ReturnJourneyPage() {
           </div>
           <Badge variant="outline" className="text-[10px] flex-shrink-0">
             trajet direct : {data.directDistanceKm}km — {data.directEtaMin}min
+              {' · '}
+              Arrivée : {new Date(Date.now() + data.directEtaMin * 60000).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
           </Badge>
         </div>
       </div>
