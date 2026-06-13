@@ -84,17 +84,17 @@ export const getQueryFn: <T>(options: {
 
 // Refresh global : 2s quasi temps réel pour données critiques
 // Les pages peuvent surcharger avec leur propre refetchInterval
-export const REALTIME_INTERVAL = 2_000;   // 2s — données live (profitability, alerts)
-export const SLOW_INTERVAL     = 30_000;  // 30s — données lentes (events, flights)
-export const STATIC_INTERVAL   = 60_000;  // 60s — données statiques (zones, profile)
+export const REALTIME_INTERVAL = 3_000;   // 3s — quasi temps réel
+export const SLOW_INTERVAL     = 3_000;   // 3s — toutes les données
+export const STATIC_INTERVAL   = 3_000;   // 3s — toutes les données
 
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       queryFn: getQueryFn({ on401: "throw" }),
-      refetchInterval: REALTIME_INTERVAL,   // 2s par défaut — temps réel
+      refetchInterval: REALTIME_INTERVAL,   // 3s par défaut — quasi temps réel
       refetchOnWindowFocus: true,           // refresh quand l'app reprend le focus
-      staleTime: 1_500,                     // considère stale après 1.5s (< 2s interval)
+      staleTime: 2_500,                     // considère stale après 2.5s (< 3s interval)
       gcTime: 5 * 60 * 1000,               // garde en cache 5min même si stale
       retry: 1,                             // 1 retry en cas d'erreur réseau
     },

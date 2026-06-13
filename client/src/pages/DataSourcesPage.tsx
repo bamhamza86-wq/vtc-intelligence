@@ -35,8 +35,8 @@ export default function DataSourcesPage() {
   const { data: analytics, isLoading: loadingAnalytics, refetch } = useQuery({
     queryKey: ["/api/analytics/refresh"],
     queryFn: () => apiRequest("GET", "/api/analytics/refresh").then(r => r.json()),
-    refetchInterval: 5 * 60 * 1000,
-    staleTime: 2 * 60 * 1000,
+    refetchInterval: 3_000,
+    staleTime: 2_500,
   });
 
   const { data: sources } = useQuery({

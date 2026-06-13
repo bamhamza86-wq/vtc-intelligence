@@ -15,8 +15,8 @@ import { User, BarChart } from "lucide-react";
 export default function ProfilePage() {
   const { toast } = useToast();
   const [form, setForm] = useState<any>({ fuelConsumptionPer100km: 7, fuelPricePerLiter: 1.85, platformCommissionPct: 25, hourlyTargetIncome: 35, wearCostPerKm: 0.08, vehicleType: "berline", preferLongRides: true });
-  const { data: profile, isLoading } = useQuery({ queryKey: ["/api/driver-profile"], queryFn: () => apiRequest("GET", "/api/driver-profile").then(r => r.json()) });
-  const { data: stats } = useQuery({ queryKey: ["/api/rides/stats"], queryFn: () => apiRequest("GET", "/api/rides/stats").then(r => r.json()) });
+  const { data: profile, isLoading } = useQuery({ queryKey: ["/api/driver-profile"], queryFn: () => apiRequest("GET", "/api/driver-profile").then(r => r.json()), refetchInterval: 3_000 });
+  const { data: stats } = useQuery({ queryKey: ["/api/rides/stats"], queryFn: () => apiRequest("GET", "/api/rides/stats").then(r => r.json()), refetchInterval: 3_000 });
 
   useEffect(() => {
     if (!profile) return;

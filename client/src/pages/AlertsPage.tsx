@@ -513,7 +513,7 @@ export default function AlertsPage() {
   const { data: alerts = [], isLoading } = useQuery({
     queryKey: ["/api/alerts"],
     queryFn: () => apiRequest("GET", "/api/alerts").then(r => r.json()),
-    refetchInterval: 15_000, // alertes: refresh 15s
+    refetchInterval: 3_000,  // alertes: refresh 3s temps réel
   });
 
   const markRead = useMutation({

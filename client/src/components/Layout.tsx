@@ -34,7 +34,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const { data: alerts = [] } = useQuery({
     queryKey: ["/api/alerts"],
     queryFn: () => apiRequest("GET", "/api/alerts").then(r => r.json()),
-    refetchInterval: 15_000,  // alertes : refresh 15s pour badge unread
+    refetchInterval: 3_000,   // alertes : refresh 3s temps réel
   });
   const unreadCount = (alerts as any[]).filter((a: any) => !a.is_read).length;
 

@@ -141,23 +141,23 @@ function shortZoneName(name: string | undefined, zoneId: string): string {
 function useEconomicsData() {
   const profileQ = useQuery<DriverProfile | null>({
     queryKey: ["/api/driver-profile"],
-    refetchInterval: 30000,
+    refetchInterval: 3_000,
   });
   const statsQ = useQuery<RideStats>({
     queryKey: ["/api/rides/stats"],
-    refetchInterval: 30000,
+    refetchInterval: 3_000,
   });
   const ridesQ = useQuery<Ride[]>({
     queryKey: ["/api/rides"],
-    refetchInterval: 30000,
+    refetchInterval: 3_000,
   });
   const profitQ = useQuery<ProfitabilityScore[]>({
     queryKey: ["/api/profitability"],
-    refetchInterval: 30000,
+    refetchInterval: 3_000,
   });
   const distQ = useQuery<GmapsDistances>({
     queryKey: ["/api/gmaps-distances"],
-    refetchInterval: 30000,
+    refetchInterval: 3_000,
   });
 
   const profile: DriverProfile = profileQ.data ?? DEFAULT_PROFILE;
