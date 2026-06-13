@@ -2,6 +2,13 @@ import Database from "better-sqlite3";
 import { Zone, ProfitabilityScore, Event, Ride, Alert, DriverProfile, InsertAlert, InsertRide, InsertDriverProfile } from "@shared/schema";
 
 const sqlite = new Database("data.db");
+// ← audit G: pragmas SQLite production (WAL + cache + synchronous NORMAL)
+sqlite.pragma('journal_mode = WAL');
+sqlite.pragma('synchronous = NORMAL');
+sqlite.pragma('cache_size = -32000');   // 32 MB RAM cache
+sqlite.pragma('temp_store = MEMORY');   // tables temp en RAM
+sqlite.pragma('mmap_size = 134217728'); // 128 MB memory-mapped I/O
+sqlite.pragma('foreign_keys = ON');
 
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS zones (id TEXT PRIMARY KEY, name TEXT NOT NULL, lat REAL NOT NULL, lng REAL NOT NULL, type TEXT NOT NULL, city TEXT NOT NULL DEFAULT 'Seine-Saint-Denis');
@@ -202,31 +209,38 @@ function computeScore(
   h: number,
   dt: string,
   dayOfWeek: number,
-  seedVariance: number
+  seedVariance: number,
+  preloadedEvents?: any[]  // ← audit C1: events préchargés depuis reseedScores (Map) — évite N+1
 ) {
   const patBase = patterns[zone.id] || { peakHours: [8,12,18], baseAvgDist: 15, baseLongRide: 0.30 };
 
   // ── P2b context-aware patterns : salon actif → profil event, sinon base ───
-  // Récupérer les événements actifs pour cette zone
-  const zoneActiveEvents = sqlite
+  // Utiliser les events préchargés si dispos, sinon fallback DB (appels directs depuis routes)
+  const zoneActiveEvents: any[] = preloadedEvents ?? (sqlite
     .prepare("SELECT event_type, demand_boost FROM events WHERE zone_id=? AND is_active=1 AND start_time <= ? AND end_time >= ?")
-    .all(zone.id, new Date().toISOString(), new Date().toISOString()) as any[];
+    .all(zone.id, new Date().toISOString(), new Date().toISOString()) as any[]);
   const hasSalonActif = zoneActiveEvents.some((e: any) =>
     ["salon","conference","congres","exhibition"].includes(e.event_type) && e.demand_boost >= 1.5
   );
 
-  // Switcher les paramètres selon présence de salon
+  // ← audit B2: rampe progressive salon (au lieu du cliff booléen 14→28 instantané = bug Δ+259%)
+  // salonBoost = demand_boost max des events salon actifs (0 si aucun)
+  const salonBoost = zoneActiveEvents
+    .filter((e: any) => ["salon","conference","congres","exhibition"].includes(e.event_type))
+    .reduce((acc: number, e: any) => Math.max(acc, e.demand_boost ?? 0), 0);
+  // Interpolation linéaire: salonBoost [1.5→4.0] → ratio [0→1]
+  const salonRatio = salonBoost >= 1.5 ? Math.min(1.0, (salonBoost - 1.5) / 2.5) : 0;
   const pat = {
     ...patBase,
-    baseAvgDist:   hasSalonActif ? ((patBase as any).baseAvgDistSalon   ?? patBase.baseAvgDist)   : patBase.baseAvgDist,
-    baseLongRide:  hasSalonActif ? ((patBase as any).baseLongRideSalon  ?? patBase.baseLongRide)  : patBase.baseLongRide,
-    demandBoost11_14: hasSalonActif ? ((patBase as any).demandBoost11_14Salon ?? (patBase as any).demandBoost11_14) : (patBase as any).demandBoost11_14,
-    demandBoost14_18: hasSalonActif ? ((patBase as any).demandBoost14_18Salon ?? (patBase as any).demandBoost14_18) : (patBase as any).demandBoost14_18,
+    baseAvgDist:   patBase.baseAvgDist + salonRatio * (((patBase as any).baseAvgDistSalon  ?? patBase.baseAvgDist)  - patBase.baseAvgDist),
+    baseLongRide:  patBase.baseLongRide + salonRatio * (((patBase as any).baseLongRideSalon ?? patBase.baseLongRide) - patBase.baseLongRide),
+    demandBoost11_14: (patBase as any).demandBoost11_14,
+    demandBoost14_18: (patBase as any).demandBoost14_18,
   };
 
   const isPeak = pat.peakHours.includes(h);
   const isNight = h >= 0 && h < 5;
-  const isMidDay = h >= 11 && h <= 18;           // plage corrélée 11h-18h
+  const isMidDay = h >= 11 && h <= 13;           // ← audit B3: off-by-one corrigé (h<=18 → h<=13) — midi=[11,13], demi-journée=[14,18] distincts
   const isWeekendNight = dt === "weekend" && (h >= 22 || h <= 3);
   const dayCo = DAY_COEFFICIENTS[dayOfWeek] || DAY_COEFFICIENTS[2];
 
@@ -383,7 +397,7 @@ function computeScore(
   const netFare = grossWithSurge * (1 - 0.25) - avgDist * costKm;
   // P2a: repoMin calculé avec effRepoSpeed (affecté par trafic) — pas rideSpeed
   const repoKm = Math.max(3, avgDist * 0.55);              // km de repositionnement estimé
-  const repoMin = Math.max(3, (repoKm / effRepoSpeed) * 60); // minutes réelles à vide
+  const repoMin = Math.min(45, Math.max(3, (repoKm / effRepoSpeed) * 60)); // ← audit B1: plafonné à 45min (CDG à effRepoSpeed=4km/h évitait 346min aberrant)
   const cycleMins = avgDur + repoMin;
   const coursesPerHour = 60 / Math.max(cycleMins, 8);
   const netHourly = netFare * coursesPerHour; // €/h réel avec surge
@@ -397,16 +411,21 @@ function computeScore(
   // 5. Event boost intégré → 5pts max pour zones avec event actif
   // Target : 35€/h chauffeur = score 50, 60€/h = score 80, 80€/h = score 90
 
-  // Sigmoid centrée sur 45€/h, pente 0.08 — calibrée 10/06/2026
-  // Score 50 @ 45€/h, score 66 @ 55€/h, score 82 @ 70€/h — max 95, jamais saturant
-  // CDG(64-70€/h) → 76-80, Orly(38-63€/h) → 48-72, zones€modestes(13-38€/h) → 12-48
-  const sigRent = 1 / (1 + Math.exp(-0.08 * (netHourly - 45)));
+  // Sigmoid ← audit H1: inflexion adaptative selon demande du jour
+  // Jeudi demand=1.18 → inflexion 46.8€/h (attentes plus élevées)
+  // Dimanche demand=0.74 → inflexion 37.4€/h (seuil plus bas)
+  const BASE_INFLECTION = 45;
+  const inflectionAdjust = (dayCo.demand - 1.0) * 10; // ±10 pts selon contexte journalier
+  const inflection = Math.max(30, Math.min(65, BASE_INFLECTION + inflectionAdjust));
+  const sigRent = 1 / (1 + Math.exp(-0.08 * (netHourly - inflection)));
 
   // ── Bonus court-trajet + surge élevé (backtest P1c) ───────────────────────
   // Zones < 12km avec surge > ×1.5 : le modèle sous-estimait leur rentabilité
   // car netHourly absolu faible même si les courses s'enchaînent vite
   // Corrigé: jusqu'à +8 pts bonus pour surge ×2.5 sur zone courte
-  const shortRideBonus = (avgDist < 12 && surge > 1.5)
+  // ← audit E1: guard isShortRideZone (baseAvgDist<13) — évite déclenchement sur Villepinte off-peak (avgDist min 11.38 par bruit sinus)
+  const isShortRideZone = pat.baseAvgDist < 13;
+  const shortRideBonus = (isShortRideZone && avgDist < 12 && surge > 1.5)
     ? Math.min(8, (surge - 1.5) * 6.4)
     : 0;
 
@@ -417,18 +436,19 @@ function computeScore(
   const distNorm = Math.min(avgDist / 55, 1.0); // 55km = distance max CDG longue
   const longScore = longRide * (0.55 + 0.45 * distNorm);
 
-  // Surge log-scale [0-1] — cap à surge=4
-  const surgeNorm = surge > 1 ? Math.min(Math.log(surge) / Math.log(4), 1.0) : 0;
+  // Surge log-scale [0-1] — ← audit D1: normalisé par log(SURGE_CAP=3.8) pour que surgeNorm=1.0 soit atteignable (au lieu de 0.963 max)
+  const SURGE_CAP = 3.8;
+  const surgeNorm = surge > 1 ? Math.min(Math.log(surge) / Math.log(SURGE_CAP), 1.0) : 0;
 
-  // Event boost zones actives — recalibré backtest 11/06/2026
-  // (Paris Air Show N'EXISTE PAS en 2026, Eurosatory démarre 15/06)
-  const EVENT_BOOST_BY_ZONE: Record<string, number> = {
-    z_stade_france: 0.85,  // Concert Guetta 11/06 — boost soirée réel
-    z_le_bourget: 0.25,    // aviation d'affaires uniquement (pas de salon) — réduit
-    z_villepinte: 0.15,    // VIDE 11/06 (Eurosatory le 15/06) — très réduit
-    z_93_centre: 0.30,     // Soirée Saint-Denis
-  };
-  const eventNorm = EVENT_BOOST_BY_ZONE[zone.id] ?? 0;
+  // ← audit A1: eventNorm dérivé DEPUIS LA DB (zoneActiveEvents) — plus de constante fantôme
+  // maxBoost = demand_boost max de tous les events actifs de cette zone
+  // EVENT_NORM_CEILING = 6.0 (demand_boost concert Guetta=4.8 → eventNorm=0.80 → +4.0pts)
+  // Zone sans event actif → eventNorm=0 (plus de +0.75pt fantôme Villepinte, +1.25pt Le Bourget etc.)
+  const EVENT_NORM_CEILING = 6.0;
+  const maxBoost = zoneActiveEvents.length > 0
+    ? Math.max(...zoneActiveEvents.map((e: any) => e.demand_boost ?? 0))
+    : 0;
+  const eventNorm = Math.min(1.0, maxBoost / EVENT_NORM_CEILING);
 
   // Score composite [0-95] — cap 95 pour garder granularité visible
   // ← backtest P1c: surgeNorm 0.10→0.14, ratioNorm 0.20→0.16 (+shortRideBonus injecté directement)
@@ -463,12 +483,24 @@ function reseedScores(today: string, dayOfWeek: number) {
     `INSERT OR IGNORE INTO score_history (zone_id,hour,day_type,profitability_index,surge_multiplier,demand_score,supply_score,seed_date) VALUES (?,?,?,?,?,?,?,?)`
   );
 
+  // ← audit C1: préchargement events en Map<zoneId, events[]> — 1 SELECT au lieu de 672 N+1
+  const now = new Date().toISOString();
+  const allActiveEvents = sqlite.prepare(
+    `SELECT zone_id, event_type, demand_boost FROM events WHERE is_active=1 AND start_time <= ? AND end_time >= ?`
+  ).all(now, now) as any[];
+  const eventsByZone = new Map<string, any[]>();
+  for (const ev of allActiveEvents) {
+    if (!eventsByZone.has(ev.zone_id)) eventsByZone.set(ev.zone_id, []);
+    eventsByZone.get(ev.zone_id)!.push(ev);
+  }
+
   for (let zi = 0; zi < zones93.length; zi++) {
     const zone = zones93[zi];
     const seedVar = zi * 1.37; // variance déterministe par zone
+    const zoneEvents = eventsByZone.get(zone.id) ?? [];
     for (const dt of ["weekday", "weekend"]) {
       for (let h = 0; h < 24; h++) {
-        const s = computeScore(zone, h, dt, dayOfWeek, seedVar);
+        const s = computeScore(zone, h, dt, dayOfWeek, seedVar, zoneEvents);
         insS.run(zone.id, h, dt, s.demand, s.supply, s.ratio, s.avgDist, s.avgDur, s.avgFare, s.profIdx, s.longRide, s.surge);
         insH.run(zone.id, h, dt, s.profIdx, s.surge, s.demand, s.supply, today);
       }
@@ -521,9 +553,12 @@ function seedData() {
       }
     }
 
-    // Effacer les anciens scores et recalculer
-    sqlite.exec("DELETE FROM profitability_scores");
-    reseedScores(today, dayOfWeek);
+    // ← audit C2: transaction atomique DELETE+reseed — table jamais visible à vide
+    const reseedTx = sqlite.transaction(() => {
+      sqlite.exec("DELETE FROM profitability_scores");
+      reseedScores(today, dayOfWeek);
+    });
+    reseedTx();
 
     const newCnt = (sqlite.prepare("SELECT COUNT(*) as c FROM profitability_scores").get() as any).c;
     console.log(`[storage] ${newCnt} scores calculés pour ${today}`);
@@ -725,24 +760,35 @@ function generateDynamicAlerts(): void {
     );
   }
 
-  // ── RÈGLE 5 : Perturbation transports (grève, incidents) ───────────────────
-  // Injecter une alerte info si perturbation connue (données statiques horaires)
-  // RER D perturbé 11/06/2026 → alerte matin 6h-12h
+  // ── RÈGLE 5 : Perturbation transports (grève, incidents) ─────────────────────
+  // ← audit A2: DB-driven — détection grève via events actifs (event_type='greve')
+  // Remplace la logique hardcodée dayOfWeekNow===4 (Jeudi 11/06 uniquement)
+  // Désormais déclenché dynamiquement si un event grève est actif dans la DB
   const isGrevePeriod = h >= 6 && h <= 12;
-  const dayOfWeekNow = now.getDay();
-  if (isGrevePeriod && dayOfWeekNow === 4 && alertsGenerated.length < 8) {
-    // Jeudi 11/06 : résidu grève SNCF, RER D 3 trains sur 4
-    const expires = new Date(now.getTime() + 2 * 3600000).toISOString();
-    const alreadyHasGreve = (sqlite.prepare("SELECT 1 FROM alerts WHERE type='transport_disruption' AND is_read=0 LIMIT 1").get() as any);
-    if (!alreadyHasGreve) {
-      insA.run(
-        "transport_disruption",
-        "⚠️ RER D perturbé — Reports VTC élevés",
-        "Résidu grève SNCF 10/06 : RER D = 3 trains sur 4 (axes Creil/Goussainville/Corbeil). " +
-        "Reports modaux vers VTC sur Saint-Denis, Bobigny, Aubervilliers, Montreuil. " +
-        "Zones chaudes : Saint-Denis Gare, Bobigny, Pantin.",
-        "z_saint_denis_gare", "high", 0, expires, now.toISOString()
-      );
+  if (isGrevePeriod && alertsGenerated.length < 8) {
+    const nowIso = now.toISOString();
+    const activeGreve = (sqlite.prepare(
+      `SELECT e.name, e.demand_boost, z.name AS zone_name, e.zone_id
+       FROM events e
+       LEFT JOIN zones z ON z.id = e.zone_id
+       WHERE e.event_type = 'greve'
+         AND e.start_time <= ? AND e.end_time >= ?
+       LIMIT 1`
+    ).get(nowIso, nowIso) as any);
+    if (activeGreve) {
+      const expires = new Date(now.getTime() + 2 * 3600000).toISOString();
+      const alreadyHasGreve = (sqlite.prepare("SELECT 1 FROM alerts WHERE type='transport_disruption' AND is_read=0 LIMIT 1").get() as any);
+      if (!alreadyHasGreve) {
+        const boostLabel = activeGreve.demand_boost >= 2.0 ? 'forte perturbation' : 'perturbation modérée';
+        insA.run(
+          "transport_disruption",
+          `⚠️ ${activeGreve.name} — Reports VTC élevés`,
+          `Grève active : ${activeGreve.name} (${boostLabel}, boost ×${activeGreve.demand_boost.toFixed(1)}). ` +
+          `Zone épicentre : ${activeGreve.zone_name}. Reports modaux vers VTC sur Saint-Denis, Bobigny, Aubervilliers, Montreuil. ` +
+          "Zones chaudes : Saint-Denis Gare, Bobigny, Pantin.",
+          activeGreve.zone_id, "high", 0, expires, nowIso
+        );
+      }
     }
   }
 
@@ -762,13 +808,23 @@ setInterval(() => {
     const today = getTodayStr();
     const dayOfWeek = now.getDay();
     // Recalcul complet des 672 scores (14 zones × 24h × 2 day_types)
-    sqlite.exec("DELETE FROM profitability_scores");
-    reseedScores(today, dayOfWeek);
+    // ← audit C2: transaction atomique — aucune requête HTTP ne voit la table vide
+    const t0 = Date.now();
+    const reseedTx3min = sqlite.transaction(() => {
+      sqlite.exec("DELETE FROM profitability_scores");
+      reseedScores(today, dayOfWeek);
+    });
+    reseedTx3min();
+    const durationMs = Date.now() - t0;
     // Régénérer les alertes dynamiques après recalcul des scores
     generateDynamicAlerts();
+    // Checkpoint WAL après batch d'écritures (évite WAL file growth)
+    sqlite.pragma('wal_checkpoint(PASSIVE)');
     sqlite.prepare("INSERT OR REPLACE INTO seed_meta (key,value) VALUES ('last_refresh_ts',?)").run(now.toISOString());
+    sqlite.prepare("INSERT OR REPLACE INTO seed_meta (key,value) VALUES ('last_refresh_duration_ms',?)").run(String(durationMs));
     sqlite.prepare("INSERT OR REPLACE INTO seed_meta (key,value) VALUES ('last_seed_date',?)").run(today);
-    console.log(`[storage] Auto-refresh 3min: scores recalculés à ${now.toLocaleTimeString('fr-FR')}`);
+    if (durationMs > 500) console.warn(`[storage] Refresh lent: ${durationMs}ms`);
+    console.log(`[storage] Auto-refresh 3min: scores recalculés à ${now.toLocaleTimeString('fr-FR')} (${durationMs}ms)`);
   } catch (err) {
     console.error("[storage] Erreur auto-refresh:", err);
   }
