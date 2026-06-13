@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, REALTIME_INTERVAL, SLOW_INTERVAL, STATIC_INTERVAL } from "@/lib/queryClient";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -185,14 +185,15 @@ export default function MapPage() {
   const [dayType, setDayType] = useState([0,6].includes(now.getDay()) ? "weekend" : "weekday");
   const [selectedZone, setSelectedZone] = useState<any>(null);
 
-  const { data: zones = [] } = useQuery({ queryKey: ["/api/zones"], queryFn: () => apiRequest("GET", "/api/zones").then(r => r.json()) });
-  const { data: profitability = [] } = useQuery({ queryKey: ["/api/profitability", selectedHour, dayType], queryFn: () => apiRequest("GET", `/api/profitability?hour=${selectedHour}&dayType=${dayType}`).then(r => r.json()) });
-  const { data: topZones = [] } = useQuery({ queryKey: ["/api/top-zones", selectedHour, dayType], queryFn: () => apiRequest("GET", `/api/top-zones?hour=${selectedHour}&dayType=${dayType}&limit=5`).then(r => r.json()) });
-  const { data: events = [] } = useQuery({ queryKey: ["/api/events"], queryFn: () => apiRequest("GET", "/api/events").then(r => r.json()), refetchInterval: 60000 });
+  const { data: zones = [] } = useQuery({ queryKey: ["/api/zones"], queryFn: () => apiRequest("GET", "/api/zones").then(r => r.json()), refetchInterval: STATIC_INTERVAL, staleTime: 30_000 });
+  const { data: profitability = [] } = useQuery({ queryKey: ["/api/profitability", selectedHour, dayType], queryFn: () => apiRequest("GET", `/api/profitability?hour=${selectedHour}&dayType=${dayType}`).then(r => r.json()), refetchInterval: REALTIME_INTERVAL });
+  const { data: topZones = [] } = useQuery({ queryKey: ["/api/top-zones", selectedHour, dayType], queryFn: () => apiRequest("GET", `/api/top-zones?hour=${selectedHour}&dayType=${dayType}&limit=5`).then(r => r.json()), refetchInterval: REALTIME_INTERVAL });
+  const { data: events = [] } = useQuery({ queryKey: ["/api/events"], queryFn: () => apiRequest("GET", "/api/events").then(r => r.json()), refetchInterval: SLOW_INTERVAL, staleTime: 20_000 });
   const { data: flightData } = useQuery({
     queryKey: ["/api/flights"],
     queryFn: () => apiRequest("GET", "/api/flights").then(r => r.json()),
-    refetchInterval: 4 * 60 * 1000, // toutes les 4 min (aligne sur le cache backend)
+    refetchInterval: 3 * 60 * 1000, // 3 min (aligné sur cache backend TTL 3min)
+    staleTime: 2 * 60 * 1000,
   });
 
   useEffect(() => {

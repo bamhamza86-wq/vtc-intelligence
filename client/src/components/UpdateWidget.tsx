@@ -37,7 +37,7 @@ export function UpdateWidget({ compact = false, showCount = false, className = "
   useEffect(() => {
     fetchStatus();
     // Rafraîchit le statut toutes les 10s
-    const interval = setInterval(fetchStatus, 10_000);
+    const interval = setInterval(fetchStatus, 5_000); // status refresh 5s
     return () => clearInterval(interval);
   }, []);
 

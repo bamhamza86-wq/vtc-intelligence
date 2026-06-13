@@ -3,20 +3,36 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { getFlightData, getFlightBoostForZone } from "./flightService";
 
-// ← F3: Cache en mémoire pour getFlightData (TTL = 3min = REFRESH_INTERVAL_MS)
-// Évite 50 appels HTTP réseau simultanés sous charge (source des -197% latence /api/events)
+// ← F3: Cache en mémoire pour getFlightData avec mutex concurrent-safe
+// TTL = 3min (aligné sur REFRESH_INTERVAL_MS storage)
+// Mutex: si 2 req simultanées avec cache froid → 1 seul appel réseau (pas 2)
 const FLIGHT_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes
 let _flightCacheData: any = null;
 let _flightCacheTs = 0;
+let _flightFetchPromise: Promise<any> | null = null; // mutex concurrent
+
 async function getFlightDataCached(): Promise<any> {
   const now = Date.now();
+  // Cache chaud → retour immédiat (0ms)
   if (_flightCacheData && (now - _flightCacheTs) < FLIGHT_CACHE_TTL_MS) {
-    return _flightCacheData; // cache chaud — retour immédiat 0ms
+    return _flightCacheData;
   }
-  // Cache froid ou expiré — 1 seul appel réseau
-  _flightCacheData = await getFlightData();
-  _flightCacheTs = now;
-  return _flightCacheData;
+  // Fetch déjà en cours → attendre le même (mutex)
+  if (_flightFetchPromise) {
+    return _flightFetchPromise;
+  }
+  // Cache froid → 1 seul appel réseau
+  _flightFetchPromise = getFlightData().then(data => {
+    _flightCacheData = data;
+    _flightCacheTs = Date.now();
+    _flightFetchPromise = null;
+    return data;
+  }).catch(err => {
+    _flightFetchPromise = null;
+    if (_flightCacheData) return _flightCacheData; // retourne ancien cache si dispo
+    throw err;
+  });
+  return _flightFetchPromise;
 }
 import {
   getAllCachedRoutes,
@@ -78,7 +94,81 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     }
   }, 30 * 60 * 1000); // 30 minutes
 
+  // Headers cache HTTP pour optimiser le refresh 2s côté navigateur
+  // profitability/current/alerts : no-store (données toujours fraîches)
+  // zones/profile : cache 60s navigateur
+  app.use("/api/profitability", (_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store, must-revalidate");
+    next();
+  });
+  app.use("/api/current", (_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store, must-revalidate");
+    next();
+  });
+  app.use("/api/alerts", (_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store, must-revalidate");
+    next();
+  });
+  app.use("/api/zones", (_req, res, next) => {
+    res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=120");
+    next();
+  });
+
   app.get("/api/zones", (_req, res) => { res.json(storage.getAllZones()); });
+
+  // ─── /api/current — Snapshot temps réel (2s refresh) ──────────────────
+  // Regroupe profitability + top-zones + alertes actives + meta refresh
+  // en 1 seul appel — réduit les requêtes de 3 → 1 par cycle 2s
+  app.get("/api/current", async (req, res) => {
+    const now = new Date();
+    const h = now.getHours();
+    const dayType = [0,6].includes(now.getDay()) ? 'weekend' : 'weekday';
+
+    try {
+      // Données synchrones SQLite (instantané)
+      const scores = storage.getProfitabilityByHour(h, dayType);
+      const zones  = storage.getAllZones();
+      const alerts = storage.getActiveAlerts();
+      const zoneMap: any = Object.fromEntries(zones.map((z: any) => [z.id, z]));
+
+      // Enrichissement vols depuis cache (0ms si cache chaud) — AVANT tri topZones
+      let enrichedScores = scores;
+      try {
+        const flightData = await getFlightDataCached();
+        enrichedScores = scores.map((s: any) => {
+          const flightBoost = getFlightBoostForZone(s.zone_id, flightData);
+          const baseIdx = s.profitability_index ?? 0;
+          const boostPts = flightBoost > 1 ? Math.round(Math.log(flightBoost) / Math.log(2) * 12) : 0;
+          const boostedIndex = Math.min(95, Math.round(baseIdx + boostPts));
+          const boostedSurge = Math.min(4.5, Math.round(((s.surge_multiplier ?? 1.0) * Math.min(flightBoost, 1.5)) * 100) / 100);
+          return { ...s, profitability_index: boostedIndex, profitabilityIndex: boostedIndex, surge_multiplier: boostedSurge, surgeMultiplier: boostedSurge, flight_boost: flightBoost, flightBoost };
+        });
+      } catch { /* garde scores non-enrichis */ }
+
+      // Top 5 zones triées sur scores ENRICHIS (avec flight_boost appliqué)
+      const topZones = [...enrichedScores]
+        .sort((a: any, b: any) => (b.profitability_index ?? 0) - (a.profitability_index ?? 0))
+        .slice(0, 5)
+        .map((s: any) => ({ ...s, zone: zoneMap[s.zone_id] }));
+
+      // lastRefresh depuis seed_meta (clé 'last_refresh_ts' OU 'last_seed_ts')
+      const meta = storage.getSeedMeta();
+      const lastRefreshTs = meta['last_refresh_ts'] || meta['last_seed_ts'] || now.toISOString();
+      res.json({
+        hour: h,
+        dayType,
+        timestamp: now.toISOString(),
+        profitability: enrichedScores,
+        topZones,
+        alerts: alerts.slice(0, 10), // limite 10 pour perf
+        lastRefresh: lastRefreshTs,
+        nextRefresh: new Date(new Date(lastRefreshTs).getTime() + 3 * 60 * 1000).toISOString(),
+        zones: zoneMap,
+      });
+    } catch (err) {
+      res.status(500).json({ error: "Erreur /api/current", details: String(err) });
+    }
+  });
 
   // ─── Données de vols temps réel (CDG + Orly) ───────────────────────────────
   app.get("/api/flights", async (_req, res) => {

@@ -1,6 +1,6 @@
 import { Link, useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiRequest, getAuthToken, setAuthToken, API_BASE } from "@/lib/queryClient";
+import { apiRequest, getAuthToken, setAuthToken, API_BASE, REALTIME_INTERVAL } from "@/lib/queryClient";
 import { useTheme } from "./ThemeProvider";
 import { Bell, Map, Calculator, Database, User, Sun, Moon, LogOut, Navigation, Target, BarChart2, CornerDownLeft } from "lucide-react";
 
@@ -34,7 +34,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const { data: alerts = [] } = useQuery({
     queryKey: ["/api/alerts"],
     queryFn: () => apiRequest("GET", "/api/alerts").then(r => r.json()),
-    refetchInterval: 30000,
+    refetchInterval: 15_000,  // alertes : refresh 15s pour badge unread
   });
   const unreadCount = (alerts as any[]).filter((a: any) => !a.is_read).length;
 

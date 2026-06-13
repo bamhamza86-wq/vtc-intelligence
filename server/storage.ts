@@ -5,9 +5,13 @@ const sqlite = new Database("data.db");
 // ← audit G: pragmas SQLite production (WAL + cache + synchronous NORMAL)
 sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('synchronous = NORMAL');
-sqlite.pragma('cache_size = -32000');   // 32 MB RAM cache
+sqlite.pragma('cache_size = -131072');  // 512 MB RAM cache (8 GB dispo → max SQLite)
 sqlite.pragma('temp_store = MEMORY');   // tables temp en RAM
-sqlite.pragma('mmap_size = 134217728'); // 128 MB memory-mapped I/O
+sqlite.pragma('mmap_size = 4294967296'); // 4 GB memory-mapped I/O (mmap max 64-bit)
+sqlite.pragma('page_size = 4096');      // page 4KB optimale SSD
+sqlite.pragma('busy_timeout = 5000');   // attend 5s si DB locké (au lieu de throw)
+sqlite.pragma('wal_autocheckpoint = 0'); // désactive auto-checkpoint SQLite — géré manuellement F2
+sqlite.pragma('optimize');              // optimise le query planner (appel unique à l'init)
 sqlite.pragma('foreign_keys = ON');
 
 sqlite.exec(`
@@ -19,6 +23,16 @@ sqlite.exec(`
   CREATE TABLE IF NOT EXISTS driver_profile (id INTEGER PRIMARY KEY AUTOINCREMENT, fuel_consumption_per100km REAL NOT NULL DEFAULT 7.5, fuel_price_per_liter REAL NOT NULL DEFAULT 1.92, platform_commission_pct REAL NOT NULL DEFAULT 25.0, hourly_target_income REAL NOT NULL DEFAULT 35.0, wear_cost_per_km REAL NOT NULL DEFAULT 0.08, min_profitable_km_per_min REAL NOT NULL DEFAULT 1.0, vehicle_type TEXT NOT NULL DEFAULT 'berline', prefer_long_rides INTEGER NOT NULL DEFAULT 1);
   CREATE TABLE IF NOT EXISTS seed_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS score_history (id INTEGER PRIMARY KEY AUTOINCREMENT, zone_id TEXT NOT NULL, hour INTEGER NOT NULL, day_type TEXT NOT NULL, profitability_index REAL NOT NULL, surge_multiplier REAL NOT NULL, demand_score REAL NOT NULL, supply_score REAL NOT NULL, seed_date TEXT NOT NULL);
+`);
+
+// ─── Index pour accélération hot-path ──────────────────────────────────
+sqlite.exec(`
+  CREATE INDEX IF NOT EXISTS idx_prof_hour_daytype ON profitability_scores(hour, day_type);
+  CREATE INDEX IF NOT EXISTS idx_alerts_expires ON alerts(expires_at, is_read);
+  CREATE INDEX IF NOT EXISTS idx_alerts_zone ON alerts(zone_id);
+  CREATE INDEX IF NOT EXISTS idx_events_active ON events(is_active, start_time);
+  CREATE INDEX IF NOT EXISTS idx_rides_ts ON rides(timestamp DESC);
+  CREATE INDEX IF NOT EXISTS idx_score_history_date ON score_history(seed_date, zone_id, hour);
 `);
 
 // ─── Prepared statements globaux — compilés une seule fois à l'init ───────────────────
@@ -71,6 +85,14 @@ const stmtGetRecentRides = sqlite.prepare(
 
 const stmtGetDriverProfile = sqlite.prepare(
   `SELECT * FROM driver_profile LIMIT 1`
+);
+
+const stmtGetCurrentScores = sqlite.prepare(
+  `SELECT ps.*, z.name as zone_name, z.lat, z.lng, z.type as zone_type
+   FROM profitability_scores ps
+   JOIN zones z ON z.id = ps.zone_id
+   WHERE ps.hour = ? AND ps.day_type = ?
+   ORDER BY ps.profitability_index DESC`
 );
 
 
@@ -876,7 +898,7 @@ setInterval(() => {
     // Objectif: prévenir le WAL file growth sans pénaliser la disponibilité
     const walInfo = sqlite.pragma('wal_checkpoint(PASSIVE)') as any[];
     const walPages = walInfo?.[0]?.log ?? 0;
-    const walThreshold = 1000; // pages (4KB/page = ~4MB)
+    const walThreshold = 500; // pages (4KB/page = ~2MB) — checkpoint plus fréquent
     if (walPages > walThreshold) {
       // WAL trop gros: checkpoint TRUNCATE (rewrite + réinitialise le fichier WAL)
       // Peut bloquer 50-200ms si lectures actives — acceptable sur cycle 3min
@@ -899,6 +921,7 @@ setInterval(() => {
 
 export interface IStorage {
   getAllZones(): any[];
+  getCurrentScores(): any[];
   getProfitabilityByHour(hour: number, dayType: string): any[];
   getTopZones(hour: number, dayType: string, limit?: number): any[];
   getActiveEvents(): any[];
@@ -922,6 +945,13 @@ export interface IStorage {
 
 export const storage: IStorage = {
   getAllZones: () => stmtGetAllZones.all(),  // ← F1: prepared statement global
+
+  getCurrentScores: () => {
+    const now = new Date();
+    const h = now.getHours();
+    const dayType = [0,6].includes(now.getDay()) ? 'weekend' : 'weekday';
+    return stmtGetCurrentScores.all(h, dayType);
+  },
 
   getProfitabilityByHour: (hour, dayType) =>
     sqlite.prepare("SELECT ps.*, z.name as zone_name, z.type as zone_type FROM profitability_scores ps LEFT JOIN zones z ON ps.zone_id=z.id WHERE ps.hour=? AND ps.day_type=? ORDER BY ps.profitability_index DESC").all(hour, dayType),

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, REALTIME_INTERVAL } from "@/lib/queryClient";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -513,7 +513,7 @@ export default function AlertsPage() {
   const { data: alerts = [], isLoading } = useQuery({
     queryKey: ["/api/alerts"],
     queryFn: () => apiRequest("GET", "/api/alerts").then(r => r.json()),
-    refetchInterval: 30000,
+    refetchInterval: 15_000, // alertes: refresh 15s
   });
 
   const markRead = useMutation({
