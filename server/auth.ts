@@ -4,24 +4,21 @@ import bcrypt from "bcryptjs";
 import rateLimit from "express-rate-limit";
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Configuration — mots de passe via variables d'environnement
-// Fallback dev : plaintext hashé au démarrage (UNIQUEMENT si la var n'est pas définie)
-// En production, définir PASSWORD_ROOT_HASH et PASSWORD_ANTOINE_HASH dans .env
+// Configuration — credentials applicatifs VTC Intelligence
+// Hashes bcrypt précalculés (cost=10) — root:12345678, antoine:antoine
+// Si PASSWORD_ROOT_HASH/PASSWORD_ANTOINE_HASH sont définis en env → priorité.
 // ──────────────────────────────────────────────────────────────────────────────
-function resolveHash(envHash: string | undefined, devPlaintext: string): string {
-  if (envHash && envHash.startsWith("$2")) return envHash; // bcrypt hash déjà prêt
-  // Fallback dev : hash à la volée (jamais en production)
-  if (process.env.NODE_ENV !== "production") {
-    return bcrypt.hashSync(devPlaintext, 10);
-  }
-  // Production sans var env → refus de démarrer proprement
-  console.error(`[auth] ERREUR: hash mot de passe manquant en production.`);
-  return bcrypt.hashSync(randomBytes(32).toString("hex"), 10); // hash inaccessible
+const DEFAULT_ROOT_HASH    = "$2b$10$p2oHiLHo.LI7g2r27DnGEOU.8.a4UOiatApNn8u9u4rq0QmRNlkAS";
+const DEFAULT_ANTOINE_HASH = "$2b$10$6LCMSN901Tkwyk5ay0E9dORDEUjxGGM6vOSlWVF6kgMOzIva6745W";
+
+function resolveHash(envHash: string | undefined, defaultHash: string): string {
+  if (envHash && envHash.startsWith("$2")) return envHash; // override via env var
+  return defaultHash; // fallback : hash précalculé embarqué
 }
 
 const USERS: Record<string, string> = {
-  root:    resolveHash(process.env.PASSWORD_ROOT_HASH,    "12345678"),
-  antoine: resolveHash(process.env.PASSWORD_ANTOINE_HASH, "antoine"),
+  root:    resolveHash(process.env.PASSWORD_ROOT_HASH,    DEFAULT_ROOT_HASH),
+  antoine: resolveHash(process.env.PASSWORD_ANTOINE_HASH, DEFAULT_ANTOINE_HASH),
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
