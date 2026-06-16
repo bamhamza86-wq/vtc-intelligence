@@ -407,6 +407,7 @@ function computeScore(
   const isPeak = pat.peakHours.includes(h);
   const isNight = h >= 0 && h < 5;
   const isMidDay = h >= 11 && h <= 13;           // ← audit B3: off-by-one corrigé (h<=18 → h<=13) — midi=[11,13], demi-journée=[14,18] distincts
+  const isAfternoon = h >= 14 && h <= 18;        // ← BUG #4: demi-journée distincte du midi (boost14_18 applicable)
   const isWeekendNight = dt === "weekend" && (h >= 22 || h <= 3);
   const dayCo = DAY_COEFFICIENTS[dayOfWeek] || DAY_COEFFICIENTS[2];
 
@@ -419,10 +420,10 @@ function computeScore(
   }
 
   // Boosts horaires 11h-18h calibrés (corrélation Parc Expo / business)
-  if (isMidDay && h >= 11 && h < 14) {
+  if (isMidDay) {
     demandBase += (pat as any).demandBoost11_14 ?? 0;
   }
-  if (isMidDay && h >= 14 && h <= 18) {
+  if (isAfternoon) {
     demandBase += (pat as any).demandBoost14_18 ?? 0;
   }
 
@@ -458,7 +459,7 @@ function computeScore(
   // 6h-10h  : peu de chauffeurs (heure creuse chauffeurs) → supply_morning basse
   const isMorning = h >= 6 && h < 10;
   const supplyCoeff = isMorning ? dayCo.supply_morning
-    : isMidDay ? dayCo.supply_midday
+    : (isMidDay || isAfternoon) ? dayCo.supply_midday
     : dayCo.supply;
   let supplyBase = isPeak ? 58 : (isNight ? 16 : 48);
   if (zone.type === "airport") supplyBase = isPeak ? 48 : 34;
@@ -540,9 +541,11 @@ function computeScore(
   // Rush PM 17h+ : surge déclenché plus tôt (observé terrain)
   // Mi-journée : surge modéré mais réel sur zones business
   const isMorningRush = h >= 6 && h < 9; // Rush AM — demande >>> offre
-  const surgeThreshold1 = isMorningRush ? 1.5 : isMidDay ? 1.9 : 2.2; // Rush AM déclenché plus tôt
-  const surgeThreshold2 = isMorningRush ? 1.1 : isMidDay ? 1.4 : 1.7;
-  const surgeThreshold3 = isMorningRush ? 0.9 : isMidDay ? 1.1 : 1.3;
+  // BUG #2: seuils de nuit profonde abaissés sur aéroports — évite l'anomalie de seuil
+  // (bruit sinusoïdal faisait tomber le surge Orly h=0 à 1.75 au lieu de plein régime)
+  const surgeThreshold1 = isMorningRush ? 1.5 : isMidDay ? 1.9 : (isNight && zone.type === "airport" ? 1.9 : 2.2);
+  const surgeThreshold2 = isMorningRush ? 1.1 : isMidDay ? 1.4 : (isNight && zone.type === "airport" ? 1.3 : 1.7);
+  const surgeThreshold3 = isMorningRush ? 0.9 : isMidDay ? 1.1 : (isNight && zone.type === "airport" ? 1.0 : 1.3);
   const surgeMult = ratio > surgeThreshold1 ? 1.90 * dayCo.surge
     : ratio > surgeThreshold2 ? 1.48 * dayCo.surge
     : ratio > surgeThreshold3 ? 1.20 * dayCo.surge
@@ -627,6 +630,22 @@ function computeScore(
     shortRideBonus
   ) * 10) / 10));
 
+  // ── BUG #3 : facteur de disponibilité réelle — pénalise les heures creuses nocturnes ──
+  // Volume réel de courses 0h-5h très faible : sur-scoré car supply faible → ratio D/O élevé.
+  // CDG/Orly gardent une activité réelle (vols nocturnes) mais réduite vs rush AM.
+  // Zones résidentielles/transport/business : quasi inactives la nuit.
+  let availabilityFactor = 1.0;
+  if (h >= 0 && h < 5) {
+    if (zone.type === "airport") {
+      availabilityFactor = 0.60 + Math.sin(h * 0.8) * 0.05; // ~0.60-0.65
+    } else if (zone.type === "entertainment") {
+      availabilityFactor = 0.75; // Stade de France : soirées tardives OK
+    } else {
+      availabilityFactor = 0.45; // résidentiel/transport/business : très peu actives
+    }
+  }
+  const finalProfIdx = Math.min(95, Math.max(5, Math.round(profIdx * availabilityFactor * 10) / 10));
+
   return {
     demand: Math.round(demand * 10) / 10,
     supply: Math.round(supply * 10) / 10,
@@ -634,7 +653,7 @@ function computeScore(
     avgDist: Math.round(avgDist * 10) / 10,
     avgDur: Math.round(avgDur * 10) / 10,
     avgFare: Math.round(avgFare * 100) / 100,
-    profIdx: Math.round(profIdx * 10) / 10,
+    profIdx: Math.round(finalProfIdx * 10) / 10,
     longRide: Math.round(longRide * 1000) / 1000,
     surge: Math.round(surge * 100) / 100,
     rawRatio: Math.round(rawRatio * 1000) / 1000,
@@ -667,8 +686,13 @@ function reseedScores(today: string, dayOfWeek: number) {
     const seedVar = zi * 1.37; // variance déterministe par zone
     const zoneEvents = eventsByZone.get(zone.id) ?? [];
     for (const dt of ["weekday", "weekend"]) {
+      // BUG #1 : dériver le bon dayOfWeek selon le day_type pour que les
+      // DAY_COEFFICIENTS weekday et weekend diffèrent réellement (h=4..21).
+      const effectiveDow = dt === "weekday"
+        ? ([0, 6].includes(dayOfWeek) ? 2 : dayOfWeek)   // jour ouvré (mardi par défaut si on est le weekend)
+        : ([0, 6].includes(dayOfWeek) ? dayOfWeek : 6);   // weekend réel sinon samedi représentatif
       for (let h = 0; h < 24; h++) {
-        const s = computeScore(zone, h, dt, dayOfWeek, seedVar, zoneEvents);
+        const s = computeScore(zone, h, dt, effectiveDow, seedVar, zoneEvents);
         insS.run(zone.id, h, dt, s.demand, s.supply, s.ratio, s.avgDist, s.avgDur, s.avgFare, s.profIdx, s.longRide, s.surge);
         insH.run(zone.id, h, dt, s.profIdx, s.surge, s.demand, s.supply, today);
       }
@@ -700,6 +724,18 @@ function generateDemandPredictions(): void {
     eventIdsByZone.get(ev.zone_id)!.push(String(ev.id));
   }
 
+  // ── BUG #5 : biais de tendance J-1 depuis score_history ──
+  // Charge les scores d'hier pour calculer un momentum (delta J vs J-1) et
+  // éviter que la prédiction soit une copie exacte du score actuel.
+  const yesterday = new Date(now.getTime() - 86400000).toISOString().split("T")[0];
+  const histScores = sqlite.prepare(
+    `SELECT zone_id, hour, day_type, profitability_index FROM score_history WHERE seed_date = ?`
+  ).all(yesterday) as any[];
+  const histMap = new Map<string, number>();
+  for (const hs of histScores) {
+    histMap.set(`${hs.zone_id}|${hs.hour}|${hs.day_type}`, hs.profitability_index);
+  }
+
   const tx = sqlite.transaction(() => {
     for (let zi = 0; zi < zones93.length; zi++) {
       const zone = zones93[zi];
@@ -723,10 +759,21 @@ function generateDemandPredictions(): void {
           supply_coeff: isMorning ? dayCo.supply_morning : (isMidDay ? dayCo.supply_midday : dayCo.supply),
           supply_applied: s.supplyCoeffLabel,
         });
+        // BUG #5 : biais de tendance — pondère la prédiction avec le momentum J-1
+        const histKey = `${zone.id}|${targetHour}|${dt}`;
+        const histScore = histMap.get(histKey);
+        let predictedIdx = s.profIdx;
+        let modelVersion = "v2_historical";
+        if (histScore !== undefined) {
+          const trendDelta = (s.profIdx - histScore) * 0.25;  // momentum 25%
+          const decayPenalty = (ahead - 1) * 0.5;             // perte de précision avec l'horizon
+          predictedIdx = Math.min(95, Math.max(5, Math.round((s.profIdx + trendDelta - decayPenalty) * 10) / 10));
+          modelVersion = "v2_trend";
+        }
         stmtInsertPrediction.run(
           zone.id, targetHour, targetDate,
           zone.id, targetHour, targetDate,
-          s.profIdx, Math.round(confidence * 100) / 100, "v2_historical", factors, createdAt
+          predictedIdx, Math.round(confidence * 100) / 100, modelVersion, factors, createdAt
         );
       }
     }
@@ -987,6 +1034,41 @@ function seedData() {
   const dpCnt = (sqlite.prepare("SELECT COUNT(*) as c FROM driver_profile").get() as any).c;
   if (dpCnt === 0) {
     sqlite.prepare("INSERT OR IGNORE INTO driver_profile (fuel_consumption_per100km,fuel_price_per_liter,platform_commission_pct,hourly_target_income,wear_cost_per_km,min_profitable_km_per_min,vehicle_type,prefer_long_rides) VALUES (7.5,1.92,25.0,35.0,0.08,1.0,'berline',1)").run();
+  }
+
+  // ── BUG #6 : historique synthétique 14 jours si manquant ──
+  // score_history vide ou < 7 jours → génère J-1..J-13 avec variation déterministe
+  // autour des scores actuels, en respectant le day_type de chaque date passée.
+  const histDays = (sqlite.prepare("SELECT COUNT(DISTINCT seed_date) as cnt FROM score_history").get() as any).cnt;
+  if (histDays < 7) {
+    console.log(`[storage] Génération historique synthétique 14 jours...`);
+    const insH = sqlite.prepare(
+      `INSERT OR IGNORE INTO score_history (zone_id,hour,day_type,profitability_index,surge_multiplier,demand_score,supply_score,seed_date) VALUES (?,?,?,?,?,?,?,?)`
+    );
+    const currentScores = sqlite.prepare("SELECT * FROM profitability_scores").all() as any[];
+
+    const histTx = sqlite.transaction(() => {
+      for (let daysBack = 1; daysBack <= 13; daysBack++) {
+        const pastDate = new Date(now.getTime() - daysBack * 86400000);
+        const pastDateStr = pastDate.toISOString().split("T")[0];
+        const pastDow = pastDate.getDay();
+        const dateSeed = daysBack * 7.3 + pastDow * 1.9;
+
+        for (const score of currentScores) {
+          const noise = Math.sin(dateSeed + score.hour * 0.4) * 0.08; // ±8% déterministe
+          const pastDt = [0, 6].includes(pastDow) ? "weekend" : "weekday";
+          if (pastDt !== score.day_type) continue; // cohérence day_type
+          const adjProfIdx = Math.min(95, Math.max(5, Math.round(score.profitability_index * (1 + noise) * 10) / 10));
+          const adjSurge = Math.min(3.8, Math.max(1.0, Math.round(score.surge_multiplier * (1 + noise * 0.5) * 100) / 100));
+          const adjDemand = Math.min(100, Math.max(5, Math.round(score.demand_score * (1 + noise) * 10) / 10));
+          const adjSupply = Math.min(100, Math.max(5, Math.round(score.supply_score * (1 + noise * 0.3) * 10) / 10));
+          insH.run(score.zone_id, score.hour, score.day_type, adjProfIdx, adjSurge, adjDemand, adjSupply, pastDateStr);
+        }
+      }
+    });
+    histTx();
+    const newHistDays = (sqlite.prepare("SELECT COUNT(DISTINCT seed_date) as cnt FROM score_history").get() as any).cnt;
+    console.log(`[storage] Historique généré : ${newHistDays} jours disponibles`);
   }
 
   // ── THÈME 2 : init maintenance véhicule ──
