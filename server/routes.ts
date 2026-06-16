@@ -181,7 +181,8 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   });
 
   app.get("/api/profitability", async (req, res) => {
-    const hour = parseInt(req.query.hour as string) || new Date().getHours();
+    const _hourRaw = parseInt(req.query.hour as string);
+    const hour = isNaN(_hourRaw) ? new Date().getHours() : _hourRaw;
     const dayType = req.query.dayType as string || ([0,6].includes(new Date().getDay()) ? 'weekend' : 'weekday');
     const scores = storage.getProfitabilityByHour(hour, dayType);
 
@@ -214,7 +215,8 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   });
 
   app.get("/api/top-zones", (req, res) => {
-    const hour = parseInt(req.query.hour as string) || new Date().getHours();
+    const _hourRaw2 = parseInt(req.query.hour as string);
+    const hour = isNaN(_hourRaw2) ? new Date().getHours() : _hourRaw2;
     const dayType = req.query.dayType as string || ([0,6].includes(new Date().getDay()) ? 'weekend' : 'weekday');
     const limit = parseInt(req.query.limit as string) || 5;
     const scores = storage.getTopZones(hour, dayType, limit);
