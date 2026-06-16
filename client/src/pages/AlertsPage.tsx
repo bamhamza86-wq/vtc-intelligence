@@ -10,6 +10,7 @@ import {
   Plane, TrendingUp, Users, ArrowRight
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import SurgeTransparencyWidget from "@/components/SurgeTransparencyWidget";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -659,7 +660,10 @@ export default function AlertsPage() {
           <GpsBanner status={gpsStatus} position={position} onActivate={startGps} />
         </div>
 
-
+        {/* ── THÈME 5 : Transparence surge ─────────────────────────────────── */}
+        <div className="px-4">
+          <SurgeTransparencyWidget />
+        </div>
 
         {/* ── ÉVÉNEMENTS — Créneaux GPS chronologiques ─────────────────────── */}
         <div className="px-4">

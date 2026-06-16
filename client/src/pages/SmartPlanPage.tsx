@@ -7,9 +7,10 @@ import {
   Plane, Navigation, Clock, Euro, AlertTriangle, Zap, Star,
   CheckCheck, Crosshair, CalendarClock, TrendingUp, MapPin,
   ArrowRight, Timer, RefreshCw, ChevronRight, Wifi, WifiOff,
-  Target, Flame, Activity, Calendar, BellRing,
+  Target, Flame, Activity, Calendar, BellRing, Hourglass,
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import PredictionPanel from "@/components/PredictionPanel";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -408,6 +409,96 @@ function HourlyHeatmap({ scores, currentHour }: { scores: Record<string, { topZo
 
 // ─── Page principale ────────────────────────────────────────────────────────────
 
+// ─── THÈME 6 : Optimiseur temps mort ────────────────────────────────────────
+interface IdleReco {
+  zone_id: string;
+  zone_name: string;
+  lat: number;
+  lng: number;
+  score_now: number;
+  score_next_hour: number;
+  avg_score: number;
+  eta_min: number;
+  repo_cost_min: number;
+  net_score: number;
+  action: string;
+  reason: string;
+}
+
+function IdleOptimizer() {
+  const { data } = useQuery<{ recommendations: IdleReco[] }>({
+    queryKey: ["/api/idle-optimizer"],
+    queryFn: () => apiRequest("GET", "/api/idle-optimizer").then(r => r.json()),
+    refetchInterval: 3_000,
+  });
+  const { data: profile } = useQuery<any>({
+    queryKey: ["/api/driver-profile"],
+    queryFn: () => apiRequest("GET", "/api/driver-profile").then(r => r.json()),
+    refetchInterval: 3_000,
+  });
+
+  let preferred: string[] = [];
+  try { preferred = Array.isArray(profile?.preferred_zones) ? profile.preferred_zones : JSON.parse(profile?.preferred_zones ?? "[]"); } catch { preferred = []; }
+  const workStart = profile?.work_hours_start ?? 0;
+  const workEnd = profile?.work_hours_end ?? 24;
+  const avoidHighway = Boolean(profile?.avoid_highway);
+  const curHour = new Date().getHours();
+  const outsideHours = curHour < workStart || curHour >= workEnd;
+
+  const recos = (data?.recommendations ?? []).slice(0, 3);
+  if (recos.length === 0) return null;
+
+  // zones autoroutières (aéroports/expo accessibles par A1/A86/A104)
+  const HIGHWAY_ZONES = ["z_cdg", "z_orly", "z_villepinte", "z_tremblay", "z_le_bourget", "z_aulnay"];
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Hourglass size={14} className="text-violet-400" />
+        <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+          Optimiseur temps mort
+        </span>
+        {outsideHours && (
+          <Badge variant="outline" className="text-[9px] text-muted-foreground ml-auto">Hors plage de travail</Badge>
+        )}
+      </div>
+      <div className="space-y-2">
+        {recos.map(r => {
+          const isPreferred = preferred.includes(r.zone_id);
+          const usesHighway = avoidHighway && HIGHWAY_ZONES.includes(r.zone_id);
+          return (
+          <div key={r.zone_id} className={`rounded-xl border p-3 space-y-1.5 ${isPreferred ? "border-teal-400 bg-teal-500/10" : "border-violet-500/20 bg-violet-500/5"} ${outsideHours ? "opacity-50" : ""}`}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-semibold truncate flex items-center gap-1.5">
+                {r.zone_name}
+                {isPreferred && <Star size={12} className="text-teal-400 fill-teal-400" />}
+              </span>
+              <Badge className="bg-violet-600 text-white text-xs">Score {r.avg_score}</Badge>
+            </div>
+            <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+              <span className="flex items-center gap-1"><Timer size={11} />{r.eta_min} min</span>
+              <span className="flex items-center gap-1"><TrendingUp size={11} />{r.score_now}→{r.score_next_hour}</span>
+            </div>
+            <p className="text-[11px] text-foreground">{r.action}</p>
+            <p className="text-[10px] text-muted-foreground">{r.reason}</p>
+            {usesHighway && (
+              <p className="text-[10px] text-amber-400 flex items-center gap-1"><AlertTriangle size={10} />Itinéraire autoroutier (vous préférez les éviter)</p>
+            )}
+            <Button
+              size="sm"
+              className="w-full h-9 mt-1 bg-violet-600 hover:bg-violet-500 text-white"
+              onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${r.lat},${r.lng}`, "_blank")}
+            >
+              <Navigation size={14} className="mr-1.5" />Y aller
+            </Button>
+          </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function SmartPlanPage() {
   const [position, setPosition] = useState<{ lat: number; lng: number } | null>(null);
   const [gpsError, setGpsError] = useState<string | null>(null);
@@ -507,6 +598,12 @@ export default function SmartPlanPage() {
           <span>{gpsError}</span>
         </div>
       )}
+
+      {/* ── THÈME 1 & 6 : Prédiction IA + Optimiseur temps mort (toujours visibles) ── */}
+      <div className="px-4 pt-4 space-y-5">
+        <PredictionPanel />
+        <IdleOptimizer />
+      </div>
 
       {/* ── Loading skeleton ── */}
       {isLoading && (

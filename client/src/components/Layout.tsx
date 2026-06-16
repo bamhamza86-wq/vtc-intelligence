@@ -37,6 +37,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     refetchInterval: 3_000,   // alertes : refresh 3s temps réel
   });
   const unreadCount = (alerts as any[]).filter((a: any) => !a.is_read).length;
+  const criticalCount = (alerts as any[]).filter((a: any) => !a.is_read && a.priority === "critical").length;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -78,7 +79,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <div className="relative">
                   <Icon size={18} />
                   {isAlerts && unreadCount > 0 && (
-                    <span className="absolute -top-1.5 -right-1.5 bg-destructive text-destructive-foreground text-[10px] font-bold rounded-full min-w-[16px] h-4 flex items-center justify-center px-1">{unreadCount}</span>
+                    <span className={`absolute -top-1.5 -right-1.5 text-[10px] font-bold rounded-full min-w-[16px] h-4 flex items-center justify-center px-1 ${criticalCount > 0 ? "bg-red-600 text-white animate-pulse ring-2 ring-red-400/50" : "bg-destructive text-destructive-foreground"}`}>{unreadCount}</span>
                   )}
                 </div>
                 <span>{label}</span>

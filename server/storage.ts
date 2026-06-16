@@ -25,6 +25,69 @@ sqlite.exec(`
   CREATE TABLE IF NOT EXISTS score_history (id INTEGER PRIMARY KEY AUTOINCREMENT, zone_id TEXT NOT NULL, hour INTEGER NOT NULL, day_type TEXT NOT NULL, profitability_index REAL NOT NULL, surge_multiplier REAL NOT NULL, demand_score REAL NOT NULL, supply_score REAL NOT NULL, seed_date TEXT NOT NULL);
 `);
 
+// ─── Tables IA 2026 (prédictions, maintenance, performance) ─────────────
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS demand_predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    zone_id TEXT NOT NULL,
+    target_hour INTEGER NOT NULL,
+    target_date TEXT NOT NULL,
+    predicted_index REAL NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0.7,
+    model_version TEXT NOT NULL DEFAULT 'v2_historical',
+    factors TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    actual_index REAL,
+    error_pct REAL
+  );
+  CREATE TABLE IF NOT EXISTS vehicle_maintenance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    component TEXT NOT NULL,
+    label_fr TEXT NOT NULL,
+    interval_km INTEGER NOT NULL,
+    last_done_km INTEGER NOT NULL DEFAULT 0,
+    total_km_driven INTEGER NOT NULL DEFAULT 0,
+    urgency TEXT NOT NULL DEFAULT 'ok',
+    estimated_cost_eur REAL NOT NULL DEFAULT 0,
+    next_due_km INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS driver_performance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    period TEXT NOT NULL,
+    period_date TEXT NOT NULL,
+    total_rides INTEGER NOT NULL DEFAULT 0,
+    profitable_rides INTEGER NOT NULL DEFAULT 0,
+    total_km INTEGER NOT NULL DEFAULT 0,
+    total_net_eur REAL NOT NULL DEFAULT 0,
+    avg_hourly_rate REAL NOT NULL DEFAULT 0,
+    efficiency_score INTEGER NOT NULL DEFAULT 0,
+    positioning_score INTEGER NOT NULL DEFAULT 0,
+    profitability_score INTEGER NOT NULL DEFAULT 0,
+    consistency_score INTEGER NOT NULL DEFAULT 0,
+    global_score INTEGER NOT NULL DEFAULT 0,
+    ai_tips TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+  );
+`);
+
+// ─── Migration colonnes driver_profile (THÈME 4) ───────────────────────
+// SQLite ne supporte pas ADD COLUMN IF NOT EXISTS → try/catch par colonne
+const driverProfileMigrations: string[] = [
+  "ALTER TABLE driver_profile ADD COLUMN preferred_zones TEXT DEFAULT '[]'",
+  "ALTER TABLE driver_profile ADD COLUMN work_hours_start INTEGER DEFAULT 6",
+  "ALTER TABLE driver_profile ADD COLUMN work_hours_end INTEGER DEFAULT 22",
+  "ALTER TABLE driver_profile ADD COLUMN avoid_highway INTEGER DEFAULT 0",
+  "ALTER TABLE driver_profile ADD COLUMN vehicle_brand TEXT DEFAULT ''",
+  "ALTER TABLE driver_profile ADD COLUMN vehicle_model TEXT DEFAULT ''",
+  "ALTER TABLE driver_profile ADD COLUMN vehicle_year INTEGER DEFAULT 2020",
+  "ALTER TABLE driver_profile ADD COLUMN total_km_driven INTEGER DEFAULT 0",
+];
+for (const mig of driverProfileMigrations) {
+  try { sqlite.exec(mig); } catch { /* colonne déjà présente */ }
+}
+
 // ─── Index pour accélération hot-path ──────────────────────────────────
 sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_prof_hour_daytype ON profitability_scores(hour, day_type);
@@ -33,6 +96,7 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_events_active ON events(is_active, start_time);
   CREATE INDEX IF NOT EXISTS idx_rides_ts ON rides(timestamp DESC);
   CREATE INDEX IF NOT EXISTS idx_score_history_date ON score_history(seed_date, zone_id, hour);
+  CREATE INDEX IF NOT EXISTS idx_predictions_zone_date ON demand_predictions(zone_id, target_date, target_hour);
 `);
 
 // ─── Prepared statements globaux — compilés une seule fois à l'init ───────────────────
@@ -93,6 +157,33 @@ const stmtGetCurrentScores = sqlite.prepare(
    JOIN zones z ON z.id = ps.zone_id
    WHERE ps.hour = ? AND ps.day_type = ?
    ORDER BY ps.profitability_index DESC`
+);
+
+// ─── Prepared statements IA 2026 ────────────────────────────────────────
+const stmtInsertPrediction = sqlite.prepare(
+  `INSERT OR REPLACE INTO demand_predictions
+     (id, zone_id, target_hour, target_date, predicted_index, confidence, model_version, factors, created_at)
+   VALUES (
+     (SELECT id FROM demand_predictions WHERE zone_id=? AND target_hour=? AND target_date=?),
+     ?, ?, ?, ?, ?, ?, ?, ?)`
+);
+
+const stmtGetPredictions = sqlite.prepare(
+  `SELECT dp.*, z.name as zone_name
+   FROM demand_predictions dp
+   LEFT JOIN zones z ON z.id = dp.zone_id
+   WHERE dp.target_date = ? AND dp.target_hour IN (SELECT value FROM json_each(?))
+   ORDER BY z.name, dp.target_hour`
+);
+
+const stmtGetMaintenance = sqlite.prepare(
+  `SELECT * FROM vehicle_maintenance ORDER BY
+     CASE urgency WHEN 'overdue' THEN 0 WHEN 'urgent' THEN 1 WHEN 'soon' THEN 2 ELSE 3 END,
+     next_due_km ASC`
+);
+
+const stmtGetDriverPerformance = sqlite.prepare(
+  `SELECT * FROM driver_performance WHERE period=? ORDER BY created_at DESC LIMIT 1`
 );
 
 
@@ -546,6 +637,8 @@ function computeScore(
     profIdx: Math.round(profIdx * 10) / 10,
     longRide: Math.round(longRide * 1000) / 1000,
     surge: Math.round(surge * 100) / 100,
+    rawRatio: Math.round(rawRatio * 1000) / 1000,
+    supplyCoeffLabel: isMorning ? "supply_morning" : (isMidDay ? "supply_midday" : "supply"),
   };
 }
 
@@ -581,6 +674,247 @@ function reseedScores(today: string, dayOfWeek: number) {
       }
     }
   }
+}
+
+// ─── THÈME 1 : Prédiction de demande (ML scoring) ────────────────────────────
+// Génère les prédictions H+1 à H+12 pour chaque zone via le moteur computeScore.
+function generateDemandPredictions(): void {
+  const now = new Date();
+  const createdAt = now.toISOString();
+
+  // Précharger les events actifs par zone (évite N+1 dans computeScore)
+  const allActiveEvents = sqlite.prepare(
+    `SELECT zone_id, event_type, demand_boost FROM events WHERE is_active=1 AND start_time <= ? AND end_time >= ?`
+  ).all(createdAt, createdAt) as any[];
+  const eventsByZone = new Map<string, any[]>();
+  for (const ev of allActiveEvents) {
+    if (!eventsByZone.has(ev.zone_id)) eventsByZone.set(ev.zone_id, []);
+    eventsByZone.get(ev.zone_id)!.push(ev);
+  }
+  const eventIdsByZone = new Map<string, string[]>();
+  const allActiveEventsFull = sqlite.prepare(
+    `SELECT id, zone_id FROM events WHERE is_active=1 AND start_time <= ? AND end_time >= ?`
+  ).all(createdAt, createdAt) as any[];
+  for (const ev of allActiveEventsFull) {
+    if (!eventIdsByZone.has(ev.zone_id)) eventIdsByZone.set(ev.zone_id, []);
+    eventIdsByZone.get(ev.zone_id)!.push(String(ev.id));
+  }
+
+  const tx = sqlite.transaction(() => {
+    for (let zi = 0; zi < zones93.length; zi++) {
+      const zone = zones93[zi];
+      const seedVar = zi * 1.37;
+      const zoneEvents = eventsByZone.get(zone.id) ?? [];
+      for (let ahead = 1; ahead <= 12; ahead++) {
+        const target = new Date(now.getTime() + ahead * 3600000);
+        const targetHour = target.getHours();
+        const targetDate = target.toISOString().split("T")[0];
+        const dayOfWeek = target.getDay();
+        const dt = [0, 6].includes(dayOfWeek) ? "weekend" : "weekday";
+        const s = computeScore(zone, targetHour, dt, dayOfWeek, seedVar, zoneEvents);
+        const confidence = Math.max(0.65, 0.9 - (ahead - 1) * 0.05);
+        const dayCo = DAY_COEFFICIENTS[dayOfWeek] || DAY_COEFFICIENTS[2];
+        const isMorning = targetHour >= 6 && targetHour < 10;
+        const isMidDay = targetHour >= 11 && targetHour <= 13;
+        const factors = JSON.stringify({
+          traffic_ratio: s.rawRatio,
+          events_active: eventIdsByZone.get(zone.id) ?? [],
+          day_coeff: dayCo.demand,
+          supply_coeff: isMorning ? dayCo.supply_morning : (isMidDay ? dayCo.supply_midday : dayCo.supply),
+          supply_applied: s.supplyCoeffLabel,
+        });
+        stmtInsertPrediction.run(
+          zone.id, targetHour, targetDate,
+          zone.id, targetHour, targetDate,
+          s.profIdx, Math.round(confidence * 100) / 100, "v2_historical", factors, createdAt
+        );
+      }
+    }
+  });
+  tx();
+}
+
+// ─── THÈME 2 : Maintenance prédictive véhicule ───────────────────────────────
+const DEFAULT_MAINTENANCE = [
+  { component: "oil",      label_fr: "Huile moteur", interval_km: 10000, estimated_cost_eur: 80  },
+  { component: "tires",    label_fr: "Pneus",        interval_km: 40000, estimated_cost_eur: 400 },
+  { component: "brakes",   label_fr: "Freins",       interval_km: 30000, estimated_cost_eur: 250 },
+  { component: "filters",  label_fr: "Filtres",      interval_km: 20000, estimated_cost_eur: 60  },
+  { component: "revision", label_fr: "Révision",     interval_km: 15000, estimated_cost_eur: 150 },
+];
+
+function computeUrgency(remaining: number, intervalKm: number): string {
+  if (remaining < 0) return "overdue";
+  if (remaining < intervalKm * 0.1) return "urgent";
+  if (remaining < intervalKm * 0.2) return "soon";
+  return "ok";
+}
+
+function seedMaintenance(): void {
+  const cnt = (sqlite.prepare("SELECT COUNT(*) as c FROM vehicle_maintenance").get() as any).c;
+  if (cnt > 0) return;
+  const nowIso = new Date().toISOString();
+  const ins = sqlite.prepare(
+    `INSERT INTO vehicle_maintenance
+       (component, label_fr, interval_km, last_done_km, total_km_driven, urgency, estimated_cost_eur, next_due_km, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`
+  );
+  const tx = sqlite.transaction(() => {
+    for (const m of DEFAULT_MAINTENANCE) {
+      ins.run(m.component, m.label_fr, m.interval_km, 0, 0, "ok", m.estimated_cost_eur, m.interval_km, nowIso, nowIso);
+    }
+  });
+  tx();
+}
+
+function updateMaintenanceKm(addedKm: number): void {
+  if (!addedKm || addedKm <= 0) return;
+  const rows = sqlite.prepare("SELECT * FROM vehicle_maintenance").all() as any[];
+  const nowIso = new Date().toISOString();
+  const upd = sqlite.prepare(
+    "UPDATE vehicle_maintenance SET total_km_driven=?, urgency=?, updated_at=? WHERE id=?"
+  );
+  const tx = sqlite.transaction(() => {
+    for (const r of rows) {
+      const total = (r.total_km_driven ?? 0) + addedKm;
+      const remaining = (r.next_due_km ?? r.interval_km) - total;
+      const urgency = computeUrgency(remaining, r.interval_km);
+      upd.run(Math.round(total), urgency, nowIso, r.id);
+    }
+  });
+  tx();
+}
+
+function markMaintenanceDone(component: string): any {
+  const r = sqlite.prepare("SELECT * FROM vehicle_maintenance WHERE component=?").get(component) as any;
+  if (!r) return null;
+  const nowIso = new Date().toISOString();
+  const lastDoneKm = r.total_km_driven ?? 0;
+  const nextDueKm = lastDoneKm + r.interval_km;
+  sqlite.prepare(
+    "UPDATE vehicle_maintenance SET last_done_km=?, next_due_km=?, urgency='ok', updated_at=? WHERE id=?"
+  ).run(Math.round(lastDoneKm), Math.round(nextDueKm), nowIso, r.id);
+  return sqlite.prepare("SELECT * FROM vehicle_maintenance WHERE id=?").get(r.id);
+}
+
+// ─── THÈME 3 : Scoring comportement conducteur + feedback IA ──────────────────
+function computeDriverPerformance(period: "daily" | "weekly"): any {
+  const now = new Date();
+  const periodStart = new Date(now);
+  if (period === "daily") {
+    periodStart.setHours(0, 0, 0, 0);
+  } else {
+    const day = (periodStart.getDay() + 6) % 7; // lundi=0
+    periodStart.setDate(periodStart.getDate() - day);
+    periodStart.setHours(0, 0, 0, 0);
+  }
+  const periodDate = periodStart.toISOString().split("T")[0];
+
+  const rides = sqlite.prepare(
+    "SELECT * FROM rides WHERE timestamp >= ? ORDER BY timestamp ASC"
+  ).all(periodStart.toISOString()) as any[];
+
+  const profile: any = sqlite.prepare("SELECT * FROM driver_profile LIMIT 1").get() || {};
+  const hourlyTarget = profile.hourly_target_income ?? 35;
+
+  const totalRides = rides.length;
+  const profitableRides = rides.filter(r => r.is_profitable === 1).length;
+  const totalKm = Math.round(rides.reduce((a, r) => a + (r.distance_km ?? 0), 0));
+  const totalNet = Math.round(rides.reduce((a, r) => a + (r.net_profit ?? 0), 0) * 100) / 100;
+  const avgHourlyRate = totalRides > 0
+    ? Math.round((rides.reduce((a, r) => a + (r.hourly_rate ?? 0), 0) / totalRides) * 100) / 100
+    : 0;
+
+  const efficiencyScore = totalRides > 0 ? Math.round((profitableRides / totalRides) * 100) : 0;
+
+  // positioning : % courses dont la zone de pickup avait un score > 60 à l'heure de la course
+  let goodPositions = 0;
+  for (const r of rides) {
+    const d = new Date(r.timestamp);
+    const h = d.getHours();
+    const dt = [0, 6].includes(d.getDay()) ? "weekend" : "weekday";
+    const ps = sqlite.prepare(
+      "SELECT profitability_index FROM profitability_scores WHERE zone_id=? AND hour=? AND day_type=? LIMIT 1"
+    ).get(r.pickup_zone_id, h, dt) as any;
+    if (ps && ps.profitability_index > 60) goodPositions++;
+  }
+  const positioningScore = totalRides > 0 ? Math.round((goodPositions / totalRides) * 100) : 0;
+
+  const profitabilityScore = totalRides > 0
+    ? Math.round((rides.filter(r => (r.hourly_rate ?? 0) > hourlyTarget).length / totalRides) * 100)
+    : 0;
+
+  // consistency : 100 - coefficient de variation du taux horaire
+  let consistencyScore = 0;
+  if (totalRides > 1) {
+    const rates = rides.map(r => r.hourly_rate ?? 0);
+    const mean = rates.reduce((a, b) => a + b, 0) / rates.length;
+    if (mean > 0) {
+      const variance = rates.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / rates.length;
+      const stddev = Math.sqrt(variance);
+      consistencyScore = Math.max(0, Math.min(100, Math.round(100 - (stddev / mean) * 100)));
+    }
+  } else if (totalRides === 1) {
+    consistencyScore = 100;
+  }
+
+  const globalScore = Math.round(
+    0.3 * efficiencyScore + 0.3 * profitabilityScore + 0.25 * positioningScore + 0.15 * consistencyScore
+  );
+
+  // ai_tips déterministes
+  const tips: string[] = [];
+  if (positioningScore < 50) {
+    tips.push("Repositionnez-vous sur CDG ou Orly aux heures de pointe matinales (6h-9h) pour maximiser vos courses longues");
+  }
+  if (profitabilityScore < 60) {
+    tips.push("Évitez les courses < 10km en dehors des créneaux surge — elles dégradent votre taux horaire");
+  }
+  if (avgHourlyRate > hourlyTarget) {
+    // meilleure heure = heure avec le meilleur taux moyen
+    const byHour: Record<number, number[]> = {};
+    for (const r of rides) {
+      const h = new Date(r.timestamp).getHours();
+      (byHour[h] ||= []).push(r.hourly_rate ?? 0);
+    }
+    let bestHour = -1, bestAvg = -Infinity;
+    for (const h of Object.keys(byHour)) {
+      const arr = byHour[Number(h)];
+      const avg = arr.reduce((a, b) => a + b, 0) / arr.length;
+      if (avg > bestAvg) { bestAvg = avg; bestHour = Number(h); }
+    }
+    const hourLabel = bestHour >= 0 ? `${bestHour}h` : "vos meilleurs créneaux";
+    tips.push(`Excellent — maintenez vos créneaux ${hourLabel} pour ce niveau de performance`);
+  }
+  if (consistencyScore < 40) {
+    tips.push("Adoptez des créneaux fixes (7h-9h et 17h-19h) pour stabiliser vos revenus");
+  }
+  if (tips.length === 0) {
+    tips.push("Performances équilibrées — continuez à privilégier les zones à fort indice de rentabilité");
+  }
+
+  const record = {
+    period, period_date: periodDate,
+    total_rides: totalRides, profitable_rides: profitableRides, total_km: totalKm,
+    total_net_eur: totalNet, avg_hourly_rate: avgHourlyRate,
+    efficiency_score: efficiencyScore, positioning_score: positioningScore,
+    profitability_score: profitabilityScore, consistency_score: consistencyScore,
+    global_score: globalScore, ai_tips: JSON.stringify(tips),
+    created_at: now.toISOString(),
+  };
+
+  sqlite.prepare(
+    `INSERT INTO driver_performance
+       (period, period_date, total_rides, profitable_rides, total_km, total_net_eur, avg_hourly_rate,
+        efficiency_score, positioning_score, profitability_score, consistency_score, global_score, ai_tips, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(
+    record.period, record.period_date, record.total_rides, record.profitable_rides, record.total_km,
+    record.total_net_eur, record.avg_hourly_rate, record.efficiency_score, record.positioning_score,
+    record.profitability_score, record.consistency_score, record.global_score, record.ai_tips, record.created_at
+  );
+
+  return record;
 }
 
 // ─── Seed initial + reseed quotidien ─────────────────────────────────────────
@@ -653,6 +987,16 @@ function seedData() {
   const dpCnt = (sqlite.prepare("SELECT COUNT(*) as c FROM driver_profile").get() as any).c;
   if (dpCnt === 0) {
     sqlite.prepare("INSERT OR IGNORE INTO driver_profile (fuel_consumption_per100km,fuel_price_per_liter,platform_commission_pct,hourly_target_income,wear_cost_per_km,min_profitable_km_per_min,vehicle_type,prefer_long_rides) VALUES (7.5,1.92,25.0,35.0,0.08,1.0,'berline',1)").run();
+  }
+
+  // ── THÈME 2 : init maintenance véhicule ──
+  seedMaintenance();
+
+  // ── THÈME 1 : génération initiale des prédictions de demande ──
+  try {
+    generateDemandPredictions();
+  } catch (err) {
+    console.error("[storage] Erreur generateDemandPredictions (seed):", err);
   }
 }
 
@@ -867,6 +1211,60 @@ function generateDynamicAlerts(): void {
     }
   }
 
+  // ── THÈME 7 : Alertes danger route + météo sévère ──────────────────────────
+  // RÈGLE 6 : météo sévère — probabilité simulée 10% en horaires nocturnes
+  const isNightHours = h < 6 || h > 22;
+  if (isNightHours && Math.random() < 0.10) {
+    const already = sqlite.prepare("SELECT 1 FROM alerts WHERE type='weather_hazard' AND is_read=0 LIMIT 1").get();
+    if (!already) {
+      const expires = new Date(now.getTime() + 3 * 3600000).toISOString();
+      insA.run(
+        "weather_hazard",
+        "Conditions météo dégradées",
+        "Pluie intense prévue ce soir — augmentez votre marge de sécurité et comptez +15min sur vos ETAs",
+        null, "medium", null, expires, now.toISOString()
+      );
+    }
+  }
+
+  // RÈGLE 7 : segment accidentogène — rush AM/PM + nuit/pluie
+  const isRushHour = (h >= 7 && h <= 9) || (h >= 17 && h <= 19);
+  if (isRushHour && (isNightHours || Math.random() < 0.20)) {
+    const already = sqlite.prepare("SELECT 1 FROM alerts WHERE type='road_hazard' AND is_read=0 LIMIT 1").get();
+    if (!already) {
+      const expires = new Date(now.getTime() + 2 * 3600000).toISOString();
+      insA.run(
+        "road_hazard",
+        "Zone accidentogène — Vigilance A1/A86",
+        "Segment A1 Porte de la Chapelle → St-Denis historiquement dangereux en rush+pluie. Restez vigilant.",
+        "z_saint_denis_gare", "medium", null, expires, now.toISOString()
+      );
+    }
+  }
+
+  // RÈGLE 8 : temps mort excessif — aucune course depuis > 45min
+  const lastRide = sqlite.prepare("SELECT timestamp FROM rides ORDER BY timestamp DESC LIMIT 1").get() as any;
+  if (lastRide) {
+    const minutesSinceLast = (now.getTime() - new Date(lastRide.timestamp).getTime()) / 60000;
+    if (minutesSinceLast > 45) {
+      const already = sqlite.prepare("SELECT 1 FROM alerts WHERE type='idle_too_long' AND is_read=0 LIMIT 1").get();
+      if (!already) {
+        // zone la plus rentable au moment du déclenchement
+        const bestZone = currentScores.length > 0 ? currentScores[0] : null;
+        const zoneId = bestZone?.zone_id ?? "z_cdg";
+        const zoneName = bestZone?.zone_name ?? "CDG";
+        const score = bestZone ? Math.round(bestZone.profitability_index) : 0;
+        const expires = new Date(now.getTime() + 1 * 3600000).toISOString();
+        insA.run(
+          "idle_too_long",
+          "Temps mort détecté — repositionnement conseillé",
+          `Aucune course depuis ${Math.round(minutesSinceLast)}min. Score ${zoneName} actuel : ${score}. Opportunité à saisir.`,
+          zoneId, "medium", null, expires, now.toISOString()
+        );
+      }
+    }
+  }
+
   console.log(`[storage] generateDynamicAlerts: ${alertsGenerated.length} alertes générées (h=${h}, dayType=${dayType})`);
 }
 
@@ -941,6 +1339,14 @@ export interface IStorage {
   getDailyDiff(): any;
   forceReseed(): any;
   getLastRefreshTs(): string;
+  generateDemandPredictions(): void;
+  getPredictions(hoursAhead?: number, zoneId?: string): any;
+  getMaintenance(): any[];
+  markMaintenanceDone(component: string): any;
+  updateMaintenanceKm(addedKm: number): void;
+  getDriverPerformance(): any;
+  computeDriverPerformance(period: "daily" | "weekly"): any;
+  incrementProfileKm(addedKm: number): void;
 }
 
 export const storage: IStorage = {
@@ -1018,15 +1424,54 @@ export const storage: IStorage = {
   getDriverProfile: () => stmtGetDriverProfile.get(),  // ← F1
 
   updateDriverProfile: (profile) => {
-    const existing = sqlite.prepare("SELECT id FROM driver_profile LIMIT 1").get() as any;
+    const existing = sqlite.prepare("SELECT * FROM driver_profile LIMIT 1").get() as any;
+    // THÈME 4 : préférences personnalisées (colonnes ajoutées par migration)
+    const preferredZones = profile.preferredZones !== undefined
+      ? JSON.stringify(profile.preferredZones)
+      : (existing?.preferred_zones ?? "[]");
+    const workStart = profile.workHoursStart ?? existing?.work_hours_start ?? 6;
+    const workEnd = profile.workHoursEnd ?? existing?.work_hours_end ?? 22;
+    const avoidHighway = (profile.avoidHighway ?? Boolean(existing?.avoid_highway)) ? 1 : 0;
+    const vehicleBrand = profile.vehicleBrand ?? existing?.vehicle_brand ?? "";
+    const vehicleModel = profile.vehicleModel ?? existing?.vehicle_model ?? "";
+    const vehicleYear = profile.vehicleYear ?? existing?.vehicle_year ?? 2020;
     if (existing) {
-      sqlite.prepare("UPDATE driver_profile SET fuel_consumption_per100km=?,fuel_price_per_liter=?,platform_commission_pct=?,hourly_target_income=?,wear_cost_per_km=?,vehicle_type=?,prefer_long_rides=? WHERE id=?")
-        .run(profile.fuelConsumptionPer100km ?? 7.5, profile.fuelPricePerLiter ?? 1.92, profile.platformCommissionPct ?? 25, profile.hourlyTargetIncome ?? 35, profile.wearCostPerKm ?? 0.08, profile.vehicleType ?? "berline", profile.preferLongRides ? 1 : 0, existing.id);
+      sqlite.prepare(`UPDATE driver_profile SET
+        fuel_consumption_per100km=?,fuel_price_per_liter=?,platform_commission_pct=?,hourly_target_income=?,wear_cost_per_km=?,vehicle_type=?,prefer_long_rides=?,
+        preferred_zones=?,work_hours_start=?,work_hours_end=?,avoid_highway=?,vehicle_brand=?,vehicle_model=?,vehicle_year=?
+        WHERE id=?`)
+        .run(
+          profile.fuelConsumptionPer100km ?? existing.fuel_consumption_per100km ?? 7.5,
+          profile.fuelPricePerLiter ?? existing.fuel_price_per_liter ?? 1.92,
+          profile.platformCommissionPct ?? existing.platform_commission_pct ?? 25,
+          profile.hourlyTargetIncome ?? existing.hourly_target_income ?? 35,
+          profile.wearCostPerKm ?? existing.wear_cost_per_km ?? 0.08,
+          profile.vehicleType ?? existing.vehicle_type ?? "berline",
+          (profile.preferLongRides ?? Boolean(existing.prefer_long_rides)) ? 1 : 0,
+          preferredZones, workStart, workEnd, avoidHighway, vehicleBrand, vehicleModel, vehicleYear,
+          existing.id
+        );
     } else {
-      sqlite.prepare("INSERT INTO driver_profile (fuel_consumption_per100km,fuel_price_per_liter,platform_commission_pct,hourly_target_income,wear_cost_per_km,vehicle_type,prefer_long_rides) VALUES (?,?,?,?,?,?,?)")
-        .run(profile.fuelConsumptionPer100km ?? 7.5, profile.fuelPricePerLiter ?? 1.92, profile.platformCommissionPct ?? 25, profile.hourlyTargetIncome ?? 35, profile.wearCostPerKm ?? 0.08, profile.vehicleType ?? "berline", profile.preferLongRides ? 1 : 0);
+      sqlite.prepare(`INSERT INTO driver_profile
+        (fuel_consumption_per100km,fuel_price_per_liter,platform_commission_pct,hourly_target_income,wear_cost_per_km,vehicle_type,prefer_long_rides,
+         preferred_zones,work_hours_start,work_hours_end,avoid_highway,vehicle_brand,vehicle_model,vehicle_year)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(
+          profile.fuelConsumptionPer100km ?? 7.5, profile.fuelPricePerLiter ?? 1.92, profile.platformCommissionPct ?? 25,
+          profile.hourlyTargetIncome ?? 35, profile.wearCostPerKm ?? 0.08, profile.vehicleType ?? "berline",
+          profile.preferLongRides ? 1 : 0,
+          preferredZones, workStart, workEnd, avoidHighway, vehicleBrand, vehicleModel, vehicleYear
+        );
     }
     return sqlite.prepare("SELECT * FROM driver_profile LIMIT 1").get();
+  },
+
+  incrementProfileKm: (addedKm: number) => {
+    if (!addedKm || addedKm <= 0) return;
+    const existing = sqlite.prepare("SELECT id, total_km_driven FROM driver_profile LIMIT 1").get() as any;
+    if (!existing) return;
+    const total = Math.round((existing.total_km_driven ?? 0) + addedKm);
+    sqlite.prepare("UPDATE driver_profile SET total_km_driven=? WHERE id=?").run(total, existing.id);
   },
 
   getSeedMeta: () => {
@@ -1060,6 +1505,60 @@ export const storage: IStorage = {
     const row = sqlite.prepare("SELECT value FROM seed_meta WHERE key='last_refresh_ts'").get() as any;
     return row?.value || null;
   },
+
+  generateDemandPredictions: () => generateDemandPredictions(),
+
+  // THÈME 1 : prédictions des N prochaines heures, toutes zones (ou filtrées)
+  getPredictions: (hoursAhead = 6, zoneId?: string) => {
+    const now = new Date();
+    const targetDateByHour: { date: string; hour: number }[] = [];
+    for (let ahead = 1; ahead <= hoursAhead; ahead++) {
+      const t = new Date(now.getTime() + ahead * 3600000);
+      targetDateByHour.push({ date: t.toISOString().split("T")[0], hour: t.getHours() });
+    }
+    // Récupérer toutes les prédictions correspondant aux (date,hour) cibles
+    const rows: any[] = [];
+    for (const { date, hour } of targetDateByHour) {
+      const q = zoneId
+        ? sqlite.prepare("SELECT dp.*, z.name as zone_name FROM demand_predictions dp LEFT JOIN zones z ON z.id=dp.zone_id WHERE dp.target_date=? AND dp.target_hour=? AND dp.zone_id=?").all(date, hour, zoneId)
+        : sqlite.prepare("SELECT dp.*, z.name as zone_name FROM demand_predictions dp LEFT JOIN zones z ON z.id=dp.zone_id WHERE dp.target_date=? AND dp.target_hour=?").all(date, hour);
+      rows.push(...(q as any[]));
+    }
+    // Grouper par zone
+    const byZone = new Map<string, any>();
+    const order: string[] = [];
+    for (const { date, hour } of targetDateByHour) {
+      for (const r of rows.filter(x => x.target_date === date && x.target_hour === hour)) {
+        if (!byZone.has(r.zone_id)) {
+          byZone.set(r.zone_id, { zone_id: r.zone_id, zone_name: r.zone_name, hours: [] });
+          order.push(r.zone_id);
+        }
+        let factors: any = {};
+        try { factors = JSON.parse(r.factors); } catch { factors = {}; }
+        byZone.get(r.zone_id).hours.push({
+          hour: r.target_hour,
+          predicted_index: r.predicted_index,
+          confidence: r.confidence,
+          factors,
+        });
+      }
+    }
+    return { predictions: order.map(z => byZone.get(z)) };
+  },
+
+  // THÈME 2
+  getMaintenance: () => stmtGetMaintenance.all(),
+  markMaintenanceDone: (component: string) => markMaintenanceDone(component),
+  updateMaintenanceKm: (addedKm: number) => updateMaintenanceKm(addedKm),
+
+  // THÈME 3
+  getDriverPerformance: () => {
+    const daily = computeDriverPerformance("daily");
+    const weekly = computeDriverPerformance("weekly");
+    const parse = (rec: any) => ({ ...rec, ai_tips: (() => { try { return JSON.parse(rec.ai_tips); } catch { return []; } })() });
+    return { daily: parse(daily), weekly: parse(weekly) };
+  },
+  computeDriverPerformance: (period) => computeDriverPerformance(period),
 
   // Diff J vs J-1 pour l'analyse inversée
   getDailyDiff: () => {

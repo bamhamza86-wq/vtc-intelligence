@@ -3,6 +3,7 @@ import express, { Response, NextFunction } from 'express';
 import type { Request } from 'express';
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
+import { storage } from "./storage";
 import { registerAuth, requireAuth, revokeAllSessions } from "./auth";
 // Note: pas de session middleware — auth par token Bearer en mémoire
 import { createServer } from "node:http";
@@ -32,6 +33,17 @@ registerAuth(app);
 // Révocation immédiate de toutes sessions existantes au démarrage
 // (garantit déconnexion totale à chaque redeploiement)
 revokeAllSessions();
+
+// ── THÈME 1 : régénération horaire des prédictions de demande ──
+const PREDICTIONS_INTERVAL_MS = 60 * 60 * 1000; // 60 min
+setInterval(() => {
+  try {
+    storage.generateDemandPredictions();
+    console.log("[index] Prédictions de demande régénérées (cycle 60min)");
+  } catch (err) {
+    console.error("[index] Erreur régénération prédictions:", err);
+  }
+}, PREDICTIONS_INTERVAL_MS);
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {

@@ -6,21 +6,52 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { User, BarChart } from "lucide-react";
+import { User, BarChart, Wrench, Brain, Gauge, AlertTriangle, Lightbulb, MapPin, Clock } from "lucide-react";
+
+const ZONES_93 = [
+  { id: "z_cdg", name: "CDG" }, { id: "z_orly", name: "Orly" },
+  { id: "z_saint_denis_gare", name: "Gare Saint-Denis" }, { id: "z_bobigny_gare", name: "Bobigny" },
+  { id: "z_aubervilliers", name: "Aubervilliers" }, { id: "z_epinay_gennevilliers", name: "Épinay/Gennevilliers" },
+  { id: "z_plaine_commune", name: "Plaine Commune" }, { id: "z_le_bourget", name: "Le Bourget" },
+  { id: "z_villepinte", name: "Villepinte" }, { id: "z_tremblay", name: "Tremblay" },
+  { id: "z_stade_france", name: "Stade de France" }, { id: "z_93_centre", name: "Saint-Denis Centre" },
+  { id: "z_montreuil", name: "Montreuil" }, { id: "z_aulnay", name: "Aulnay" },
+];
+
+const URGENCY_META: Record<string, { label: string; cls: string }> = {
+  ok:      { label: "OK",       cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" },
+  soon:    { label: "Bientôt",  cls: "bg-amber-500/15 text-amber-400 border-amber-500/30" },
+  urgent:  { label: "Urgent",   cls: "bg-orange-500/15 text-orange-400 border-orange-500/30" },
+  overdue: { label: "En retard", cls: "bg-red-500/15 text-red-400 border-red-500/30" },
+};
+
+function scoreColor(s: number): string {
+  if (s >= 75) return "text-emerald-400";
+  if (s >= 55) return "text-amber-400";
+  return "text-red-400";
+}
 
 export default function ProfilePage() {
   const { toast } = useToast();
-  const [form, setForm] = useState<any>({ fuelConsumptionPer100km: 7, fuelPricePerLiter: 1.85, platformCommissionPct: 25, hourlyTargetIncome: 35, wearCostPerKm: 0.08, vehicleType: "berline", preferLongRides: true });
+  const [form, setForm] = useState<any>({ fuelConsumptionPer100km: 7, fuelPricePerLiter: 1.85, platformCommissionPct: 25, hourlyTargetIncome: 35, wearCostPerKm: 0.08, vehicleType: "berline", preferLongRides: true,
+    preferredZones: [], workHoursStart: 6, workHoursEnd: 22, avoidHighway: false, vehicleBrand: "", vehicleModel: "", vehicleYear: 2020, totalKmDriven: 0 });
   const { data: profile, isLoading } = useQuery({ queryKey: ["/api/driver-profile"], queryFn: () => apiRequest("GET", "/api/driver-profile").then(r => r.json()), refetchInterval: 3_000 });
   const { data: stats } = useQuery({ queryKey: ["/api/rides/stats"], queryFn: () => apiRequest("GET", "/api/rides/stats").then(r => r.json()), refetchInterval: 3_000 });
+  const { data: maintenance } = useQuery<{ maintenance: any[] }>({ queryKey: ["/api/maintenance"], queryFn: () => apiRequest("GET", "/api/maintenance").then(r => r.json()), refetchInterval: 3_000 });
+  const { data: performance } = useQuery<any>({ queryKey: ["/api/driver-performance"], queryFn: () => apiRequest("GET", "/api/driver-performance").then(r => r.json()), refetchInterval: 3_000 });
 
   useEffect(() => {
     if (!profile) return;
     const p: any = profile;
+    let pref: string[] = [];
+    try { pref = Array.isArray(p.preferred_zones) ? p.preferred_zones : JSON.parse(p.preferred_zones ?? "[]"); } catch { pref = []; }
     setForm({
       fuelConsumptionPer100km: p.fuel_consumption_per100km ?? p.fuelConsumptionPer100km ?? 7,
       fuelPricePerLiter: p.fuel_price_per_liter ?? p.fuelPricePerLiter ?? 1.85,
@@ -29,6 +60,14 @@ export default function ProfilePage() {
       wearCostPerKm: p.wear_cost_per_km ?? p.wearCostPerKm ?? 0.08,
       vehicleType: p.vehicle_type ?? p.vehicleType ?? "berline",
       preferLongRides: Boolean(p.prefer_long_rides ?? p.preferLongRides ?? true),
+      preferredZones: pref,
+      workHoursStart: p.work_hours_start ?? 6,
+      workHoursEnd: p.work_hours_end ?? 22,
+      avoidHighway: Boolean(p.avoid_highway ?? false),
+      vehicleBrand: p.vehicle_brand ?? "",
+      vehicleModel: p.vehicle_model ?? "",
+      vehicleYear: p.vehicle_year ?? 2020,
+      totalKmDriven: p.total_km_driven ?? 0,
     });
   }, [profile]);
 
@@ -36,6 +75,21 @@ export default function ProfilePage() {
     mutationFn: (data: any) => apiRequest("PUT", "/api/driver-profile", data).then(r => r.json()),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/driver-profile"] }); toast({ title: "Profil sauvegardé" }); },
   });
+
+  const doneMutation = useMutation({
+    mutationFn: (component: string) => apiRequest("PUT", `/api/maintenance/${component}/done`).then(r => r.json()),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/maintenance"] }); toast({ title: "Entretien marqué effectué" }); },
+  });
+
+  const toggleZone = (zoneId: string) => {
+    setForm((f: any) => {
+      const has = f.preferredZones.includes(zoneId);
+      return { ...f, preferredZones: has ? f.preferredZones.filter((z: string) => z !== zoneId) : [...f.preferredZones, zoneId] };
+    });
+  };
+
+  const maintItems = maintenance?.maintenance ?? [];
+  const hasUrgent = maintItems.some((m: any) => m.urgency === "urgent" || m.urgency === "overdue");
 
   const costPerKm = ((form.fuelConsumptionPer100km / 100) * form.fuelPricePerLiter + form.wearCostPerKm).toFixed(3);
   const minFarePerKm = ((1 + parseFloat(costPerKm)) / (1 - form.platformCommissionPct / 100)).toFixed(2);
@@ -105,7 +159,142 @@ export default function ProfilePage() {
           </div>
         </CardContent>
       </Card>
-      <Button className="w-full" onClick={() => saveMutation.mutate(form)} disabled={saveMutation.isPending} data-testid="button-save-profile">{saveMutation.isPending ? "Sauvegarde..." : "Sauvegarder le profil"}</Button>
+      {/* ── THÈME 4 : Préférences personnalisées ── */}
+      <Card>
+        <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><MapPin size={14} className="text-teal-400" />Préférences personnalisées</CardTitle></CardHeader>
+        <CardContent className="space-y-4 px-4 pb-4">
+          <div className="grid grid-cols-3 gap-2">
+            <div><Label className="text-xs">Marque</Label><Input value={form.vehicleBrand} onChange={e => setForm((f: any) => ({ ...f, vehicleBrand: e.target.value }))} className="h-9 text-sm mt-1" placeholder="Peugeot" data-testid="input-vehicle-brand" /></div>
+            <div><Label className="text-xs">Modèle</Label><Input value={form.vehicleModel} onChange={e => setForm((f: any) => ({ ...f, vehicleModel: e.target.value }))} className="h-9 text-sm mt-1" placeholder="508" data-testid="input-vehicle-model" /></div>
+            <div><Label className="text-xs">Année</Label><Input type="number" value={form.vehicleYear} onChange={e => setForm((f: any) => ({ ...f, vehicleYear: parseInt(e.target.value) || 2020 }))} className="h-9 text-sm mt-1" data-testid="input-vehicle-year" /></div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs flex items-center gap-1"><Clock size={11} />Début de service</Label>
+              <Select value={String(form.workHoursStart)} onValueChange={v => setForm((f: any) => ({ ...f, workHoursStart: parseInt(v) }))}>
+                <SelectTrigger className="mt-1 h-9 text-sm"><SelectValue /></SelectTrigger>
+                <SelectContent>{Array.from({ length: 24 }, (_, i) => <SelectItem key={i} value={String(i)}>{String(i).padStart(2, "0")}:00</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs flex items-center gap-1"><Clock size={11} />Fin de service</Label>
+              <Select value={String(form.workHoursEnd)} onValueChange={v => setForm((f: any) => ({ ...f, workHoursEnd: parseInt(v) }))}>
+                <SelectTrigger className="mt-1 h-9 text-sm"><SelectValue /></SelectTrigger>
+                <SelectContent>{Array.from({ length: 24 }, (_, i) => <SelectItem key={i} value={String(i)}>{String(i).padStart(2, "0")}:00</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="flex items-center justify-between">
+            <div><p className="text-sm font-medium">Éviter les autoroutes</p><p className="text-xs text-muted-foreground">Signalé dans les recommandations de trajet</p></div>
+            <Switch checked={form.avoidHighway} onCheckedChange={v => setForm((f: any) => ({ ...f, avoidHighway: v }))} data-testid="switch-avoid-highway" />
+          </div>
+          <Separator />
+          <div>
+            <Label className="text-xs mb-2 block">Zones favorites ({form.preferredZones.length})</Label>
+            <div className="grid grid-cols-2 gap-2">
+              {ZONES_93.map(z => (
+                <label key={z.id} className="flex items-center gap-2 text-xs cursor-pointer py-1.5 min-h-[44px]">
+                  <Checkbox checked={form.preferredZones.includes(z.id)} onCheckedChange={() => toggleZone(z.id)} data-testid={`checkbox-zone-${z.id}`} />
+                  <span className="truncate">{z.name}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <Separator />
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">Total kilométrage parcouru</p>
+            <p className="text-lg font-bold">{Math.round(form.totalKmDriven).toLocaleString("fr-FR")} km</p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Button className="w-full h-12" onClick={() => saveMutation.mutate(form)} disabled={saveMutation.isPending} data-testid="button-save-profile">{saveMutation.isPending ? "Sauvegarde..." : "Sauvegarder le profil"}</Button>
+
+      {/* ── THÈME 3 : Score IA ── */}
+      {performance?.weekly && (
+        <Card className="border-cyan-500/20">
+          <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Brain size={15} className="text-cyan-400" />Analyse IA de vos performances</CardTitle></CardHeader>
+          <CardContent className="space-y-4 px-4 pb-4">
+            <div className="flex items-center justify-center py-2">
+              <div className="relative w-28 h-28 flex items-center justify-center">
+                <svg viewBox="0 0 100 100" className="w-28 h-28 -rotate-90">
+                  <circle cx="50" cy="50" r="42" fill="none" stroke="currentColor" strokeWidth="8" className="text-muted/30" />
+                  <circle cx="50" cy="50" r="42" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="round"
+                    className={scoreColor(performance.weekly.global_score)}
+                    strokeDasharray={`${(performance.weekly.global_score / 100) * 263.9} 263.9`} />
+                </svg>
+                <div className="absolute flex flex-col items-center">
+                  <span className={`text-3xl font-bold ${scoreColor(performance.weekly.global_score)}`}>{performance.weekly.global_score}</span>
+                  <span className="text-[10px] text-muted-foreground">/ 100</span>
+                </div>
+              </div>
+            </div>
+            {[
+              { label: "Efficacité", value: performance.weekly.efficiency_score, icon: Gauge },
+              { label: "Rentabilité", value: performance.weekly.profitability_score, icon: BarChart },
+              { label: "Positionnement", value: performance.weekly.positioning_score, icon: MapPin },
+              { label: "Régularité", value: performance.weekly.consistency_score, icon: Clock },
+            ].map(s => (
+              <div key={s.label} className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="flex items-center gap-1.5"><s.icon size={12} className="text-muted-foreground" />{s.label}</span>
+                  <span className={`font-bold ${scoreColor(s.value)}`}>{s.value}</span>
+                </div>
+                <Progress value={s.value} className="h-2" />
+              </div>
+            ))}
+            {Array.isArray(performance.weekly.ai_tips) && performance.weekly.ai_tips.length > 0 && (
+              <div className="space-y-2 pt-1">
+                {performance.weekly.ai_tips.map((tip: string, i: number) => (
+                  <div key={i} className="flex items-start gap-2 text-[11px] rounded-lg bg-cyan-500/5 border border-cyan-500/20 p-2.5">
+                    <Lightbulb size={13} className="text-cyan-400 mt-0.5 shrink-0" />
+                    <span>{tip}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-[10px] text-muted-foreground text-center pt-1">
+              Basé sur {performance.weekly.total_rides} course{performance.weekly.total_rides > 1 ? "s" : ""} cette semaine
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── THÈME 2 : Maintenance prédictive ── */}
+      <Card>
+        <CardHeader className="pb-2"><CardTitle className="text-sm flex items-center gap-2"><Wrench size={14} className="text-amber-400" />Maintenance prédictive</CardTitle></CardHeader>
+        <CardContent className="space-y-3 px-4 pb-4">
+          {hasUrgent && (
+            <div className="flex items-center gap-2 rounded-lg bg-red-500/10 border border-red-500/30 p-2.5 text-xs text-red-400">
+              <AlertTriangle size={14} className="shrink-0" />
+              <span>Entretien requis — vérifiez les composants en alerte ci-dessous</span>
+            </div>
+          )}
+          {maintItems.length === 0 && <p className="text-xs text-muted-foreground">Aucun composant suivi.</p>}
+          {maintItems.map((m: any) => {
+            const meta = URGENCY_META[m.urgency] ?? URGENCY_META.ok;
+            const elapsed = m.total_km_driven - m.last_done_km;
+            const pct = Math.max(0, Math.min(100, (elapsed / m.interval_km) * 100));
+            const remaining = m.next_due_km - m.total_km_driven;
+            return (
+              <div key={m.id} className="rounded-lg border border-border/50 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">{m.label_fr}</span>
+                  <Badge variant="outline" className={`text-[10px] ${meta.cls}`}>{meta.label}</Badge>
+                </div>
+                <Progress value={pct} className="h-2" />
+                <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                  <span>{remaining > 0 ? `${Math.round(remaining).toLocaleString("fr-FR")} km restants` : `Dépassé de ${Math.abs(Math.round(remaining)).toLocaleString("fr-FR")} km`}</span>
+                  <span>~{m.estimated_cost_eur}€</span>
+                </div>
+                <Button size="sm" variant="outline" className="w-full h-9 text-xs" onClick={() => doneMutation.mutate(m.component)} disabled={doneMutation.isPending} data-testid={`button-maint-done-${m.component}`}>
+                  Marquer fait
+                </Button>
+              </div>
+            );
+          })}
+        </CardContent>
+      </Card>
     </div>
   );
 }

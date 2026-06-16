@@ -1614,6 +1614,10 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       };
 
       storage.addRide(ride);
+      // THÈME 2 : maintenance prédictive — cumuler les km parcourus
+      storage.updateMaintenanceKm(distance_km);
+      // THÈME 4 : cumuler le total km au profil chauffeur
+      try { storage.incrementProfileKm?.(distance_km); } catch { /* colonne optionnelle */ }
       storage.generateDynamicAlerts();
 
       res.json({
@@ -1623,6 +1627,152 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       });
     } catch (err) {
       console.error("[rides/complete] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // IA 2026 — Nouveaux endpoints
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // THÈME 1 : prédictions de demande (6 prochaines heures)
+  app.get("/api/predictions", (req, res) => {
+    try {
+      const zoneId = typeof req.query.zone_id === "string" ? req.query.zone_id : undefined;
+      res.json(storage.getPredictions(6, zoneId));
+    } catch (err) {
+      console.error("[predictions] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // THÈME 2 : maintenance prédictive
+  app.get("/api/maintenance", (_req, res) => {
+    res.json({ maintenance: storage.getMaintenance() });
+  });
+
+  app.put("/api/maintenance/:component/done", (req, res) => {
+    const updated = storage.markMaintenanceDone(req.params.component);
+    if (!updated) return res.status(404).json({ error: "Composant introuvable" });
+    res.json({ success: true, component: updated });
+  });
+
+  // THÈME 3 : scoring comportement conducteur + feedback IA
+  app.get("/api/driver-performance", (_req, res) => {
+    try {
+      res.json(storage.getDriverPerformance());
+    } catch (err) {
+      console.error("[driver-performance] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // THÈME 5 : tarification dynamique transparente
+  app.get("/api/surge-transparency", (_req, res) => {
+    try {
+      const now = new Date();
+      const h = now.getHours();
+      const dayType = [0, 6].includes(now.getDay()) ? "weekend" : "weekday";
+      const scores = storage.getProfitabilityByHour(h, dayType) as any[];
+      const activeEvents = storage.getActiveEvents() as any[];
+
+      const isRush = (h >= 6 && h <= 9) || (h >= 17 && h <= 19);
+      const isWeekendNight = dayType === "weekend" && (h >= 22 || h <= 3);
+
+      const zones = scores
+        .filter(s => (s.surge_multiplier ?? 1) > 1.2)
+        .map(s => {
+          const ratio = s.ratio_ds ?? 0;
+          const surge = s.surge_multiplier ?? 1;
+          const zoneEvent = activeEvents.find(e => e.zone_id === s.zone_id && (e.demand_boost ?? 0) > 1.5);
+          let explanation: string;
+          if (zoneEvent) {
+            const att = zoneEvent.expected_attendance > 0 ? `${zoneEvent.expected_attendance} ` : "";
+            explanation = `Événement ${zoneEvent.name} — ${att}personnes attendues`;
+          } else if (ratio > 2.5) {
+            explanation = `Forte demande, offre insuffisante (${Math.round(s.demand_score)}D / ${Math.round(s.supply_score)}O)`;
+          } else if (isRush) {
+            explanation = "Heure de pointe — trafic dense, demande maximale";
+          } else if (isWeekendNight) {
+            explanation = "Nuit festive — demande nocturne élevée";
+          } else {
+            explanation = `Demande supérieure à l'offre (${Math.round(s.demand_score)}D / ${Math.round(s.supply_score)}O)`;
+          }
+          const surgeLevel = surge >= 1.8 ? "très élevé" : surge >= 1.5 ? "élevé" : "modéré";
+          const validUntil = new Date(now.getTime() + 60 * 60000);
+          validUntil.setMinutes(0, 0, 0);
+          return {
+            zone_id: s.zone_id,
+            zone_name: s.zone_name,
+            surge_multiplier: Math.round(surge * 100) / 100,
+            surge_level: surgeLevel,
+            explanation,
+            demand_score: Math.round(s.demand_score),
+            supply_score: Math.round(s.supply_score),
+            ratio: Math.round(ratio * 100) / 100,
+            estimated_fare_boost_pct: Math.round((surge - 1) * 100),
+            valid_until: validUntil.toISOString(),
+          };
+        })
+        .sort((a, b) => b.surge_multiplier - a.surge_multiplier);
+
+      res.json({ zones });
+    } catch (err) {
+      console.error("[surge-transparency] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // THÈME 6 : optimiseur temps mort / repositionnement actif
+  app.get("/api/idle-optimizer", (_req, res) => {
+    try {
+      const now = new Date();
+      const h = now.getHours();
+      const hNext = (h + 1) % 24;
+      const dayType = [0, 6].includes(now.getDay()) ? "weekend" : "weekday";
+      const dayTypeNext = (() => {
+        const nd = new Date(now.getTime() + 3600000);
+        return [0, 6].includes(nd.getDay()) ? "weekend" : "weekday";
+      })();
+
+      const scoresNow = storage.getProfitabilityByHour(h, dayType) as any[];
+      const scoresNext = storage.getProfitabilityByHour(hNext, dayTypeNext) as any[];
+      const nextById = new Map(scoresNext.map(s => [s.zone_id, s]));
+
+      const recos = scoresNow.map(s => {
+        const scoreNow = s.profitability_index ?? 0;
+        const next = nextById.get(s.zone_id) as any;
+        const scoreNext = next?.profitability_index ?? scoreNow;
+        const avgScore = (scoreNow + scoreNext) / 2;
+        const route = getCachedRoute(s.zone_id, DEFAULT_ORIGIN.lat, DEFAULT_ORIGIN.lng);
+        const etaMin = route?.etaMin ?? 30;
+        const repoCost = etaMin;
+        const netScore = avgScore - repoCost * 0.5;
+        const trend = scoreNext > scoreNow + 2 ? "hausse" : scoreNext < scoreNow - 2 ? "baisse" : "stable";
+        const arrival = new Date(now.getTime() + etaMin * 60000);
+        const arrivalHM = `${String(arrival.getHours()).padStart(2, "0")}:${String(arrival.getMinutes()).padStart(2, "0")}`;
+        return {
+          zone_id: s.zone_id,
+          zone_name: s.zone_name,
+          lat: s.lat, lng: s.lng,
+          score_now: Math.round(scoreNow),
+          score_next_hour: Math.round(scoreNext),
+          avg_score: Math.round(avgScore),
+          eta_min: etaMin,
+          repo_cost_min: repoCost,
+          net_score: Math.round(netScore),
+          action: `Partir maintenant — arrivée optimale ${arrivalHM}`,
+          reason: trend === "hausse" ? "Score en hausse — vague d'arrivées à venir"
+            : trend === "baisse" ? "Score en baisse — fenêtre courte" : "Score stable — opportunité solide",
+        };
+      })
+        .filter(r => r.eta_min < 20 && r.avg_score > 60)
+        .sort((a, b) => b.net_score - a.net_score)
+        .slice(0, 5);
+
+      res.json({ recommendations: recos });
+    } catch (err) {
+      console.error("[idle-optimizer] error:", err);
       res.status(500).json({ error: String(err) });
     }
   });

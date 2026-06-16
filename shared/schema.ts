@@ -81,6 +81,52 @@ export const driverProfile = sqliteTable("driver_profile", {
   preferLongRides: integer("prefer_long_rides", { mode: "boolean" }).notNull().default(true),
 });
 
+export const demandPredictions = sqliteTable("demand_predictions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  zoneId: text("zone_id").notNull(),
+  targetHour: integer("target_hour").notNull(),
+  targetDate: text("target_date").notNull(),
+  predictedIndex: real("predicted_index").notNull(),
+  confidence: real("confidence").notNull().default(0.7),
+  modelVersion: text("model_version").notNull().default("v2_historical"),
+  factors: text("factors").notNull().default("{}"),
+  createdAt: text("created_at").notNull(),
+  actualIndex: real("actual_index"),
+  errorPct: real("error_pct"),
+});
+
+export const vehicleMaintenance = sqliteTable("vehicle_maintenance", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  component: text("component").notNull(),
+  labelFr: text("label_fr").notNull(),
+  intervalKm: integer("interval_km").notNull(),
+  lastDoneKm: integer("last_done_km").notNull().default(0),
+  totalKmDriven: integer("total_km_driven").notNull().default(0),
+  urgency: text("urgency").notNull().default("ok"),
+  estimatedCostEur: real("estimated_cost_eur").notNull().default(0),
+  nextDueKm: integer("next_due_km").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const driverPerformance = sqliteTable("driver_performance", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  period: text("period").notNull(),
+  periodDate: text("period_date").notNull(),
+  totalRides: integer("total_rides").notNull().default(0),
+  profitableRides: integer("profitable_rides").notNull().default(0),
+  totalKm: integer("total_km").notNull().default(0),
+  totalNetEur: real("total_net_eur").notNull().default(0),
+  avgHourlyRate: real("avg_hourly_rate").notNull().default(0),
+  efficiencyScore: integer("efficiency_score").notNull().default(0),
+  positioningScore: integer("positioning_score").notNull().default(0),
+  profitabilityScore: integer("profitability_score").notNull().default(0),
+  consistencyScore: integer("consistency_score").notNull().default(0),
+  globalScore: integer("global_score").notNull().default(0),
+  aiTips: text("ai_tips").notNull().default("[]"),
+  createdAt: text("created_at").notNull(),
+});
+
 export const insertAlertSchema = createInsertSchema(alerts).omit({ id: true });
 export const insertRideSchema = createInsertSchema(rides).omit({ id: true });
 export const insertDriverProfileSchema = createInsertSchema(driverProfile).omit({ id: true });
@@ -91,6 +137,9 @@ export type Event = typeof events.$inferSelect;
 export type Ride = typeof rides.$inferSelect;
 export type Alert = typeof alerts.$inferSelect;
 export type DriverProfile = typeof driverProfile.$inferSelect;
+export type DemandPrediction = typeof demandPredictions.$inferSelect;
+export type VehicleMaintenance = typeof vehicleMaintenance.$inferSelect;
+export type DriverPerformance = typeof driverPerformance.$inferSelect;
 export type InsertAlert = z.infer<typeof insertAlertSchema>;
 export type InsertRide = z.infer<typeof insertRideSchema>;
 export type InsertDriverProfile = z.infer<typeof insertDriverProfileSchema>;
