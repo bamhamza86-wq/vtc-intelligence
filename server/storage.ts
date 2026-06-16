@@ -350,14 +350,15 @@ const DAY_COEFFICIENTS: Record<number, {
   supply_morning: number; // supply 6h-10h (rush AM, peu de chauffeurs)
   label: string;
 }> = {
-  0: { demand: 0.74, supply: 0.58, surge: 1.14, supply_midday: 0.62, supply_morning: 0.55, label: "Dimanche"  },
-  1: { demand: 0.93, supply: 0.88, surge: 1.08, supply_midday: 0.90, supply_morning: 0.72, label: "Lundi"     },
-  2: { demand: 1.03, supply: 0.78, surge: 1.18, supply_midday: 0.82, supply_morning: 0.65, label: "Mardi"     },
-  3: { demand: 1.04, supply: 0.90, surge: 1.15, supply_midday: 0.93, supply_morning: 0.78, label: "Mercredi"  },
-  4: { demand: 1.18, supply: 0.91, surge: 1.28, supply_midday: 0.93, supply_morning: 0.68, label: "Jeudi"     },
-  // 11/06/2026 : grève RER D (×demande ↑) + pluie (×demande ↑) + supply_morning basse (chauffeurs absents tôt)
-  5: { demand: 1.10, supply: 0.85, surge: 1.28, supply_midday: 0.88, supply_morning: 0.75, label: "Vendredi"  },
-  6: { demand: 0.82, supply: 0.62, surge: 1.22, supply_midday: 0.65, supply_morning: 0.52, label: "Samedi"    },
+  // Sources : arXiv 2008.06050 (week-end +20-24%), Drivee 2025, Stairling 2025, Partners Formation 2025
+  // Hiérarchie rentabilité validée : Samedi > Vendredi > Jeudi > Mercredi ≈ Mardi > Lundi > Dimanche
+  0: { demand: 0.88, supply: 0.60, surge: 1.18, supply_midday: 0.63, supply_morning: 0.52, label: "Dimanche"  },
+  1: { demand: 0.90, supply: 0.90, surge: 1.05, supply_midday: 0.92, supply_morning: 0.72, label: "Lundi"     },
+  2: { demand: 0.95, supply: 0.92, surge: 1.08, supply_midday: 0.94, supply_morning: 0.68, label: "Mardi"     },
+  3: { demand: 1.00, supply: 0.90, surge: 1.10, supply_midday: 0.93, supply_morning: 0.78, label: "Mercredi"  },
+  4: { demand: 1.12, supply: 0.85, surge: 1.30, supply_midday: 0.87, supply_morning: 0.68, label: "Jeudi"     },
+  5: { demand: 1.22, supply: 0.78, surge: 1.35, supply_midday: 0.80, supply_morning: 0.72, label: "Vendredi"  },
+  6: { demand: 1.18, supply: 0.62, surge: 1.32, supply_midday: 0.65, supply_morning: 0.52, label: "Samedi"    },
 };
 
 function getTodayStr(): string {
@@ -500,11 +501,11 @@ function computeScore(
     // Ratio = vitesse effective / vitesse rush PM (BASE 1.0 = 17h-19h)
     // Rush AM = embouteillages → vitesse basse → ratio < 1.0
     // Nuit/post-rush = routes libres → vitesse haute → ratio > 1.0
-    if (hh < 6)  return 2.20;  // nuit profonde — trafic nul, vitesse max
+    if (hh < 6)  return 2.10;  // nuit — légèrement réduit (2.20 → 2.10, routes pas SI libres)
     if (hh < 7)  return 1.32;  // 6h : démarrage, flux CDG départs, A1 léger
-    if (hh < 8)  return 0.80;  // 7h : rush AM début — A86/A1/A3 se remplissent ✅
-    if (hh < 9)  return 0.72;  // 8h : PIC ABSOLU — grève RER D + pluie + pendulaires (×1.60 demande)
-    if (hh < 10) return 0.85;  // 9h : déclin rush mais encore dense — arrivées CDG soutenues
+    if (hh < 8)  return 0.78;  // 7h : rush AM début — A86/A1/A3 se remplissent
+    if (hh < 9)  return 0.70;  // 8h : rush AM fort — bouchons A1/A3/A86 (DiRIF)
+    if (hh < 10) return 0.72;  // 9h : PIC ABSOLU — DiRIF montre que le max est vers 9h (300km bouchons)
     if (hh < 11) return 1.38;  // 10h : décongestion — post-rush ✅ (mesuré 10h37 = 1.69 zone par zone)
     if (hh < 12) return 1.62;  // 11h : creux trafic (creux demande aussi) — routes fluides
     if (hh < 13) return 1.55;  // 12h : reprise légère — déjeuner d'affaires, banque midi CDG
@@ -630,20 +631,45 @@ function computeScore(
     shortRideBonus
   ) * 10) / 10));
 
-  // ── BUG #3 : facteur de disponibilité réelle — pénalise les heures creuses nocturnes ──
-  // Volume réel de courses 0h-5h très faible : sur-scoré car supply faible → ratio D/O élevé.
-  // CDG/Orly gardent une activité réelle (vols nocturnes) mais réduite vs rush AM.
-  // Zones résidentielles/transport/business : quasi inactives la nuit.
-  let availabilityFactor = 1.0;
-  if (h >= 0 && h < 5) {
-    if (zone.type === "airport") {
-      availabilityFactor = 0.60 + Math.sin(h * 0.8) * 0.05; // ~0.60-0.65
-    } else if (zone.type === "entertainment") {
-      availabilityFactor = 0.75; // Stade de France : soirées tardives OK
-    } else {
-      availabilityFactor = 0.45; // résidentiel/transport/business : très peu actives
-    }
+  // ── Facteur de disponibilité réelle — calibré sur sièges/heure ADP + attente à vide ──────
+  // Sources : Airport Information CDG, Cohor (couvre-feu 0h-5h), Chris Whong (attente taxi JFK)
+  // Résultat : empêche qu'un ratio D/O théorique élevé sur-score un créneau à faible volume
+  const AIRPORT_AVAILABILITY: Record<number, number> = {
+    0: 0.12, 1: 0.10, 2: 0.08, 3: 0.08, 4: 0.15, 5: 0.45,
+    6: 0.72, 7: 0.95, 8: 1.00, 9: 0.95, 10: 0.98, 11: 0.90,
+    12: 0.82, 13: 0.85, 14: 0.68, 15: 0.60, 16: 0.85, 17: 0.70,
+    18: 0.70, 19: 0.75, 20: 0.98, 21: 0.88, 22: 0.58, 23: 0.32,
+  };
+  // Zones urbaines : commute bimodal (rush AM/PM = peak), nuit 0h-5h = faible sauf weekend
+  const URBAN_AVAILABILITY_WEEKDAY: Record<number, number> = {
+    0: 0.38, 1: 0.30, 2: 0.25, 3: 0.25, 4: 0.30, 5: 0.45,
+    6: 0.82, 7: 1.00, 8: 1.00, 9: 0.92, 10: 0.75, 11: 0.78,
+    12: 0.78, 13: 0.72, 14: 0.68, 15: 0.65, 16: 0.72, 17: 1.00,
+    18: 1.00, 19: 0.90, 20: 0.70, 21: 0.65, 22: 0.55, 23: 0.45,
+  };
+  // Weekend : nuit plus active (sorties), rush AM absent, journée homogène
+  const URBAN_AVAILABILITY_WEEKEND: Record<number, number> = {
+    0: 0.85, 1: 0.90, 2: 0.75, 3: 0.55, 4: 0.38, 5: 0.35,
+    6: 0.42, 7: 0.52, 8: 0.60, 9: 0.70, 10: 0.82, 11: 0.85,
+    12: 0.90, 13: 0.88, 14: 0.85, 15: 0.85, 16: 0.88, 17: 0.92,
+    18: 0.95, 19: 0.98, 20: 0.98, 21: 0.95, 22: 0.98, 23: 0.95,
+  };
+
+  let availabilityFactor: number;
+  if (zone.type === "airport") {
+    availabilityFactor = AIRPORT_AVAILABILITY[h] ?? 0.70;
+  } else if (dt === "weekend") {
+    availabilityFactor = URBAN_AVAILABILITY_WEEKEND[h] ?? 0.80;
+  } else {
+    availabilityFactor = URBAN_AVAILABILITY_WEEKDAY[h] ?? 0.80;
   }
+  // Entertainment (Stade de France) : facteur spécifique — quasi nul hors event, 1.0 pendant
+  // Si un event actif : la zone a son propre boost via eventNorm → garder l'availability normal
+  // Sans event actif : peu de demande, réduire l'availability
+  if (zone.type === "entertainment" && maxBoost < 1.5) {
+    availabilityFactor = Math.min(availabilityFactor, 0.50); // Stade calme = demi-disponibilité
+  }
+
   const finalProfIdx = Math.min(95, Math.max(5, Math.round(profIdx * availabilityFactor * 10) / 10));
 
   return {
@@ -724,16 +750,39 @@ function generateDemandPredictions(): void {
     eventIdsByZone.get(ev.zone_id)!.push(String(ev.id));
   }
 
-  // ── BUG #5 : biais de tendance J-1 depuis score_history ──
-  // Charge les scores d'hier pour calculer un momentum (delta J vs J-1) et
-  // éviter que la prédiction soit une copie exacte du score actuel.
-  const yesterday = new Date(now.getTime() - 86400000).toISOString().split("T")[0];
+  // ── CHANGEMENT 4 : baseline J-7 pondérée (périodicité hebdomadaire dominante) ──
+  // Chargement scores J-7 (même jour de semaine, pas J-1 qui peut avoir un day_type différent)
+  // La périodicité hebdomadaire est le signal dominant (Sage journals 2023)
+  const lastWeek = new Date(now.getTime() - 7 * 86400000).toISOString().split("T")[0];
+  const twoWeeksAgo = new Date(now.getTime() - 14 * 86400000).toISOString().split("T")[0];
+
   const histScores = sqlite.prepare(
-    `SELECT zone_id, hour, day_type, profitability_index FROM score_history WHERE seed_date = ?`
-  ).all(yesterday) as any[];
+    `SELECT zone_id, hour, day_type, profitability_index, seed_date FROM score_history
+     WHERE seed_date IN (?, ?) ORDER BY seed_date DESC`
+  ).all(lastWeek, twoWeeksAgo) as any[];
+
+  // Pondérations exponentielles : J-7 poids 0.65, J-14 poids 0.35
   const histMap = new Map<string, number>();
-  for (const hs of histScores) {
-    histMap.set(`${hs.zone_id}|${hs.hour}|${hs.day_type}`, hs.profitability_index);
+  const histByKey = new Map<string, { recent: number; older: number }>();
+  for (const row of histScores) {
+    const key = `${row.zone_id}|${row.hour}|${row.day_type}`;
+    const existing = histByKey.get(key);
+    if (!existing) {
+      histByKey.set(key, { recent: -1, older: -1 });
+    }
+    const entry = histByKey.get(key)!;
+    if (row.seed_date === lastWeek && entry.recent < 0) entry.recent = row.profitability_index;
+    else if (row.seed_date === twoWeeksAgo && entry.older < 0) entry.older = row.profitability_index;
+  }
+  // Construire la baseline pondérée J-7/J-14
+  for (const [key, { recent, older }] of histByKey) {
+    if (recent >= 0 && older >= 0) {
+      histMap.set(key, recent * 0.65 + older * 0.35);
+    } else if (recent >= 0) {
+      histMap.set(key, recent);
+    } else if (older >= 0) {
+      histMap.set(key, older);
+    }
   }
 
   const tx = sqlite.transaction(() => {
@@ -759,21 +808,32 @@ function generateDemandPredictions(): void {
           supply_coeff: isMorning ? dayCo.supply_morning : (isMidDay ? dayCo.supply_midday : dayCo.supply),
           supply_applied: s.supplyCoeffLabel,
         });
-        // BUG #5 : biais de tendance — pondère la prédiction avec le momentum J-1
+        // CHANGEMENT 4 : modèle additif J-7 pondéré + tendance récente décroissante
         const histKey = `${zone.id}|${targetHour}|${dt}`;
-        const histScore = histMap.get(histKey);
+        const histBaseline = histMap.get(histKey);
+
         let predictedIdx = s.profIdx;
-        let modelVersion = "v2_historical";
-        if (histScore !== undefined) {
-          const trendDelta = (s.profIdx - histScore) * 0.25;  // momentum 25%
-          const decayPenalty = (ahead - 1) * 0.5;             // perte de précision avec l'horizon
-          predictedIdx = Math.min(95, Math.max(5, Math.round((s.profIdx + trendDelta - decayPenalty) * 10) / 10));
-          modelVersion = "v2_trend";
+        if (histBaseline !== undefined) {
+          // Tendance récente = écart actuel vs baseline historique
+          const currentScore = s.profIdx;
+          const trendDelta = (currentScore - histBaseline) * 0.25; // momentum 25%
+          // Decay exponentiel de la tendance : 0.70^k (k = horizon en heures)
+          const decayedTrend = trendDelta * Math.pow(0.70, ahead - 1);
+          // Légère pénalité de précision avec l'horizon
+          const horizonPenalty = (ahead - 1) * 0.3;
+          predictedIdx = Math.min(95, Math.max(5,
+            Math.round((histBaseline + decayedTrend - horizonPenalty) * 10) / 10
+          ));
         }
+
         stmtInsertPrediction.run(
           zone.id, targetHour, targetDate,
           zone.id, targetHour, targetDate,
-          predictedIdx, Math.round(confidence * 100) / 100, modelVersion, factors, createdAt
+          predictedIdx,
+          Math.round(confidence * 100) / 100,
+          "v3_j7_trend",
+          factors,
+          createdAt
         );
       }
     }
