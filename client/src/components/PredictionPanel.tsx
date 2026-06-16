@@ -34,6 +34,9 @@ export default function PredictionPanel() {
     queryKey: ["/api/predictions"],
     queryFn: () => apiRequest("GET", "/api/predictions").then(r => r.json()),
     refetchInterval: 3_000,
+    staleTime: 0,
+    retry: 3,
+    retryDelay: (n) => n * 1000,
   });
 
   if (isLoading) {

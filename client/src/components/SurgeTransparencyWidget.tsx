@@ -29,6 +29,9 @@ export default function SurgeTransparencyWidget() {
     queryKey: ["/api/surge-transparency"],
     queryFn: () => apiRequest("GET", "/api/surge-transparency").then(r => r.json()),
     refetchInterval: 3_000,
+    staleTime: 0,
+    retry: 3,
+    retryDelay: (n) => n * 1000,
   });
 
   if (isLoading) {
@@ -47,7 +50,24 @@ export default function SurgeTransparencyWidget() {
   }
 
   const zones = data?.zones ?? [];
-  if (zones.length === 0) return null;
+  if (zones.length === 0) {
+    return (
+      <Card className="border-border/50">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Flame size={16} className="text-muted-foreground" />
+            Pourquoi ce surge ?
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="px-4 pb-4">
+          <p className="text-[12px] text-muted-foreground flex items-center gap-1.5">
+            <Info size={12} className="shrink-0" />
+            Aucun surge actif en ce moment.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card className="border-red-500/20">
