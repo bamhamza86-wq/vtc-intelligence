@@ -566,8 +566,14 @@ function computeScore(
   const costKm = 0.224; // carburant 0.144 + usure 0.08
   const netFare = grossWithSurge * (1 - 0.25) - avgDist * costKm;
   // P2a: repoMin calculé avec effRepoSpeed (affecté par trafic) — pas rideSpeed
-  const repoKm = Math.max(3, avgDist * 0.55);              // km de repositionnement estimé
-  const repoMin = Math.min(45, Math.max(3, (repoKm / effRepoSpeed) * 60)); // ← audit B1: plafonné à 45min (CDG à effRepoSpeed=4km/h évitait 346min aberrant)
+  // Repo réaliste : aéroports restent sur zone ou file vers zone voisine (3-7km)
+  // Zones courtes (<15km) : rotation rapide, repo ≈ 35% du trajet
+  // Zones longues (>20km) : repo partiel ≈ 40% (pas retour complet)
+  const repoRatio_km = zone.type === "airport" ? 0.12  // CDG/Orly → reste sur zone ou Villepinte/Tremblay
+    : avgDist < 15 ? 0.35  // zones courtes : rotation rapide
+    : 0.40;                 // zones longues : retour partiel
+  const repoKm = Math.max(3, avgDist * repoRatio_km);
+  const repoMin = Math.min(30, Math.max(2, (repoKm / effRepoSpeed) * 60)); // plafonné 30min (était 45)
   const cycleMins = avgDur + repoMin;
   const coursesPerHour = 60 / Math.max(cycleMins, 8);
   const netHourly = netFare * coursesPerHour; // €/h réel avec surge
@@ -584,10 +590,13 @@ function computeScore(
   // Sigmoid ← audit H1: inflexion adaptative selon demande du jour
   // Jeudi demand=1.18 → inflexion 46.8€/h (attentes plus élevées)
   // Dimanche demand=0.74 → inflexion 37.4€/h (seuil plus bas)
-  const BASE_INFLECTION = 45;
-  const inflectionAdjust = (dayCo.demand - 1.0) * 10; // ±10 pts selon contexte journalier
-  const inflection = Math.max(30, Math.min(65, BASE_INFLECTION + inflectionAdjust));
-  const sigRent = 1 / (1 + Math.exp(-0.08 * (netHourly - inflection)));
+  // Sigmoïde calibrée sur le seuil de rentabilité réel VTC (35€/h = break-even)
+  // Inflexion 35€/h = score 50 (neutre), 55€/h = score ~85, 70€/h = score ~95
+  // Zones longues (CDG) : cycles rares mais tarifs élevés — la sigmoïde doit les valoriser
+  const BASE_INFLECTION = 35;
+  const inflectionAdjust = (dayCo.demand - 1.0) * 8; // ±8 pts selon contexte journalier
+  const inflection = Math.max(25, Math.min(55, BASE_INFLECTION + inflectionAdjust));
+  const sigRent = 1 / (1 + Math.exp(-0.10 * (netHourly - inflection)));
 
   // ── Bonus court-trajet + surge élevé (backtest P1c) ───────────────────────
   // Zones < 12km avec surge > ×1.5 : le modèle sous-estimait leur rentabilité
@@ -636,9 +645,9 @@ function computeScore(
   // Résultat : empêche qu'un ratio D/O théorique élevé sur-score un créneau à faible volume
   const AIRPORT_AVAILABILITY: Record<number, number> = {
     0: 0.12, 1: 0.10, 2: 0.08, 3: 0.08, 4: 0.15, 5: 0.45,
-    6: 0.72, 7: 0.95, 8: 1.00, 9: 0.95, 10: 0.98, 11: 0.90,
-    12: 0.82, 13: 0.85, 14: 0.68, 15: 0.60, 16: 0.85, 17: 0.70,
-    18: 0.70, 19: 0.75, 20: 0.98, 21: 0.88, 22: 0.58, 23: 0.32,
+    6: 0.88, 7: 1.00, 8: 1.00, 9: 1.00, 10: 1.00, 11: 0.92,
+    12: 0.84, 13: 0.86, 14: 0.68, 15: 0.60, 16: 0.88, 17: 0.72,
+    18: 0.72, 19: 0.76, 20: 1.00, 21: 0.90, 22: 0.58, 23: 0.32,
   };
   // Zones urbaines : commute bimodal (rush AM/PM = peak), nuit 0h-5h = faible sauf weekend
   const URBAN_AVAILABILITY_WEEKDAY: Record<number, number> = {
