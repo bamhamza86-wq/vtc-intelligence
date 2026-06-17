@@ -447,6 +447,35 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     }
   });
 
+  // ─── Historique scores par date et heure — utilisé par le CRON horaire ──────
+  // GET /api/history?date=YYYY-MM-DD&hour=H
+  // Retourne les scores historiques pour une date+heure données (depuis score_history)
+  app.get("/api/history", (req, res) => {
+    try {
+      const date = typeof req.query.date === "string" ? req.query.date
+        : new Date(Date.now() - 86400000).toISOString().split("T")[0]; // J-1 par défaut
+      const hour = req.query.hour !== undefined ? parseInt(String(req.query.hour)) : undefined;
+      const rows = storage.getScoreHistory(date) as any[];
+      const filtered = hour !== undefined ? rows.filter((r: any) => r.hour === hour) : rows;
+      // Transformer en {zone_id: profitability_index} pour simplifier la consommation
+      const byZone: Record<string, any> = {};
+      for (const r of filtered) {
+        byZone[r.zone_id] = {
+          profitability_index: r.profitability_index,
+          demand_score: r.demand_score,
+          supply_score: r.supply_score,
+          surge_multiplier: r.surge_multiplier,
+          hour: r.hour,
+          day_type: r.day_type,
+          seed_date: r.seed_date,
+        };
+      }
+      res.json({ date, hour: hour ?? null, zones: byZone, count: filtered.length });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   app.get("/api/data-sources", (_req, res) => {
     res.json({ categories: [
       { name: "Données VTC — 93 & Aéroports", icon: "car", sources: [
