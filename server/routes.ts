@@ -458,6 +458,16 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     }
   });
 
+  // ─── Admin reseed (alias pour CRON auto-retrain) ──────────────────────────────
+  app.post("/api/admin/reseed", (_req, res) => {
+    try {
+      const result = storage.forceReseed();
+      res.json({ ...result, message: "Auto-retrain reseed déclenché", triggered_by: "cron" });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   app.get("/api/analytics/history", (_req, res) => {
     try {
       const dates = storage.getScoreHistory();
