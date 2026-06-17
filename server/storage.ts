@@ -502,11 +502,11 @@ function computeScore(
     // Ratio = vitesse effective / vitesse rush PM (BASE 1.0 = 17h-19h)
     // Rush AM = embouteillages → vitesse basse → ratio < 1.0
     // Nuit/post-rush = routes libres → vitesse haute → ratio > 1.0
-    if (hh < 6)  return 2.10;  // nuit — légèrement réduit (2.20 → 2.10, routes pas SI libres)
-    if (hh < 7)  return 1.32;  // 6h : démarrage, flux CDG départs, A1 léger
-    if (hh < 8)  return 0.78;  // 7h : rush AM début — A86/A1/A3 se remplissent
-    if (hh < 9)  return 0.70;  // 8h : rush AM fort — bouchons A1/A3/A86 (DiRIF)
-    if (hh < 10) return 0.72;  // 9h : PIC ABSOLU — DiRIF montre que le max est vers 9h (300km bouchons)
+    if (hh < 6)  return 2.54;  // nuit — entraînement 17/06/2026 : 2.10→2.54 (ratio DiRIF h=5 +21%)
+    if (hh < 7)  return 1.24;  // 6h : entraînement 17/06/2026 : 1.32→1.24 (flux CDG légèrement revu)
+    if (hh < 8)  return 0.96;  // 7h : entraînement 17/06/2026 : 0.78→0.96 (rush AM réel DiRIF +23%)
+    if (hh < 9)  return 1.02;  // 8h : entraînement 17/06/2026 : 0.70→1.02 (pic HPM DiRIF mercredi +45%)
+    if (hh < 10) return 1.28;  // 9h : entraînement 17/06/2026 : 0.72→1.28 (post-rush DiRIF encore dense)
     if (hh < 11) return 1.38;  // 10h : décongestion — post-rush ✅ (mesuré 10h37 = 1.69 zone par zone)
     if (hh < 12) return 1.62;  // 11h : creux trafic (creux demande aussi) — routes fluides
     if (hh < 13) return 1.55;  // 12h : reprise légère — déjeuner d'affaires, banque midi CDG
@@ -647,14 +647,24 @@ function computeScore(
   const AIRPORT_AVAILABILITY: Record<number, number> = {
     // Deep analysis 17/06/2026 : h=0..4 couvre-feu ADP (quasi-0), h=10 pic absolu flux (19376 sièges), h=11 2ème plage, h=19 2ème pic soir
     0: 0.03, 1: 0.02, 2: 0.02, 3: 0.02, 4: 0.04, 5: 0.45,
-    6: 0.88, 7: 1.00, 8: 1.00, 9: 1.00, 10: 1.10, 11: 0.98,
+    // Entraînement 17/06/2026 : h=6+0.06, h=7+0.14, h=8+0.03, h=9-0.19 (creux BookCab h=9=30€/h)
+    6: 0.94, 7: 1.14, 8: 1.03, 9: 0.81, 10: 1.10, 11: 0.98,
+    12: 0.84, 13: 0.86, 14: 0.68, 15: 0.60, 16: 0.88, 17: 0.72,
+    18: 0.72, 19: 0.85, 20: 1.05, 21: 0.90, 22: 0.58, 23: 0.35,
+  };
+  // Orly — entraînement 17/06/2026 : sur-estimé h=5..9 vs historique BookCab/ADP Orly
+  // Orly DOM-TOM : trafic matin moins dense que CDG, départs long-courriers plus tardifs
+  const ORLY_AVAILABILITY: Record<number, number> = {
+    0: 0.03, 1: 0.02, 2: 0.02, 3: 0.02, 4: 0.04, 5: 0.36,
+    6: 0.66, 7: 0.79, 8: 0.71, 9: 0.68, 10: 1.10, 11: 0.98,
     12: 0.84, 13: 0.86, 14: 0.68, 15: 0.60, 16: 0.88, 17: 0.72,
     18: 0.72, 19: 0.85, 20: 1.05, 21: 0.90, 22: 0.58, 23: 0.35,
   };
   // Zones urbaines : commute bimodal (rush AM/PM = peak), nuit 0h-5h = faible sauf weekend
   const URBAN_AVAILABILITY_WEEKDAY: Record<number, number> = {
-    0: 0.38, 1: 0.30, 2: 0.25, 3: 0.25, 4: 0.30, 5: 0.45,
-    6: 0.82, 7: 1.00, 8: 1.00, 9: 0.92, 10: 0.75, 11: 0.78,
+    0: 0.38, 1: 0.30, 2: 0.25, 3: 0.25, 4: 0.30, 5: 0.48,
+    // Entraînement 17/06/2026 : h=7+0.07, h=8+0.13, h=9+0.17 (rush AM zones 93 DiRIF sous-estimé)
+    6: 0.82, 7: 1.07, 8: 1.13, 9: 1.09, 10: 0.75, 11: 0.78,
     12: 0.78, 13: 0.72, 14: 0.68, 15: 0.65, 16: 0.72, 17: 1.00,
     18: 1.00, 19: 0.90, 20: 0.70, 21: 0.65, 22: 0.55, 23: 0.45,
   };
@@ -667,7 +677,10 @@ function computeScore(
   };
 
   let availabilityFactor: number;
-  if (zone.type === "airport") {
+  if (zone.id === "z_orly") {
+    // Orly : table séparée — calibrée 17/06/2026 (trafic matin différent de CDG)
+    availabilityFactor = ORLY_AVAILABILITY[h] ?? 0.70;
+  } else if (zone.type === "airport") {
     availabilityFactor = AIRPORT_AVAILABILITY[h] ?? 0.70;
   } else if (dt === "weekend") {
     availabilityFactor = URBAN_AVAILABILITY_WEEKEND[h] ?? 0.80;
