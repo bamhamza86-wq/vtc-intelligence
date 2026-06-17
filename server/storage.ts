@@ -730,13 +730,15 @@ function computeScore(
   }
 
   // ── Pénalité congestion — seuil 1 min/km (règle métier stricte) ──────────────────────────
-  // Si ETA vers la zone > road_km minutes : zone trop lointaine en conditions actuelles.
-  // La pénalité est appliquée APRÈS le calcul du profIdx mais AVANT l'availability factor.
-  // Elle reflète l'impact réel du trafic sur la rentabilité (temps perdu = €/h perdus).
+  // Seuil appliqué sur le TRAJET COURSE (avgDur/avgDist), pas sur le trajet aller vers la zone.
+  // Logique : si la course elle-même prend >1 min/km, le tarif/km est insuffisant vs coûts.
+  // Aéroports : seuil 1.35 min/km (tarif forfaitaire plus élevé — compense le temps de trajet).
+  // Pénalité dégressive : 0 si OK, max -15 pts si très hors seuil.
+  // Note : le repoMin (trajet aller vers zone) pénalise déjà via cycleMins/netHourly.
   const breakEven = computeBreakEvenPenalty(
     zone.id,
-    realDist,            // road_km calibré
-    avgDurCongested,     // ETA vers la zone (pas la course — c'est le trajet aller)
+    avgDist,             // distance course moyenne (km)
+    avgDur,              // durée course moyenne avec congestion (min) — pas l'ETA aller
     congestionFactor
   );
   // profIdx avec pénalité congestion intégrée

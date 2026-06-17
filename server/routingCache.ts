@@ -256,10 +256,13 @@ export function getCongestedETA(
 // ── Seuil de rentabilité 1 min/km ─────────────────────────────────────────────────────────────
 //
 // Règle métier stricte : un trajet est rentable ssi durée ≤ road_km minutes
-// (équivalent vitesse ≥ 60 km/h — interprété comme KPI de rejet de zone en congestion)
+// Appliqué sur le TRAJET COURSE (avgDur/avgDist), pas sur le trajet aller vers la zone.
 //
-// Aéroports : seuil assoupli à 1.35 min/km (tarif élevé compense le déplacement)
-// Pénalité dégressive : max 20 pts si très au-delà du seuil
+// Seuils calibrés par type de zone :
+//   - Zones courtes (<15km) : courses fréquentes → seuil souple 1.80 min/km
+//   - Zones longues/mixtes  : courses rares mais lucratives → seuil 1.20 min/km
+//   - Aéroports             : tarif forfaitaire élevé → seuil 1.50 min/km
+// Pénalité dégressive : max 12 pts si très au-delà du seuil
 export function computeBreakEvenPenalty(
   zoneId:           string,
   roadKm:           number,
@@ -268,11 +271,12 @@ export function computeBreakEvenPenalty(
 ): { penalty: number; minPerKm: number; breakEvenOk: boolean } {
   const minPerKm  = etaMin / Math.max(roadKm, 0.1);
   const isAirport = zoneId === "z_cdg" || zoneId === "z_orly";
-  const threshold = isAirport ? 1.35 : 1.00;
+  const isShortZone = !isAirport && (roadKm < 15);
+  const threshold = isAirport ? 1.50 : isShortZone ? 1.80 : 1.20;
 
   const breakEvenOk = minPerKm <= threshold;
-  const rawPenalty  = Math.max(0, (minPerKm - threshold) / threshold * 20);
-  const penalty     = Math.min(20, Math.round(rawPenalty * 10) / 10);
+  const rawPenalty  = Math.max(0, (minPerKm - threshold) / threshold * 15);
+  const penalty     = Math.min(12, Math.round(rawPenalty * 10) / 10);
 
   return { penalty, minPerKm: Math.round(minPerKm * 1000) / 1000, breakEvenOk };
 }
