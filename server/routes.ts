@@ -470,6 +470,8 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   // ─── Historique scores par date et heure — utilisé par le CRON horaire ──────
   // GET /api/history?date=YYYY-MM-DD&hour=H
   // Retourne les scores historiques pour une date+heure données (depuis score_history)
+  // Format réponse : { date, hour, zones: {zone_id: {...}}, list: [...], count }
+  // 'list' = tableau compatible CRON b3ed8968 (même format que /api/profitability)
   app.get("/api/history", (req, res) => {
     try {
       const date = typeof req.query.date === "string" ? req.query.date
@@ -477,20 +479,27 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       const hour = req.query.hour !== undefined ? parseInt(String(req.query.hour)) : undefined;
       const rows = storage.getScoreHistory(date) as any[];
       const filtered = hour !== undefined ? rows.filter((r: any) => r.hour === hour) : rows;
-      // Transformer en {zone_id: profitability_index} pour simplifier la consommation
+      // day_type calculé depuis la date demandée (pas celui stocké en DB qui peut être erroné)
+      const parsedDate = new Date(date + "T12:00:00Z"); // midi UTC pour éviter les décalages DST
+      const correctDayType = [0, 6].includes(parsedDate.getDay()) ? "weekend" : "weekday";
+      // Transformer en {zone_id: {...}} pour simplifier la consommation
       const byZone: Record<string, any> = {};
+      const asList: any[] = [];
       for (const r of filtered) {
-        byZone[r.zone_id] = {
+        const entry = {
+          zone_id:            r.zone_id,
           profitability_index: r.profitability_index,
-          demand_score: r.demand_score,
-          supply_score: r.supply_score,
-          surge_multiplier: r.surge_multiplier,
-          hour: r.hour,
-          day_type: r.day_type,
-          seed_date: r.seed_date,
+          demand_score:       r.demand_score,
+          supply_score:       r.supply_score,
+          surge_multiplier:   r.surge_multiplier,
+          hour:               r.hour,
+          day_type:           correctDayType, // forcé depuis la date
+          seed_date:          r.seed_date,
         };
+        byZone[r.zone_id] = entry;
+        asList.push(entry);
       }
-      res.json({ date, hour: hour ?? null, zones: byZone, count: filtered.length });
+      res.json({ date, hour: hour ?? null, zones: byZone, list: asList, count: filtered.length });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
