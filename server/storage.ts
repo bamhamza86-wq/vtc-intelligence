@@ -1160,6 +1160,19 @@ function seedData() {
     const newCnt = (sqlite.prepare("SELECT COUNT(*) as c FROM profitability_scores").get() as any).c;
     console.log(`[storage] ${newCnt} scores calculés pour ${today}`);
 
+    // ── Archive temps réel : mettre à jour score_history pour today à chaque reseed ──────────
+    // Cela permet à /api/history?date=today de retourner des données fraîches sans attendre minuit.
+    // ON CONFLICT REPLACE = écrase les lignes existantes pour (zone_id, hour, seed_date).
+    // Schema : score_history a une contrainte UNIQUE sur (zone_id, hour, seed_date) via INSERT OR IGNORE —
+    // on utilise un DELETE + INSERT pour forcer la mise à jour.
+    try {
+      sqlite.exec(`DELETE FROM score_history WHERE seed_date='${today}'`);
+      sqlite.exec(`INSERT OR IGNORE INTO score_history (zone_id,hour,day_type,profitability_index,surge_multiplier,demand_score,supply_score,seed_date)
+        SELECT zone_id,hour,day_type,profitability_index,surge_multiplier,demand_score,supply_score,'${today}' FROM profitability_scores`);
+    } catch (e) {
+      console.warn("[storage] Archive temps réel score_history échouée :", e);
+    }
+
     // Mettre à jour la meta
     sqlite.prepare("INSERT OR REPLACE INTO seed_meta (key,value) VALUES ('last_seed_date',?)").run(today);
     sqlite.prepare("INSERT OR REPLACE INTO seed_meta (key,value) VALUES ('last_seed_day',?)").run(String(dayOfWeek));
@@ -1707,7 +1720,20 @@ export const storage: IStorage = {
   },
 
   getScoreHistory: (date?: string) => {
-    if (date) return sqlite.prepare("SELECT * FROM score_history WHERE seed_date=? ORDER BY zone_id, hour").all(date);
+    if (date) {
+      const rows = sqlite.prepare("SELECT * FROM score_history WHERE seed_date=? ORDER BY zone_id, hour").all(date);
+      if (rows.length > 0) return rows;
+      // Fallback : si la date demandée est aujourd'hui, retourner les scores actuels (profitability_scores)
+      // Ceux-ci ne sont archivés dans score_history qu'au reseed de minuit — mais ils sont valides aujourd'hui.
+      const today = getTodayStr();
+      if (date === today) {
+        const live = sqlite.prepare(
+          "SELECT zone_id, hour, day_type, profitability_index, surge_multiplier, demand_score, supply_score, ? as seed_date FROM profitability_scores ORDER BY zone_id, hour"
+        ).all(today);
+        return live;
+      }
+      return rows; // vide
+    }
     return sqlite.prepare("SELECT DISTINCT seed_date FROM score_history ORDER BY seed_date DESC LIMIT 7").all();
   },
 
