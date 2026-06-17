@@ -292,19 +292,19 @@ const patterns: Record<string, {
   },
   // Villepinte : Parc des Expos Paris Nord Villepinte — très actif 11h-18h
   z_villepinte: {
-    peakHours: [7,8,9,17,18,19],              // ← backtest P1a: retiré 10h-16h (zone vide sans salon)
+    peakHours: [7,8,9,14,15,16,17,18,19],     // fix 17/06 data réelles: pic PM fort (prédit=17 réel=61 h=14-16)
     baseAvgDist: 14, baseLongRide: 0.332,     // 0.20→0.332 seeds 17/06 (revenu/course massivement sous-estimé)
     baseAvgDistSalon: 28, baseLongRideSalon: 0.62,  // ← backtest P2b: profil salon actif (Eurosatory+)
     demandBoost11_14: 2,    // Villepinte VIDE 11/06 (Eurosatory démarre le 15/06/2026)
-    demandBoost14_18: 3,    // faible — quelques séminaires hors salon
+    demandBoost14_18: 14,   // fix 17/06 data réelles: MAE PM 72% → pic PM réel fort h=14-16
     demandBoost6_10: 16,    // 1→16 seeds 17/06 flux logistique/navettes tôt
   },
   // Tremblay : entre CDG et Villepinte, hub logistique + résidentiel
   z_tremblay: {
-    peakHours: [6,7,8,9,12,17,18,19],         // ← backtest P3b: retiré 13h (creux post-déjeuner)
+    peakHours: [6,7,8,9,12,14,15,16,17,18,19], // fix 17/06 data réelles: pic PM h=14-16 zone logistique CDG
     baseAvgDist: 18, baseLongRide: 0.468,     // 0.42→0.468 seeds 17/06 zone logistique CDG-proximité
     demandBoost11_14: 5,
-    demandBoost14_18: 6,
+    demandBoost14_18: 10,   // fix 17/06 data réelles: MAE PM → logistique CDG + résidentiel h=14-16
     demandBoost6_10: 16,    // 4→16 seeds 17/06 travailleurs CDG/logistique tôt DiRIF
   },
   // ── Zones culturelles / événementielles ───────────────────────────────────
@@ -325,17 +325,17 @@ const patterns: Record<string, {
     demandBoost6_10: 14,    // 3→14 seeds 17/06 commute centre Saint-Denis 6h-9h
   },
   z_montreuil: {
-    peakHours: [7,8,9,17,18,19],            // ← backtest P3c: retiré 12h,13h (overfit déjeuner)
+    peakHours: [7,8,9,14,15,16,17,18,19],   // fix 17/06 data réelles: pic PM fort (prédit=13 réel=50 h=14-16)
     baseAvgDist: 13, baseLongRide: 0.312,    // 11→13 +dist, 0.24→0.312 seeds 17/06
     demandBoost11_14: 4,
-    demandBoost14_18: 5,
+    demandBoost14_18: 12,   // fix 17/06 data réelles: MAE PM 74% → pic PM réel h=14-16
     demandBoost6_10: 22,    // 3→22 seeds 17/06 commute résidentiel est sous-estimé
   },
   z_aulnay: {
-    peakHours: [6,7,8,9,17,18],             // ← backtest P3b: retiré 12h,22h,23h (overfit résidentiel)
+    peakHours: [6,7,8,9,14,15,16,17,18],    // fix 17/06 data réelles: pic PM fort (prédit=16 réel=45 h=14-16)
     baseAvgDist: 20, baseLongRide: 0.492,    // 0.48→0.492 seeds 17/06
     demandBoost11_14: 3,
-    demandBoost14_18: 5,    // proximité CDG / sorties salariés
+    demandBoost14_18: 10,   // fix 17/06 data réelles: MAE PM 64% → sorties salariés + CDG proximity h=14-16
     demandBoost6_10: 8,     // 3→8 seeds 17/06 commute résidentiel nord-est DiRIF
   },
 };
@@ -412,6 +412,22 @@ function computeScore(
   const isAfternoon = h >= 14 && h <= 18;        // ← BUG #4: demi-journée distincte du midi (boost14_18 applicable)
   const isWeekendNight = dt === "weekend" && (h >= 22 || h <= 3);
   const dayCo = DAY_COEFFICIENTS[dayOfWeek] || DAY_COEFFICIENTS[2];
+
+  // ── Correction C1 : Couvre-feu aéroports h=0..4 ──────────────────────────
+  // ADP impose un couvre-feu opérationnel 0h-5h (pas de vols commerciaux).
+  // MAE nuit aéroports mesurée : 48.8% (prédit=13, réel=5) → score plancher 5.
+  if (zone.type === "airport" && h >= 0 && h < 5) {
+    return {
+      demand: 5, supply: 5, ratio_ds: 1.0,
+      avg_distance_km: zone.id === "z_cdg" ? 23.8 : 28.6,
+      avg_duration_min: zone.id === "z_cdg" ? 44 : 55,
+      avg_fare: zone.id === "z_cdg" ? 33.7 : 39.6,
+      profitability_index: 5,
+      long_ride_probability: 0.85,
+      surge_multiplier: 1.0,
+      repo_km: 0.12,
+    };
+  }
 
   // ── Demande — corrélation étendue 6h-18h ──────────────────────────────────
   let demandBase = isPeak ? 82 : (isNight ? 36 : 50);

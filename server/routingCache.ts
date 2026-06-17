@@ -371,17 +371,26 @@ export async function getRouteForZone(
     }
   }
 
-  // 3. OSRM
-  const dest = ZONE_COORDS[zoneId];
+  // 3. OSRM — distance routière réelle, mais vitesse depuis CALIBRATED_DATA
+  // IMPORTANT : la vitesse libre OSRM (~55-80 km/h) est inutilisable pour l'ETA
+  // car elle ignore les embouteillages parisiens (vitesse réelle 13-33 km/h).
+  // On utilise la distance OSRM (plus précise que le calibré) mais la vitesse
+  // rush_PM mesurée Google Maps × ratio horaire pour calculer l'ETA.
   if (dest) {
     const o = await fetchOsrmRoute(originLat, originLng, dest.lat, dest.lng);
     if (o) {
-      const ratio    = getHourlyRatio(h);
-      const speedBase = o.roadKm / (o.durationS / 3600);     // vitesse OSRM sans trafic
-      const speedKmH  = Math.round(speedBase * ratio * 100) / 100;  // × ratio trafic
-      const etaMin    = Math.max(1, Math.round((o.roadKm / speedKmH) * 60));
+      const ratio      = getHourlyRatio(h);
+      const cal        = CALIBRATED_DATA[zoneId];
+      // Vitesse de base = vitesse rush PM MESURÉE (Google Maps) pour cette zone
+      // Si pas de calibration disponible, fallback sur vitesse OSRM corrigée /2.5
+      const speedPM    = cal ? cal.speed_pm : (o.roadKm / (o.durationS / 3600)) / 2.5;
+      const speedKmH   = Math.round(speedPM * ratio * 100) / 100;
+      // Distance : préférer OSRM (réelle) si cohérente avec calibré (±30%)
+      const calKm      = cal ? cal.road_km : o.roadKm;
+      const roadKm     = Math.abs(o.roadKm - calKm) / calKm < 0.30 ? o.roadKm : calKm;
+      const etaMin     = Math.max(1, Math.round((roadKm / speedKmH) * 60));
       const entry: RouteEntry = {
-        zoneId, roadKm: o.roadKm, durationS: o.durationS, etaMin, speedKmH,
+        zoneId, roadKm, durationS: o.durationS, etaMin, speedKmH,
         source: "osrm", cachedAt: now, expiresAt: now + TTL_MS,
       };
       memoryCache.set(key, entry);
@@ -458,11 +467,15 @@ export async function refreshAllZones(
     const o = await fetchOsrmRoute(originLat, originLng, dest.lat, dest.lng);
     if (o) {
       const ratio    = getHourlyRatio(h);
-      const speedBase = o.roadKm / (o.durationS / 3600);
-      const speedKmH  = Math.round(speedBase * ratio * 100) / 100;
-      const etaMin    = Math.max(1, Math.round((o.roadKm / speedKmH) * 60));
+      const cal      = CALIBRATED_DATA[zoneId];
+      // Même logique que getRouteForZone : vitesse rush PM calibrée × ratio horaire
+      const speedPM  = cal ? cal.speed_pm : (o.roadKm / (o.durationS / 3600)) / 2.5;
+      const speedKmH = Math.round(speedPM * ratio * 100) / 100;
+      const calKm    = cal ? cal.road_km : o.roadKm;
+      const roadKm   = Math.abs(o.roadKm - calKm) / calKm < 0.30 ? o.roadKm : calKm;
+      const etaMin   = Math.max(1, Math.round((roadKm / speedKmH) * 60));
       const entry: RouteEntry = {
-        zoneId, roadKm: o.roadKm, durationS: o.durationS, etaMin, speedKmH,
+        zoneId, roadKm, durationS: o.durationS, etaMin, speedKmH,
         source: "osrm", cachedAt: Date.now(), expiresAt: Date.now() + TTL_MS,
       };
       memoryCache.set(cacheKey(zoneId, originLat, originLng), entry);
