@@ -138,10 +138,12 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         enrichedScores = scores.map((s: any) => {
           const flightBoost = getFlightBoostForZone(s.zone_id, flightData);
           const baseIdx = s.profitability_index ?? 0;
-          const boostPts = flightBoost > 1 ? Math.round(Math.log(flightBoost) / Math.log(2) * 12) : 0;
+          // Couvre-feu aéroports h=0..4 : score plancher = 5, flight_boost neutralisé
+          const isCurfew = (s.zone_type === 'airport' || s.zone_id === 'z_cdg' || s.zone_id === 'z_orly') && baseIdx <= 5;
+          const boostPts = (flightBoost > 1 && !isCurfew) ? Math.round(Math.log(flightBoost) / Math.log(2) * 12) : 0;
           const boostedIndex = Math.min(95, Math.round(baseIdx + boostPts));
-          const boostedSurge = Math.min(4.5, Math.round(((s.surge_multiplier ?? 1.0) * Math.min(flightBoost, 1.5)) * 100) / 100);
-          return { ...s, profitability_index: boostedIndex, profitabilityIndex: boostedIndex, surge_multiplier: boostedSurge, surgeMultiplier: boostedSurge, flight_boost: flightBoost, flightBoost };
+          const boostedSurge = isCurfew ? 1.0 : Math.min(4.5, Math.round(((s.surge_multiplier ?? 1.0) * Math.min(flightBoost, 1.5)) * 100) / 100);
+          return { ...s, profitability_index: boostedIndex, profitabilityIndex: boostedIndex, surge_multiplier: boostedSurge, surgeMultiplier: boostedSurge, flight_boost: isCurfew ? 1.0 : flightBoost, flightBoost: isCurfew ? 1.0 : flightBoost };
         });
       } catch { /* garde scores non-enrichis */ }
 
@@ -194,18 +196,20 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         // Flight boost additif (log-scale) — évite la saturation multiplicative
         // flightBoost=1.9 → +8pts max, flightBoost=1.5 → +5pts, flightBoost=1.0 → +0
         const baseIdx = s.profitability_index ?? s.profitabilityIndex ?? 0;
-        const boostPts = flightBoost > 1 ? Math.round(Math.log(flightBoost) / Math.log(2) * 12) : 0;
+        // Couvre-feu aéroports h=0..4 : score plancher = 5, flight_boost neutralisé
+        const isCurfew = (s.zone_type === 'airport' || s.zone_id === 'z_cdg' || s.zone_id === 'z_orly') && baseIdx <= 5;
+        const boostPts = (flightBoost > 1 && !isCurfew) ? Math.round(Math.log(flightBoost) / Math.log(2) * 12) : 0;
         const boostedIndex = Math.min(95, Math.round(baseIdx + boostPts));
         // Surge boost multiplicatif plafonné à 4.5×
-        const boostedSurge = Math.min(4.5, Math.round(((s.surge_multiplier ?? s.surgeMultiplier ?? 1.0) * Math.min(flightBoost, 1.5)) * 100) / 100);
+        const boostedSurge = isCurfew ? 1.0 : Math.min(4.5, Math.round(((s.surge_multiplier ?? s.surgeMultiplier ?? 1.0) * Math.min(flightBoost, 1.5)) * 100) / 100);
         return {
           ...s,
           profitability_index: boostedIndex,
           profitabilityIndex: boostedIndex,
           surge_multiplier: boostedSurge,
           surgeMultiplier: boostedSurge,
-          flight_boost: flightBoost,
-          flightBoost,
+          flight_boost: isCurfew ? 1.0 : flightBoost,
+          flightBoost: isCurfew ? 1.0 : flightBoost,
         };
       });
       res.json(enriched);
