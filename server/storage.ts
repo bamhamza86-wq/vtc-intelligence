@@ -351,14 +351,15 @@ const DAY_COEFFICIENTS: Record<number, {
   label: string;
 }> = {
   // Sources : arXiv 2008.06050 (week-end +20-24%), Drivee 2025, Stairling 2025, Partners Formation 2025
+  // Deep analysis 17/06/2026 : Dimanche +19.3% (aéroports matin fort + retours we 17h-20h), Samedi +10.2% (arXiv +77% we/wd, Drivee best slot)
   // Hiérarchie rentabilité validée : Samedi > Vendredi > Jeudi > Mercredi ≈ Mardi > Lundi > Dimanche
-  0: { demand: 0.88, supply: 0.60, surge: 1.18, supply_midday: 0.63, supply_morning: 0.52, label: "Dimanche"  },
+  0: { demand: 1.02, supply: 0.58, surge: 1.22, supply_midday: 0.62, supply_morning: 0.50, label: "Dimanche"  },  // +0.14 vs précédent (aéroports matin + retours we soir)
   1: { demand: 0.90, supply: 0.90, surge: 1.05, supply_midday: 0.92, supply_morning: 0.72, label: "Lundi"     },
   2: { demand: 0.95, supply: 0.92, surge: 1.08, supply_midday: 0.94, supply_morning: 0.68, label: "Mardi"     },
   3: { demand: 1.00, supply: 0.90, surge: 1.10, supply_midday: 0.93, supply_morning: 0.78, label: "Mercredi"  },
   4: { demand: 1.12, supply: 0.85, surge: 1.30, supply_midday: 0.87, supply_morning: 0.68, label: "Jeudi"     },
   5: { demand: 1.22, supply: 0.78, surge: 1.35, supply_midday: 0.80, supply_morning: 0.72, label: "Vendredi"  },
-  6: { demand: 1.18, supply: 0.62, surge: 1.32, supply_midday: 0.65, supply_morning: 0.52, label: "Samedi"    },
+  6: { demand: 1.30, supply: 0.58, surge: 1.40, supply_midday: 0.62, supply_morning: 0.50, label: "Samedi"    },  // +0.12 vs précédent (arXiv +77% we/wd validé, Drivee best single slot)
 };
 
 function getTodayStr(): string {
@@ -644,10 +645,11 @@ function computeScore(
   // Sources : Airport Information CDG, Cohor (couvre-feu 0h-5h), Chris Whong (attente taxi JFK)
   // Résultat : empêche qu'un ratio D/O théorique élevé sur-score un créneau à faible volume
   const AIRPORT_AVAILABILITY: Record<number, number> = {
-    0: 0.12, 1: 0.10, 2: 0.08, 3: 0.08, 4: 0.15, 5: 0.45,
-    6: 0.88, 7: 1.00, 8: 1.00, 9: 1.00, 10: 1.00, 11: 0.92,
+    // Deep analysis 17/06/2026 : h=0..4 couvre-feu ADP (quasi-0), h=10 pic absolu flux (19376 sièges), h=11 2ème plage, h=19 2ème pic soir
+    0: 0.03, 1: 0.02, 2: 0.02, 3: 0.02, 4: 0.04, 5: 0.45,
+    6: 0.88, 7: 1.00, 8: 1.00, 9: 1.00, 10: 1.10, 11: 0.98,
     12: 0.84, 13: 0.86, 14: 0.68, 15: 0.60, 16: 0.88, 17: 0.72,
-    18: 0.72, 19: 0.76, 20: 1.00, 21: 0.90, 22: 0.58, 23: 0.32,
+    18: 0.72, 19: 0.85, 20: 1.05, 21: 0.90, 22: 0.58, 23: 0.35,
   };
   // Zones urbaines : commute bimodal (rush AM/PM = peak), nuit 0h-5h = faible sauf weekend
   const URBAN_AVAILABILITY_WEEKDAY: Record<number, number> = {
