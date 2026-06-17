@@ -45,6 +45,10 @@ import {
   CALIBRATED_DATA,
   ROAD_FACTOR as RC_ROAD_FACTOR,
   getHourlyRatio as RC_getHourlyRatio,
+  getCongestedETA,
+  computeBreakEvenPenalty,
+  getTrafficDensity,
+  TRAFFIC_DENSITY,
 } from "./routingCache";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -202,6 +206,10 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         const boostedIndex = Math.min(95, Math.round(baseIdx + boostPts));
         // Surge boost multiplicatif plafonné à 4.5×
         const boostedSurge = isCurfew ? 1.0 : Math.min(4.5, Math.round(((s.surge_multiplier ?? s.surgeMultiplier ?? 1.0) * Math.min(flightBoost, 1.5)) * 100) / 100);
+        // Enrichissement congestion en temps réel sur les données stockées
+        const roadKm      = CALIBRATED_DATA[s.zone_id]?.road_km ?? 20;
+        const congestedRT = getCongestedETA(s.zone_id, roadKm, hour);
+        const breakEvenRT = computeBreakEvenPenalty(s.zone_id, roadKm, congestedRT.etaMin, congestedRT.congestionFactor);
         return {
           ...s,
           profitability_index: boostedIndex,
@@ -210,6 +218,14 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           surgeMultiplier: boostedSurge,
           flight_boost: isCurfew ? 1.0 : flightBoost,
           flightBoost: isCurfew ? 1.0 : flightBoost,
+          // Champs trafic historique
+          congestion_factor:  congestedRT.congestionFactor,
+          congestion_label:   congestedRT.congestionLabel,
+          eta_to_zone:        congestedRT.etaMin,
+          speed_effective:    congestedRT.speedKmH,
+          min_per_km:         breakEvenRT.minPerKm,
+          break_even_ok:      breakEvenRT.breakEvenOk,
+          congestion_penalty: breakEvenRT.penalty,
         };
       });
       res.json(enriched);
@@ -481,6 +497,53 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   });
 
   // ─── Seeds / Auto-retraining ──────────────────────────────────────────
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // GET /api/traffic
+  // Retourne la densité trafic historique par zone pour une heure donnée,
+  // avec ETA congestionné, facteur de congestion et seuil 1 min/km.
+  // Query : ?hour=H (entier 0-23, défaut = heure courante CEST)
+  // ────────────────────────────────────────────────────────────────────────────
+  app.get("/api/traffic", (req, res) => {
+    try {
+      const hQuery = parseInt(req.query.hour as string ?? "", 10);
+      const h = isNaN(hQuery) ? (new Date().getHours() + 2) % 24 : Math.max(0, Math.min(23, hQuery));
+      const lat = parseFloat(req.query.lat as string ?? "") || DEFAULT_ORIGIN.lat;
+      const lng = parseFloat(req.query.lng as string ?? "") || DEFAULT_ORIGIN.lng;
+
+      const zones = Object.keys(TRAFFIC_DENSITY);
+      const result = zones.map(zoneId => {
+        const cal = CALIBRATED_DATA[zoneId];
+        const roadKm = cal?.road_km ?? 20;
+        const congested = getCongestedETA(zoneId, roadKm, h);
+        const breakEven = computeBreakEvenPenalty(zoneId, roadKm, congested.etaMin, congested.congestionFactor);
+        return {
+          zone_id:            zoneId,
+          hour:               h,
+          road_km:            roadKm,
+          eta_min:            congested.etaMin,
+          speed_kmh:          congested.speedKmH,
+          congestion_factor:  congested.congestionFactor,
+          congestion_label:   congested.congestionLabel,
+          traffic_density:    getTrafficDensity(zoneId, h),
+          min_per_km:         breakEven.minPerKm,
+          break_even_ok:      breakEven.breakEvenOk,
+          congestion_penalty: breakEven.penalty,
+          // ETA de référence libre-flux (nuit h=2) pour comparaison
+          eta_freeflow_min:   cal ? Math.round((roadKm / cal.speed_pm) * 60 * 2.4) : null,
+        };
+      });
+
+      res.json({
+        hour:      h,
+        timestamp: new Date().toISOString(),
+        zones:     result,
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   // GET  /api/seeds        — retourne les seeds overrides actifs persistés
   // POST /api/seeds/update — met à jour les seeds en SQLite + déclenche un reseed
 
@@ -727,6 +790,11 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           reason = "Zone proche — peu de trajet a vide";
         }
 
+        // Congestion en temps réel pour cette zone à l'heure courante
+        const roadKmZ     = CALIBRATED_DATA[z.id]?.road_km ?? distanceKm;
+        const congestedZ  = getCongestedETA(z.id, roadKmZ, hour);
+        const breakEvenZ  = computeBreakEvenPenalty(z.id, roadKmZ, congestedZ.etaMin, congestedZ.congestionFactor);
+
         return {
           zone: z,
           distanceKm,
@@ -742,6 +810,12 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           reason,
           // Source des données de distance/ETA
           distanceSource: rcEntry.source,
+          // Trafic historique — densité de congestion par zone
+          congestionFactor:  congestedZ.congestionFactor,
+          congestionLabel:   congestedZ.congestionLabel,
+          minPerKm:          breakEvenZ.minPerKm,
+          breakEvenOk:       breakEvenZ.breakEvenOk,
+          congestionPenalty: breakEvenZ.penalty,
           waypoints: [
             { lat, lng, label: "Votre position" },
             { lat: z.lat, lng: z.lng, label: z.name },

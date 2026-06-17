@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { Zone, ProfitabilityScore, Event, Ride, Alert, DriverProfile, InsertAlert, InsertRide, InsertDriverProfile } from "@shared/schema";
+import { getCongestedETA, computeBreakEvenPenalty, CALIBRATED_DATA as ROUTING_CALIBRATED } from "./routingCache";
 
 const sqlite = new Database("data.db");
 // ← audit G: pragmas SQLite production (WAL + cache + synchronous NORMAL)
@@ -417,15 +418,17 @@ function computeScore(
   // ADP impose un couvre-feu opérationnel 0h-5h (pas de vols commerciaux).
   // MAE nuit aéroports mesurée : 48.8% (prédit=13, réel=5) → score plancher 5.
   if (zone.type === "airport" && h >= 0 && h < 5) {
+    const calDist = zone.id === "z_cdg" ? 23.8 : 28.6;
+    const calDur  = zone.id === "z_cdg" ? 44 : 55;
+    const calFare = calDist * 1.30 + 2.80;
     return {
-      demand: 5, supply: 5, ratio_ds: 1.0,
-      avg_distance_km: zone.id === "z_cdg" ? 23.8 : 28.6,
-      avg_duration_min: zone.id === "z_cdg" ? 44 : 55,
-      avg_fare: zone.id === "z_cdg" ? 33.7 : 39.6,
-      profitability_index: 5,
-      long_ride_probability: 0.85,
-      surge_multiplier: 1.0,
-      repo_km: 0.12,
+      demand: 5, supply: 5, ratio: 1.0,
+      avgDist: calDist, avgDur: calDur, avgFare: Math.round(calFare * 100) / 100,
+      profIdx: 5,
+      longRide: 0.85,
+      surge: 1.0,
+      rawRatio: 2.40,
+      supplyCoeffLabel: "supply",
     };
   }
 
@@ -552,8 +555,24 @@ function computeScore(
   // calibré : CDG→Paris ~42km, Orly→Paris ~30km, zones 93 ~12-18km
   const distMultiplier = isPeak ? 1.12 : (isMidDay ? 1.05 : 0.92);
   const avgDist = pat.baseAvgDist * distMultiplier + Math.sin(seedVariance + h) * 1.5;
-  const avgDur = (avgDist / effRideSpeed) * 60; // minutes — vitesse trajet chargé
+
+  // ── ETA avec densité trafic historique (TRAFFIC_DENSITY par zone × ratio horaire) ──────────
+  // getCongestedETA remplace le simple effRideSpeed pour tenir compte de la congestion locale
+  // historique par zone (TRAFFIC_DENSITY[zoneId][h]) en plus du ratio global.
+  // blend alpha=0.35 : 35% ratio global / 65% densité zone — paramétrage terrain 93.
+  const congestedRoute = getCongestedETA(zone.id, realDist, h, { alphaBlend: 0.35 });
+  // avgDur = durée effective du trajet chargé selon trafic historique de la zone
+  // On prend le max entre le modèle congestion et le calcul classique (garde-fou cohérence)
+  const avgDurCongested = congestedRoute.etaMin;
+  const avgDurClassic   = (avgDist / effRideSpeed) * 60;
+  // Pondération : 60% congestion historique + 40% modèle classique (hybride)
+  const avgDur = avgDurCongested * 0.60 + avgDurClassic * 0.40;
+
   const avgFare = avgDist * 1.30 + 2.80;
+
+  // ── Métriques congestion exposées ──────────────────────────────────────────
+  const congestionFactor = congestedRoute.congestionFactor;
+  const congestionLabel  = congestedRoute.congestionLabel;
 
   // ── Surge — calibré 11h-18h ────────────────────────────────────────────────
   // Rush PM 17h+ : surge déclenché plus tôt (observé terrain)
@@ -710,7 +729,20 @@ function computeScore(
     availabilityFactor = Math.min(availabilityFactor, 0.50); // Stade calme = demi-disponibilité
   }
 
-  const finalProfIdx = Math.min(95, Math.max(5, Math.round(profIdx * availabilityFactor * 10) / 10));
+  // ── Pénalité congestion — seuil 1 min/km (règle métier stricte) ──────────────────────────
+  // Si ETA vers la zone > road_km minutes : zone trop lointaine en conditions actuelles.
+  // La pénalité est appliquée APRÈS le calcul du profIdx mais AVANT l'availability factor.
+  // Elle reflète l'impact réel du trafic sur la rentabilité (temps perdu = €/h perdus).
+  const breakEven = computeBreakEvenPenalty(
+    zone.id,
+    realDist,            // road_km calibré
+    avgDurCongested,     // ETA vers la zone (pas la course — c'est le trajet aller)
+    congestionFactor
+  );
+  // profIdx avec pénalité congestion intégrée
+  const profIdxWithPenalty = Math.max(5, profIdx - breakEven.penalty);
+
+  const finalProfIdx = Math.min(95, Math.max(5, Math.round(profIdxWithPenalty * availabilityFactor * 10) / 10));
 
   return {
     demand: Math.round(demand * 10) / 10,
@@ -724,6 +756,13 @@ function computeScore(
     surge: Math.round(surge * 100) / 100,
     rawRatio: Math.round(rawRatio * 1000) / 1000,
     supplyCoeffLabel: isMorning ? "supply_morning" : (isMidDay ? "supply_midday" : "supply"),
+    // Nouveaux champs : densité trafic historique + seuil 1 min/km
+    congestionFactor: congestionFactor,
+    congestionLabel:  congestionLabel,
+    minPerKm:         breakEven.minPerKm,
+    breakEvenOk:      breakEven.breakEvenOk,
+    congestionPenalty: Math.round(breakEven.penalty * 10) / 10,
+    etaToZone:        avgDurCongested,  // ETA aller vers la zone (vs avgDur = durée course)
   };
 }
 

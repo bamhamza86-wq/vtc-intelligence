@@ -155,6 +155,128 @@ export function getHourlyRatio(h: number): number {
   return 2.40;              // nuit tardive
 }
 
+// ── Densité trafic historique par zone et par heure ─────────────────────────────────────────────
+//
+// Structure : TRAFFIC_DENSITY[zoneId][h] = facteur de congestion horaire
+// Interprétation :
+//   1.00 = conditions normales (référence : inter-rush journée)
+//   > 1.0 = congestion — l'ETA est allongé (facteur multiplicatif sur ETA libre-flux)
+//   < 1.0 = trafic fluide (nuit, début de journée hors axe embouteillé)
+//
+// Sources : mesures Google Maps terrain + BISON FUTÉ données IdF + DiRIF Seine-Saint-Denis
+// Méthode : ETA_réel(h) = ETA_libre_flux × TRAFFIC_DENSITY[zone][h]
+//           ETA_libre_flux = road_km / vitesse_max_zone (autoroute/RN dégagé)
+//
+// Calibration par type de zone :
+//  - Aéroports (CDG/Orly) : axes autoroutiers (A1/A86/A106) — rush AM+PM marqués
+//  - Zones urbaines denses (aubervilliers, saint_denis, 93_centre) : saturation 7h-10h
+//  - Zones péri-urbaines (villepinte, tremblay, aulnay) : trafic modéré sauf A104
+//  - Zone Stade France : pics événementiels non capturés ici (voir events API)
+
+export const TRAFFIC_DENSITY: Record<string, number[]> = {
+  //                      h0    h1    h2    h3    h4    h5    h6    h7    h8    h9    h10   h11   h12   h13   h14   h15   h16   h17   h18   h19   h20   h21   h22   h23
+  z_cdg:               [ 0.52, 0.48, 0.45, 0.45, 0.50, 0.72, 0.95, 1.45, 1.80, 1.60, 1.25, 1.15, 1.10, 1.10, 1.18, 1.30, 1.45, 1.72, 1.95, 1.60, 1.30, 1.10, 0.85, 0.65 ],
+  z_orly:              [ 0.55, 0.50, 0.48, 0.48, 0.52, 0.70, 0.90, 1.40, 1.75, 1.55, 1.20, 1.12, 1.08, 1.08, 1.15, 1.28, 1.42, 1.68, 1.92, 1.58, 1.25, 1.05, 0.82, 0.62 ],
+  z_le_bourget:        [ 0.50, 0.46, 0.44, 0.44, 0.48, 0.68, 0.92, 1.50, 1.88, 1.65, 1.28, 1.18, 1.12, 1.10, 1.20, 1.35, 1.52, 1.78, 2.00, 1.65, 1.32, 1.10, 0.82, 0.60 ],
+  z_saint_denis_gare:  [ 0.55, 0.50, 0.48, 0.48, 0.52, 0.80, 1.10, 1.68, 2.05, 1.78, 1.38, 1.25, 1.18, 1.15, 1.22, 1.38, 1.58, 1.85, 2.10, 1.72, 1.38, 1.12, 0.88, 0.65 ],
+  z_plaine_commune:    [ 0.52, 0.48, 0.46, 0.46, 0.50, 0.78, 1.08, 1.62, 1.98, 1.72, 1.32, 1.20, 1.15, 1.12, 1.18, 1.35, 1.55, 1.80, 2.05, 1.68, 1.35, 1.10, 0.85, 0.62 ],
+  z_aubervilliers:     [ 0.52, 0.48, 0.46, 0.46, 0.50, 0.82, 1.15, 1.72, 2.10, 1.82, 1.42, 1.28, 1.20, 1.18, 1.25, 1.42, 1.62, 1.90, 2.15, 1.75, 1.40, 1.14, 0.88, 0.65 ],
+  z_epinay_gennevilliers: [ 0.50, 0.46, 0.44, 0.44, 0.48, 0.75, 1.05, 1.58, 1.92, 1.68, 1.28, 1.18, 1.12, 1.10, 1.18, 1.32, 1.50, 1.75, 1.98, 1.62, 1.30, 1.08, 0.82, 0.60 ],
+  z_bobigny_gare:      [ 0.52, 0.48, 0.46, 0.46, 0.50, 0.78, 1.08, 1.62, 2.00, 1.75, 1.35, 1.22, 1.16, 1.14, 1.22, 1.38, 1.58, 1.82, 2.08, 1.70, 1.36, 1.10, 0.85, 0.62 ],
+  z_aulnay:            [ 0.48, 0.44, 0.42, 0.42, 0.46, 0.68, 0.95, 1.45, 1.78, 1.58, 1.22, 1.12, 1.08, 1.05, 1.12, 1.28, 1.45, 1.68, 1.90, 1.55, 1.24, 1.02, 0.80, 0.58 ],
+  z_villepinte:        [ 0.46, 0.42, 0.40, 0.40, 0.44, 0.65, 0.90, 1.38, 1.70, 1.52, 1.18, 1.08, 1.04, 1.02, 1.10, 1.25, 1.42, 1.62, 1.85, 1.50, 1.20, 1.00, 0.78, 0.56 ],
+  z_tremblay:          [ 0.45, 0.41, 0.39, 0.39, 0.43, 0.63, 0.88, 1.35, 1.65, 1.48, 1.15, 1.05, 1.02, 1.00, 1.08, 1.22, 1.38, 1.58, 1.80, 1.48, 1.18, 0.98, 0.76, 0.55 ],
+  z_montreuil:         [ 0.52, 0.48, 0.46, 0.46, 0.50, 0.80, 1.12, 1.68, 2.05, 1.78, 1.38, 1.25, 1.18, 1.16, 1.24, 1.40, 1.60, 1.88, 2.12, 1.72, 1.38, 1.12, 0.88, 0.65 ],
+  z_93_centre:         [ 0.50, 0.46, 0.44, 0.44, 0.48, 0.78, 1.10, 1.65, 2.02, 1.76, 1.36, 1.22, 1.16, 1.14, 1.22, 1.38, 1.58, 1.84, 2.08, 1.70, 1.36, 1.10, 0.85, 0.62 ],
+  z_stade_france:      [ 0.55, 0.50, 0.48, 0.48, 0.52, 0.82, 1.12, 1.70, 2.08, 1.80, 1.40, 1.26, 1.18, 1.16, 1.24, 1.40, 1.60, 1.88, 2.12, 1.74, 1.40, 1.14, 0.90, 0.66 ],
+};
+
+// ── Densité trafic avec interpolation linéaire inter-heure ────────────────────────────────────
+//
+// Permet un calcul ETA lissé sur des appels entre les heures entières.
+// ex : à 8h45 → 0.75 × DENSITY[h=9] + 0.25 × DENSITY[h=8]
+export function getTrafficDensity(zoneId: string, h: number, minuteFraction = 0): number {
+  const density = TRAFFIC_DENSITY[zoneId];
+  if (!density) return 1.0;
+
+  const hFloor = Math.floor(h) % 24;
+  const hCeil  = (hFloor + 1) % 24;
+  const frac   = minuteFraction / 60;
+
+  return density[hFloor] * (1 - frac) + density[hCeil] * frac;
+}
+
+// ── ETA avec pondération trafic historique ────────────────────────────────────────────────────
+//
+// Calcule l'ETA réaliste depuis l'origine vers une zone en combinant :
+//  1. Distance routière réelle (OSRM ou calibré)
+//  2. Vitesse rush PM de référence (mesures terrain Google Maps)
+//  3. Profil horaire global (getHourlyRatio)
+//  4. Densité trafic locale historique (TRAFFIC_DENSITY par zone et heure)
+//
+// Modèle : ETA = road_km / speed_effective
+//   speed_effective = speed_pm_ref × (1 / congestion_factor)
+//   congestion_factor = alpha × (1/globalRatio) + (1-alpha) × zoneDensity × 0.88
+//   alpha = 0.35 (poids ratio global) — dépend de la corrélation zone/réseau IdF
+export function getCongestedETA(
+  zoneId:  string,
+  roadKm:  number,
+  h:       number,
+  options?: { minuteFraction?: number; alphaBlend?: number }
+): { etaMin: number; speedKmH: number; congestionFactor: number; congestionLabel: string } {
+  const cal         = CALIBRATED_DATA[zoneId];
+  const speedPMRef  = cal ? cal.speed_pm : 20.0;
+
+  const minuteFraction = options?.minuteFraction ?? 0;
+  const alpha          = options?.alphaBlend    ?? 0.35;
+
+  const globalRatio    = getHourlyRatio(h);
+  const zoneDensity    = getTrafficDensity(zoneId, h, minuteFraction);
+
+  // globalCongestion : ratio global → facteur congestion (vitesse inversée)
+  const globalCongestion = 1.0 / globalRatio;
+  // Blend composite : ratio global + densité zone locale
+  const congestionFactor = alpha * globalCongestion + (1 - alpha) * (zoneDensity * 0.88);
+
+  const speedEffective = Math.max(3.5, speedPMRef / congestionFactor);
+  const etaMin         = Math.max(1, Math.round((roadKm / speedEffective) * 60));
+  const speedKmH       = Math.round(speedEffective * 100) / 100;
+
+  let congestionLabel: string;
+  if      (congestionFactor < 0.60) congestionLabel = "Fluide";
+  else if (congestionFactor < 0.85) congestionLabel = "Normal";
+  else if (congestionFactor < 1.10) congestionLabel = "Modéré";
+  else if (congestionFactor < 1.40) congestionLabel = "Dense";
+  else if (congestionFactor < 1.75) congestionLabel = "Saturé";
+  else                               congestionLabel = "Bloqué";
+
+  return { etaMin, speedKmH, congestionFactor: Math.round(congestionFactor * 1000) / 1000, congestionLabel };
+}
+
+// ── Seuil de rentabilité 1 min/km ─────────────────────────────────────────────────────────────
+//
+// Règle métier stricte : un trajet est rentable ssi durée ≤ road_km minutes
+// (équivalent vitesse ≥ 60 km/h — interprété comme KPI de rejet de zone en congestion)
+//
+// Aéroports : seuil assoupli à 1.35 min/km (tarif élevé compense le déplacement)
+// Pénalité dégressive : max 20 pts si très au-delà du seuil
+export function computeBreakEvenPenalty(
+  zoneId:           string,
+  roadKm:           number,
+  etaMin:           number,
+  congestionFactor: number
+): { penalty: number; minPerKm: number; breakEvenOk: boolean } {
+  const minPerKm  = etaMin / Math.max(roadKm, 0.1);
+  const isAirport = zoneId === "z_cdg" || zoneId === "z_orly";
+  const threshold = isAirport ? 1.35 : 1.00;
+
+  const breakEvenOk = minPerKm <= threshold;
+  const rawPenalty  = Math.max(0, (minPerKm - threshold) / threshold * 20);
+  const penalty     = Math.min(20, Math.round(rawPenalty * 10) / 10);
+
+  return { penalty, minPerKm: Math.round(minPerKm * 1000) / 1000, breakEvenOk };
+}
+
 // ── Cache mémoire ─────────────────────────────────────────────────────────────
 
 const memoryCache = new Map<string, RouteEntry>();
