@@ -476,6 +476,48 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     }
   });
 
+  // ─── Seeds / Auto-retraining ──────────────────────────────────────────
+  // GET  /api/seeds        — retourne les seeds overrides actifs persistés
+  // POST /api/seeds/update — met à jour les seeds en SQLite + déclenche un reseed
+
+  app.get("/api/seeds", (_req, res) => {
+    try {
+      const seeds = storage.getSeeds();
+      res.json(seeds);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.post("/api/seeds/update", (req, res) => {
+    try {
+      const { seeds, trigger, mae_before, mae_after } = req.body as {
+        seeds: Record<string, Record<string, number>>;
+        trigger?: string;
+        mae_before?: number;
+        mae_after?: number;
+      };
+      if (!seeds || typeof seeds !== 'object') {
+        return res.status(400).json({ error: 'seeds object required' });
+      }
+      const result = storage.updateSeeds(seeds, { trigger, mae_before, mae_after });
+      // Reseed immédiat pour appliquer les nouveaux poids
+      try { storage.forceReseed(); } catch (e) { console.warn('[seeds/update] forceReseed:', e); }
+      res.json({
+        success: true,
+        zones_updated: result.zones_updated,
+        zones: result.zones,
+        trigger,
+        mae_before,
+        mae_after,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('[seeds/update] error:', err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   app.get("/api/data-sources", (_req, res) => {
     res.json({ categories: [
       { name: "Données VTC — 93 & Aéroports", icon: "car", sources: [

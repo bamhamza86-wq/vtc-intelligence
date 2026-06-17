@@ -1505,6 +1505,8 @@ export interface IStorage {
   getDailyDiff(): any;
   forceReseed(): any;
   getLastRefreshTs(): string;
+  getSeeds(): Record<string, Record<string, number>>;
+  updateSeeds(seeds: Record<string, Record<string, number>>, meta?: {trigger?: string; mae_before?: number; mae_after?: number}): {zones_updated: number; zones: string[]};
   generateDemandPredictions(): void;
   getPredictions(hoursAhead?: number, zoneId?: string): any;
   getMaintenance(): any[];
@@ -1670,6 +1672,45 @@ export const storage: IStorage = {
   getLastRefreshTs: () => {
     const row = sqlite.prepare("SELECT value FROM seed_meta WHERE key='last_refresh_ts'").get() as any;
     return row?.value || null;
+  },
+
+  // ── Seeds / Auto-retraining — lire et mettre à jour les overrides de seeds ──
+  getSeeds: () => {
+    const rows = sqlite
+      .prepare("SELECT key, value FROM seed_meta WHERE key LIKE 'seed_override_%'")
+      .all() as any[];
+    const result: Record<string, Record<string, number>> = {};
+    for (const row of rows) {
+      const zone = row.key.replace('seed_override_', '');
+      try { result[zone] = JSON.parse(row.value); } catch { /* skip malformed */ }
+    }
+    return result;
+  },
+
+  updateSeeds: (seeds, meta = {}) => {
+    const now = new Date().toISOString();
+    const ins = sqlite.prepare("INSERT OR REPLACE INTO seed_meta (key, value) VALUES (?, ?)");
+    const updated: string[] = [];
+    // Lire overrides existants
+    const existing: Record<string, Record<string, number>> = {};
+    const rows = sqlite.prepare("SELECT key, value FROM seed_meta WHERE key LIKE 'seed_override_%'").all() as any[];
+    for (const row of rows) {
+      try { existing[row.key.replace('seed_override_', '')] = JSON.parse(row.value); } catch { /* skip */ }
+    }
+    for (const [zoneId, params] of Object.entries(seeds)) {
+      if (typeof params !== 'object' || !params) continue;
+      const merged = { ...(existing[zoneId] || {}), ...params };
+      ins.run(`seed_override_${zoneId}`, JSON.stringify(merged));
+      updated.push(zoneId);
+    }
+    // Métadonnées retrain
+    ins.run('retrain_trigger', meta.trigger ?? 'manual');
+    ins.run('retrain_mae_before', String(meta.mae_before ?? 0));
+    ins.run('retrain_mae_after', String(meta.mae_after ?? 0));
+    ins.run('retrain_ts', now);
+    ins.run('retrain_zones_count', String(updated.length));
+    console.log(`[storage] updateSeeds: ${updated.length} zones (trigger=${meta.trigger}, MAE ${meta.mae_before}→${meta.mae_after})`);
+    return { zones_updated: updated.length, zones: updated };
   },
 
   generateDemandPredictions: () => generateDemandPredictions(),
