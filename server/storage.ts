@@ -245,98 +245,98 @@ const patterns: Record<string, {
   // ── Hubs transport / banlieue proche ─────────────────────────────────────
   // St-Denis : trafic commute + tourisme Basilique / Stade France 13h-17h
   z_saint_denis_gare: {
-    peakHours: [6,7,8,9,12,13,17,18,19,20],
-    baseAvgDist: 16, baseLongRide: 0.40,
+    peakHours: [5,6,7,8,9,12,13,17,18,19,20], // seeds 17/06: +h5
+    baseAvgDist: 16, baseLongRide: 0.46,     // 0.40→0.46 seeds 17/06
     demandBoost11_14: 3,
     demandBoost14_18: 5,
-    demandBoost6_10: 10,    // rush commute fort 7h-9h ✅ + grève RER D 11/06 (reports modaux)
+    demandBoost6_10: 28,    // 10→28 seeds 17/06 DiRIF rush AM
   },
   z_bobigny_gare: {
-    peakHours: [7,8,9,12,13,17,18,19],
-    baseAvgDist: 13, baseLongRide: 0.32,
+    peakHours: [5,7,8,9,12,13,17,18,19], // seeds 17/06: +h5
+    baseAvgDist: 13, baseLongRide: 0.38,     // 0.32→0.38 seeds 17/06
     demandBoost11_14: 2,
     demandBoost14_18: 3,
-    demandBoost6_10: 8,     // rush commute fort 7h-9h ✅ + résidu grève RER D
+    demandBoost6_10: 27,    // 8→27 seeds 17/06 DiRIF rush AM
   },
   z_aubervilliers: {
-    peakHours: [7,8,9,11,12,17,18,19,22,23],
-    baseAvgDist: 15, baseLongRide: 0.37,
+    peakHours: [6,7,8,9,11,12,17,18,19,22,23], // seeds 17/06: +h6
+    baseAvgDist: 15, baseLongRide: 0.40,     // 0.37→0.40 seeds 17/06
     demandBoost11_14: 3,
     demandBoost14_18: 4,
-    demandBoost6_10: 8,     // rush commute fort + zones chaudes 11/06 (pluie + grève)
+    demandBoost6_10: 27,    // 8→27 seeds 17/06 M12+commute
   },
   z_epinay_gennevilliers: {
     peakHours: [6,7,8,9,17,18,19],
-    baseAvgDist: 19, baseLongRide: 0.44,
+    baseAvgDist: 19, baseLongRide: 0.476,    // 0.44→0.476 seeds 17/06
     demandBoost11_14: 1,
     demandBoost14_18: 2,
-    demandBoost6_10: 3,     // commute modéré banlieue nord-ouest
+    demandBoost6_10: 25,    // 3→25 seeds 17/06 banlieue nord-ouest sous-estimé DiRIF
   },
   // Plaine Commune : zone business active 11h-17h (sièges sociaux)
   z_plaine_commune: {
-    peakHours: [7,8,9,10,11,12,13,14,15,16,17,18,19],
-    baseAvgDist: 18, baseLongRide: 0.48,
+    peakHours: [5,7,8,9,10,11,12,13,14,15,16,17,18,19], // seeds 17/06: +h5
+    baseAvgDist: 18, baseLongRide: 0.492,    // 0.48→0.492 seeds 17/06
     demandBoost11_14: 6,    // déjeuners d'affaires sièges sociaux (normal — pas de salon)
     demandBoost14_18: 10,   // retour fin journée travail flexible
-    demandBoost6_10: 4,     // arrivées employés sièges sociaux 7h-9h
+    demandBoost6_10: 26,    // 4→26 seeds 17/06 arrivées employés 6h-9h DiRIF
   },
   // ── Hubs business / exposition ────────────────────────────────────────────
   // Le Bourget : parc expo adjacente, trafic business 10h-17h
   z_le_bourget: {
-    peakHours: [7,8,9,10,11,12,13,14,15,16,17,18,19,20],
-    baseAvgDist: 14, baseLongRide: 0.32,      // ← backtest P2b: affaires uniquement, réel 12.1km
+    peakHours: [5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20], // seeds 17/06: +h5,h6
+    baseAvgDist: 14, baseLongRide: 0.38,      // 0.32→0.38 seeds 17/06 (réel 12.1km, courses plus longues)
     baseAvgDistSalon: 22, baseLongRideSalon: 0.54,  // ← backtest P2b: profil salon/show actif
     demandBoost11_14: 4,    // aviation d'affaires seulement (pas de Paris Air Show en 2026 — prochain 2027)
     demandBoost14_18: 6,    // vols d'affaires PM + retours
-    demandBoost6_10: 3,     // premiers vols business (Bourget = affaires uniquement)
+    demandBoost6_10: 25,    // 3→25 seeds 17/06 flux affaires précoces DiRIF
   },
   // Villepinte : Parc des Expos Paris Nord Villepinte — très actif 11h-18h
   z_villepinte: {
     peakHours: [7,8,9,17,18,19],              // ← backtest P1a: retiré 10h-16h (zone vide sans salon)
-    baseAvgDist: 14, baseLongRide: 0.20,      // ← backtest P1a: réduit — pas de salon actif
+    baseAvgDist: 14, baseLongRide: 0.332,     // 0.20→0.332 seeds 17/06 (revenu/course massivement sous-estimé)
     baseAvgDistSalon: 28, baseLongRideSalon: 0.62,  // ← backtest P2b: profil salon actif (Eurosatory+)
     demandBoost11_14: 2,    // Villepinte VIDE 11/06 (Eurosatory démarre le 15/06/2026)
     demandBoost14_18: 3,    // faible — quelques séminaires hors salon
-    demandBoost6_10: 1,     // minimal — pas de salon actif
+    demandBoost6_10: 16,    // 1→16 seeds 17/06 flux logistique/navettes tôt
   },
   // Tremblay : entre CDG et Villepinte, hub logistique + résidentiel
   z_tremblay: {
     peakHours: [6,7,8,9,12,17,18,19],         // ← backtest P3b: retiré 13h (creux post-déjeuner)
-    baseAvgDist: 18, baseLongRide: 0.42,      // ← backtest P3b: recalibré zone logistique mixte
+    baseAvgDist: 18, baseLongRide: 0.468,     // 0.42→0.468 seeds 17/06 zone logistique CDG-proximité
     demandBoost11_14: 5,
     demandBoost14_18: 6,
-    demandBoost6_10: 4,     // travailleurs CDG / logistique tôt
+    demandBoost6_10: 16,    // 4→16 seeds 17/06 travailleurs CDG/logistique tôt DiRIF
   },
   // ── Zones culturelles / événementielles ───────────────────────────────────
   // Stade de France : événements 18h+, calme 11h-17h sauf matchs
   z_stade_france: {
     peakHours: [13,16,17,18,19,20,21,22,23],  // ← backtest P1b: ajout 13h (montée charge concert 3h avant)
-    baseAvgDist: 14, baseLongRide: 0.32,
+    baseAvgDist: 14, baseLongRide: 0.34,      // 0.32→0.34 seeds 17/06
     demandBoost11_14: 2,    // visites stade / offices tourisme
     demandBoost14_18: 18,   // CONCERT DAVID GUETTA 11/06 — portes 16h30 → surge massif ✅
-    demandBoost6_10: 2,     // commute résidentiel secteur (calme matin)
+    demandBoost6_10: 4,     // 2→4 seeds 17/06 commute résidentiel secteur matin
   },
   // ── Zones résidentielles / mixtes ─────────────────────────────────────────
   z_93_centre: {
-    peakHours: [9,10,11,12,17,18,20,21],    // ← backtest P3c: retiré 13h,14h,22h (creux confirmé)
-    baseAvgDist: 12, baseLongRide: 0.28,
+    peakHours: [6,7,8,9,10,11,12,17,18,20,21], // seeds 17/06: +h6,h7,h8 pic matinal absent
+    baseAvgDist: 13, baseLongRide: 0.328,     // 12→13 +dist, 0.28→0.328 seeds 17/06
     demandBoost11_14: 5,    // lunch + commerces actifs
     demandBoost14_18: 6,
-    demandBoost6_10: 3,     // commute centre-ville 7h-9h
+    demandBoost6_10: 14,    // 3→14 seeds 17/06 commute centre Saint-Denis 6h-9h
   },
   z_montreuil: {
     peakHours: [7,8,9,17,18,19],            // ← backtest P3c: retiré 12h,13h (overfit déjeuner)
-    baseAvgDist: 11, baseLongRide: 0.24,    // légèrement réduit — zone résidentielle est
+    baseAvgDist: 13, baseLongRide: 0.312,    // 11→13 +dist, 0.24→0.312 seeds 17/06
     demandBoost11_14: 4,
     demandBoost14_18: 5,
-    demandBoost6_10: 3,     // commute résidentiel est parisien
+    demandBoost6_10: 22,    // 3→22 seeds 17/06 commute résidentiel est sous-estimé
   },
   z_aulnay: {
     peakHours: [6,7,8,9,17,18],             // ← backtest P3b: retiré 12h,22h,23h (overfit résidentiel)
-    baseAvgDist: 20, baseLongRide: 0.48,    // légèrement réduit (sans flux Bourget/Tremblay directement)
+    baseAvgDist: 20, baseLongRide: 0.492,    // 0.48→0.492 seeds 17/06
     demandBoost11_14: 3,
     demandBoost14_18: 5,    // proximité CDG / sorties salariés
-    demandBoost6_10: 3,     // commute résidentiel nord-est
+    demandBoost6_10: 8,     // 3→8 seeds 17/06 commute résidentiel nord-est DiRIF
   },
 };
 
