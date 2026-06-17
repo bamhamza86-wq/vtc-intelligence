@@ -246,39 +246,39 @@ const patterns: Record<string, {
   // ── Hubs transport / banlieue proche ─────────────────────────────────────
   // St-Denis : trafic commute + tourisme Basilique / Stade France 13h-17h
   z_saint_denis_gare: {
-    peakHours: [5,6,7,8,9,12,13,17,18,19,20], // seeds 17/06: +h5
+    peakHours: [5,6,7,8,9,12,13,14,17,18,19,20], // data 17/06: +h14 (hist h13=29, h14=25.9)
     baseAvgDist: 16, baseLongRide: 0.46,     // 0.40→0.46 seeds 17/06
-    demandBoost11_14: 3,
-    demandBoost14_18: 5,
+    demandBoost11_14: 18,   // data 17/06: hist h=13=29 (3→18 calibré)
+    demandBoost14_18: 14,   // data 17/06: hist h=14=25.9 (5→14)
     demandBoost6_10: 28,    // 10→28 seeds 17/06 DiRIF rush AM
   },
   z_bobigny_gare: {
-    peakHours: [5,7,8,9,12,13,17,18,19], // seeds 17/06: +h5
+    peakHours: [5,7,8,9,12,13,14,17,18,19], // data 17/06: +h14 (hist h13=40, h14=19.6)
     baseAvgDist: 13, baseLongRide: 0.38,     // 0.32→0.38 seeds 17/06
-    demandBoost11_14: 2,
-    demandBoost14_18: 3,
+    demandBoost11_14: 28,   // data 17/06: hist h=13=40 (2→28 calibré)
+    demandBoost14_18: 8,    // data 17/06: hist h=14=19.6 (3→8)
     demandBoost6_10: 27,    // 8→27 seeds 17/06 DiRIF rush AM
   },
   z_aubervilliers: {
-    peakHours: [6,7,8,9,11,12,17,18,19,22,23], // seeds 17/06: +h6
+    peakHours: [6,7,8,9,11,12,13,14,17,18,19,22,23], // data 17/06: +h13,h14 (hist h13=25, h14=13)
     baseAvgDist: 15, baseLongRide: 0.40,     // 0.37→0.40 seeds 17/06
-    demandBoost11_14: 3,
-    demandBoost14_18: 4,
+    demandBoost11_14: 14,   // data 17/06: hist h=13=25 (3→14 calibré)
+    demandBoost14_18: 6,    // data 17/06: hist h=14=13 (4→6)
     demandBoost6_10: 27,    // 8→27 seeds 17/06 M12+commute
   },
   z_epinay_gennevilliers: {
-    peakHours: [6,7,8,9,17,18,19],
+    peakHours: [6,7,8,9,13,14,17,18,19], // data 17/06: +h13,h14 (hist h13=27, h14=13)
     baseAvgDist: 19, baseLongRide: 0.476,    // 0.44→0.476 seeds 17/06
-    demandBoost11_14: 1,
-    demandBoost14_18: 2,
+    demandBoost11_14: 18,   // data 17/06: hist h=13=27 (1→18 calibré)
+    demandBoost14_18: 4,    // data 17/06: hist h=14=13 (2→4)
     demandBoost6_10: 25,    // 3→25 seeds 17/06 banlieue nord-ouest sous-estimé DiRIF
   },
   // Plaine Commune : zone business active 11h-17h (sièges sociaux)
   z_plaine_commune: {
     peakHours: [5,7,8,9,10,11,12,13,14,15,16,17,18,19], // seeds 17/06: +h5
     baseAvgDist: 18, baseLongRide: 0.492,    // 0.48→0.492 seeds 17/06
-    demandBoost11_14: 6,    // déjeuners d'affaires sièges sociaux (normal — pas de salon)
-    demandBoost14_18: 10,   // retour fin journée travail flexible
+    demandBoost11_14: 28,   // data 17/06: hist h=13=40 (6→28 calibré — zone business midi)
+    demandBoost14_18: 18,   // data 17/06: hist h=14=37.9 (10→18)
     demandBoost6_10: 26,    // 4→26 seeds 17/06 arrivées employés 6h-9h DiRIF
   },
   // ── Hubs business / exposition ────────────────────────────────────────────
@@ -287,8 +287,8 @@ const patterns: Record<string, {
     peakHours: [5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20], // seeds 17/06: +h5,h6
     baseAvgDist: 14, baseLongRide: 0.38,      // 0.32→0.38 seeds 17/06 (réel 12.1km, courses plus longues)
     baseAvgDistSalon: 22, baseLongRideSalon: 0.54,  // ← backtest P2b: profil salon/show actif
-    demandBoost11_14: 4,    // aviation d'affaires seulement (pas de Paris Air Show en 2026 — prochain 2027)
-    demandBoost14_18: 6,    // vols d'affaires PM + retours
+    demandBoost11_14: 22,   // data 17/06: hist h=13=34.5 (4→22 calibré)
+    demandBoost14_18: 20,   // data 17/06: hist h=14=31.6 (6→20)
     demandBoost6_10: 25,    // 3→25 seeds 17/06 flux affaires précoces DiRIF
   },
   // Villepinte : Parc des Expos Paris Nord Villepinte — très actif 11h-18h
@@ -319,24 +319,24 @@ const patterns: Record<string, {
   },
   // ── Zones résidentielles / mixtes ─────────────────────────────────────────
   z_93_centre: {
-    peakHours: [6,7,8,9,10,11,12,17,18,20,21], // seeds 17/06: +h6,h7,h8 pic matinal absent
+    peakHours: [6,7,8,9,10,11,12,13,14,17,18,20,21], // data 17/06: +h13,h14 (hist h13=26, h14=22)
     baseAvgDist: 13, baseLongRide: 0.328,     // 12→13 +dist, 0.28→0.328 seeds 17/06
-    demandBoost11_14: 5,    // lunch + commerces actifs
-    demandBoost14_18: 6,
+    demandBoost11_14: 16,   // data 17/06: hist h=13=26 (5→16 calibré)
+    demandBoost14_18: 12,   // data 17/06: hist h=14=22 (6→12)
     demandBoost6_10: 14,    // 3→14 seeds 17/06 commute centre Saint-Denis 6h-9h
   },
   z_montreuil: {
-    peakHours: [7,8,9,14,15,16,17,18,19],   // fix 17/06 data réelles: pic PM fort (prédit=13 réel=50 h=14-16)
+    peakHours: [7,8,9,13,14,15,16,17,18,19], // data 17/06: +h13 (hist h13=33.5)
     baseAvgDist: 13, baseLongRide: 0.312,    // 11→13 +dist, 0.24→0.312 seeds 17/06
-    demandBoost11_14: 4,
-    demandBoost14_18: 12,   // fix 17/06 data réelles: MAE PM 74% → pic PM réel h=14-16
+    demandBoost11_14: 22,   // data 17/06: hist h=13=33.5 (4→22 calibré)
+    demandBoost14_18: 20,   // data 17/06: hist h=14=31.5 (12→20)
     demandBoost6_10: 22,    // 3→22 seeds 17/06 commute résidentiel est sous-estimé
   },
   z_aulnay: {
-    peakHours: [6,7,8,9,14,15,16,17,18],    // fix 17/06 data réelles: pic PM fort (prédit=16 réel=45 h=14-16)
+    peakHours: [6,7,8,9,13,14,15,16,17,18], // data 17/06: +h13 (hist h13=47.8)
     baseAvgDist: 20, baseLongRide: 0.492,    // 0.48→0.492 seeds 17/06
-    demandBoost11_14: 3,
-    demandBoost14_18: 10,   // fix 17/06 data réelles: MAE PM 64% → sorties salariés + CDG proximity h=14-16
+    demandBoost11_14: 36,   // data 17/06: hist h=13=47.8 (3→36 calibré)
+    demandBoost14_18: 18,   // data 17/06: hist h=14=44.5 (10→18)
     demandBoost6_10: 8,     // 3→8 seeds 17/06 commute résidentiel nord-est DiRIF
   },
 };
