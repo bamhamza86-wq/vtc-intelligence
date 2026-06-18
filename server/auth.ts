@@ -5,11 +5,12 @@ import rateLimit from "express-rate-limit";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Configuration — credentials applicatifs VTC Intelligence
-// Hashes bcrypt précalculés (cost=10) — root:12345678, antoine:antoine
-// Si PASSWORD_ROOT_HASH/PASSWORD_ANTOINE_HASH sont définis en env → priorité.
+// Hashes bcrypt précalculés (cost=10) — root:12345678, antoine:antoine, vtc-one:vtc-one
+// Si PASSWORD_ROOT_HASH/PASSWORD_ANTOINE_HASH/PASSWORD_VTCONE_HASH sont définis en env → priorité.
 // ──────────────────────────────────────────────────────────────────────────────
 const DEFAULT_ROOT_HASH    = "$2b$10$p2oHiLHo.LI7g2r27DnGEOU.8.a4UOiatApNn8u9u4rq0QmRNlkAS";
 const DEFAULT_ANTOINE_HASH = "$2b$10$6LCMSN901Tkwyk5ay0E9dORDEUjxGGM6vOSlWVF6kgMOzIva6745W";
+const DEFAULT_VTCONE_HASH  = "$2b$10$WdotwcTsNypega0c/CG06uWVrbDTQipem3SRcCV4dcYNlQYoTsrZy";
 
 function resolveHash(envHash: string | undefined, defaultHash: string): string {
   if (envHash && envHash.startsWith("$2")) return envHash; // override via env var
@@ -17,8 +18,9 @@ function resolveHash(envHash: string | undefined, defaultHash: string): string {
 }
 
 const USERS: Record<string, string> = {
-  root:    resolveHash(process.env.PASSWORD_ROOT_HASH,    DEFAULT_ROOT_HASH),
-  antoine: resolveHash(process.env.PASSWORD_ANTOINE_HASH, DEFAULT_ANTOINE_HASH),
+  root:      resolveHash(process.env.PASSWORD_ROOT_HASH,    DEFAULT_ROOT_HASH),
+  antoine:   resolveHash(process.env.PASSWORD_ANTOINE_HASH, DEFAULT_ANTOINE_HASH),
+  "vtc-one": resolveHash(process.env.PASSWORD_VTCONE_HASH,  DEFAULT_VTCONE_HASH),
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
