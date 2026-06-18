@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { getFlightData, getFlightBoostForZone } from "./flightService";
 import {
-  testUberConnection,
+  testTomTomConnection,
   testGigDataConnection,
   fetchAllPlatformDemand,
 } from "./platformDemand";
@@ -401,7 +401,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   app.put("/api/platforms/credentials/:platform", (req, res) => {
     const { platform } = req.params;
     const { api_key } = req.body as { api_key: string };
-    if (!["uber", "gigdata"].includes(platform)) {
+    if (!["tomtom", "gigdata"].includes(platform)) {
       return res.status(400).json({ error: "Plateforme non supportée" });
     }
     storage.savePlatformCredential(platform, api_key || "");
@@ -417,8 +417,8 @@ export function registerRoutes(httpServer: Server, app: Express): void {
 
     let result: { ok: boolean; error?: string };
 
-    if (platform === "uber") {
-      result = await testUberConnection(cred.api_key);
+    if (platform === "tomtom") {
+      result = await testTomTomConnection(cred.api_key);
     } else if (platform === "gigdata") {
       result = await testGigDataConnection(cred.api_key);
     } else {
@@ -430,16 +430,16 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   });
 
   app.get("/api/platforms/demand", async (_req, res) => {
-    const uberCred   = storage.getPlatformCredential("uber");
+    const tomtomCred = storage.getPlatformCredential("tomtom");
     const gigCred    = storage.getPlatformCredential("gigdata");
-    const uberKey    = uberCred?.api_key && uberCred.status === "connected" ? uberCred.api_key : null;
+    const tomtomKey  = tomtomCred?.api_key && tomtomCred.status === "connected" ? tomtomCred.api_key : null;
     const gigdataKey = gigCred?.api_key  && gigCred.status  === "connected" ? gigCred.api_key  : null;
 
-    if (!uberKey && !gigdataKey) {
+    if (!tomtomKey && !gigdataKey) {
       return res.json({ zones: [], message: "Aucune plateforme configurée" });
     }
 
-    const zones = await fetchAllPlatformDemand(uberKey, gigdataKey);
+    const zones = await fetchAllPlatformDemand(tomtomKey, gigdataKey);
     res.json({ zones, fetched_at: new Date().toISOString() });
   });
 

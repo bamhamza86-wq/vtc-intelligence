@@ -47,7 +47,7 @@ export default function ProfilePage() {
   const { data: maintenance } = useQuery<{ maintenance: any[] }>({ queryKey: ["/api/maintenance"], queryFn: () => apiRequest("GET", "/api/maintenance").then(r => r.json()), refetchInterval: 3_000 });
   const { data: performance } = useQuery<any>({ queryKey: ["/api/driver-performance"], queryFn: () => apiRequest("GET", "/api/driver-performance").then(r => r.json()), refetchInterval: 3_000 });
 
-  const [platformKeys, setPlatformKeys] = useState<Record<string, string>>({ uber: "", gigdata: "" });
+  const [platformKeys, setPlatformKeys] = useState<Record<string, string>>({ tomtom: "", gigdata: "" });
   const [platformTesting, setPlatformTesting] = useState<Record<string, boolean>>({});
   const { data: platformCreds, refetch: refetchCreds } = useQuery({
     queryKey: ["/api/platforms/credentials"],
@@ -228,19 +228,19 @@ export default function ProfilePage() {
           </p>
         </CardHeader>
         <CardContent className="space-y-4 px-4 pb-4">
-          {/* UBER */}
+          {/* TOMTOM */}
           {(() => {
-            const cred = Array.isArray(platformCreds) ? platformCreds.find((c: any) => c.platform === "uber") : null;
+            const cred = Array.isArray(platformCreds) ? platformCreds.find((c: any) => c.platform === "tomtom") : null;
             const status = cred?.status ?? "unconfigured";
             const hasKey = cred?.has_key;
             return (
               <div className="rounded-lg border border-border/50 bg-card/50 p-3 space-y-2.5">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <div className="w-7 h-7 rounded bg-black flex items-center justify-center text-white text-[10px] font-black">U</div>
+                    <div className="w-7 h-7 rounded bg-[#df1b12] flex items-center justify-center text-white text-[10px] font-black">TT</div>
                     <div>
-                      <p className="text-sm font-medium">Uber</p>
-                      <p className="text-[10px] text-muted-foreground">Riders API — offre temps réel</p>
+                      <p className="text-sm font-medium">TomTom Traffic</p>
+                      <p className="text-[10px] text-muted-foreground">Congestion temps réel — proxy demande VTC</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5">
@@ -250,35 +250,35 @@ export default function ProfilePage() {
                   </div>
                 </div>
                 <div>
-                  <Label className="text-xs">Client ID : Client Secret</Label>
+                  <Label className="text-xs">Clé API TomTom</Label>
                   <Input
                     type="password"
-                    placeholder="clientId:clientSecret"
-                    value={platformKeys.uber}
-                    onChange={e => setPlatformKeys(k => ({ ...k, uber: e.target.value }))}
+                    placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    value={platformKeys.tomtom}
+                    onChange={e => setPlatformKeys(k => ({ ...k, tomtom: e.target.value }))}
                     className="h-9 text-sm mt-1 font-mono"
                   />
                   <p className="text-[10px] text-muted-foreground mt-1">
-                    Obtenez vos clés sur <a href="https://developer.uber.com" target="_blank" rel="noreferrer" className="text-primary underline">developer.uber.com</a>
+                    Clé gratuite (2500 req/j, sans CB) sur <a href="https://developer.tomtom.com" target="_blank" rel="noreferrer" className="text-primary underline">developer.tomtom.com</a>
                   </p>
                 </div>
                 <div className="flex gap-2">
                   <Button size="sm" variant="outline" className="flex-1 h-8 text-xs"
-                    disabled={!platformKeys.uber || platformTesting.uber}
+                    disabled={!platformKeys.tomtom || platformTesting.tomtom}
                     onClick={async () => {
-                      setPlatformTesting(t => ({ ...t, uber: true }));
-                      await apiRequest("PUT", "/api/platforms/credentials/uber", { api_key: platformKeys.uber });
-                      await apiRequest("POST", "/api/platforms/test/uber", {});
+                      setPlatformTesting(t => ({ ...t, tomtom: true }));
+                      await apiRequest("PUT", "/api/platforms/credentials/tomtom", { api_key: platformKeys.tomtom });
+                      await apiRequest("POST", "/api/platforms/test/tomtom", {});
                       await refetchCreds();
-                      setPlatformKeys(k => ({ ...k, uber: "" }));
-                      setPlatformTesting(t => ({ ...t, uber: false }));
+                      setPlatformKeys(k => ({ ...k, tomtom: "" }));
+                      setPlatformTesting(t => ({ ...t, tomtom: false }));
                     }}>
-                    {platformTesting.uber ? <><RefreshCw size={11} className="animate-spin mr-1" />Test...</> : "Sauvegarder & tester"}
+                    {platformTesting.tomtom ? <><RefreshCw size={11} className="animate-spin mr-1" />Test...</> : "Sauvegarder & tester"}
                   </Button>
                   {status === "connected" && (
                     <Button size="sm" variant="ghost" className="h-8 px-2 text-xs text-muted-foreground"
                       onClick={async () => {
-                        await apiRequest("PUT", "/api/platforms/credentials/uber", { api_key: "" });
+                        await apiRequest("PUT", "/api/platforms/credentials/tomtom", { api_key: "" });
                         await refetchCreds();
                       }}>
                       Déconnecter

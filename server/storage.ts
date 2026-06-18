@@ -93,7 +93,7 @@ for (const mig of driverProfileMigrations) {
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS platform_credentials (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    platform    TEXT    NOT NULL UNIQUE,   -- 'uber' | 'gigdata'
+    platform    TEXT    NOT NULL UNIQUE,   -- 'tomtom' | 'gigdata'
     api_key     TEXT    NOT NULL DEFAULT '',
     status      TEXT    NOT NULL DEFAULT 'unconfigured', -- 'unconfigured'|'connected'|'error'
     last_tested INTEGER,
@@ -102,8 +102,8 @@ sqlite.exec(`
 `);
 
 // Insérer les entrées par défaut si elles n'existent pas
-const existingUber = sqlite.prepare("SELECT id FROM platform_credentials WHERE platform='uber'").get();
-if (!existingUber) sqlite.exec("INSERT INTO platform_credentials (platform, api_key) VALUES ('uber', '')");
+const existingUber = sqlite.prepare("SELECT id FROM platform_credentials WHERE platform='tomtom'").get();
+if (!existingUber) sqlite.exec("INSERT INTO platform_credentials (platform, api_key) VALUES ('tomtom', '')");
 const existingGig = sqlite.prepare("SELECT id FROM platform_credentials WHERE platform='gigdata'").get();
 if (!existingGig) sqlite.exec("INSERT INTO platform_credentials (platform, api_key) VALUES ('gigdata', '')");
 
