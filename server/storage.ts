@@ -260,7 +260,7 @@ const patterns: Record<string, {
     demandBoost6_10: 27,    // 8→27 seeds 17/06 DiRIF rush AM
   },
   z_aubervilliers: {
-    peakHours: [6,7,8,9,11,12,13,14,17,18,19,22,23], // data 17/06: +h13,h14 (hist h13=25, h14=13)
+    peakHours: [5,6,7,8,9,11,12,13,14,17,18,19,22,23], // data 17/06: +h13,h14 (hist h13=25, h14=13) +h5 travailleurs nuit
     baseAvgDist: 15, baseLongRide: 0.40,     // 0.37→0.40 seeds 17/06
     demandBoost11_14: 14,   // data 17/06: hist h=13=25 (3→14 calibré)
     demandBoost14_18: 6,    // data 17/06: hist h=14=13 (4→6)
@@ -319,7 +319,7 @@ const patterns: Record<string, {
   },
   // ── Zones résidentielles / mixtes ─────────────────────────────────────────
   z_93_centre: {
-    peakHours: [6,7,8,9,10,11,12,13,14,17,18,20,21], // data 17/06: +h13,h14 (hist h13=26, h14=22)
+    peakHours: [5,6,7,8,9,10,11,12,13,14,17,18,20,21], // data 17/06: +h13,h14 (hist h13=26, h14=22) +h5 travailleurs nuit
     baseAvgDist: 13, baseLongRide: 0.328,     // 12→13 +dist, 0.28→0.328 seeds 17/06
     demandBoost11_14: 16,   // data 17/06: hist h=13=26 (5→16 calibré)
     demandBoost14_18: 12,   // data 17/06: hist h=14=22 (6→12)
@@ -448,8 +448,9 @@ function computeScore(
     demandBase += (pat as any).demandBoost14_18 ?? 0;
   }
 
-  // Boost corrélation 6h-10h (rush AM + aéroports matinaux) — mesuré 10/06/2026
-  if (h >= 6 && h < 10) {
+  // Boost corrélation 5h-10h (rush AM + aéroports matinaux + travailleurs nuit 93) — mesuré 10/06/2026
+  // h>=5 : capter les travailleurs de nuit/transport 93 (logistique CDG, sécurité, RER)
+  if (h >= 5 && h < 10) {
     demandBase += (pat as any).demandBoost6_10 ?? 0;
   }
 
@@ -702,7 +703,7 @@ function computeScore(
   //           h=2 hist=44.1 (0.25→0.67), h=3 hist=33.4 (0.25→0.53)
   // Interprétation : travailleurs nuit 93 (logistique CDG, sécurité, restauration) actifs h=0..2
   const URBAN_AVAILABILITY_WEEKDAY: Record<number, number> = {
-    0: 0.86, 1: 0.83, 2: 0.67, 3: 0.53, 4: 0.55, 5: 0.48,  // calibré 18/06/2026 données terrain
+    0: 0.86, 1: 0.83, 2: 0.67, 3: 0.53, 4: 0.55, 5: 0.72,  // calibré 18/06/2026 données terrain
     // Entraînement 17/06/2026 : h=7+0.07, h=8+0.13, h=9+0.17 (rush AM zones 93 DiRIF sous-estimé)
     6: 0.82, 7: 1.07, 8: 1.13, 9: 1.09, 10: 0.75, 11: 0.78,
     12: 0.78, 13: 0.72, 14: 0.68, 15: 0.65, 16: 0.72, 17: 1.00,
@@ -1274,7 +1275,7 @@ function seedEvents(today: string, now: Date) {
 // Toutes les zones ciblées sont en Seine-Saint-Denis (93) ou aéroports franciliens.
 function generateDynamicAlerts(): void {
   const now = new Date();
-  const h = now.getHours();
+  const h = (now.getUTCHours()+2)%24;
   const dayType = [0, 6].includes(now.getDay()) ? "weekend" : "weekday";
 
   // 1. Lire les scores ACTUELS depuis profitability_scores (heure courante)
@@ -1597,7 +1598,7 @@ export const storage: IStorage = {
 
   getCurrentScores: () => {
     const now = new Date();
-    const h = now.getHours();
+    const h = (now.getUTCHours()+2)%24;
     const dayType = [0,6].includes(now.getDay()) ? 'weekend' : 'weekday';
     return stmtGetCurrentScores.all(h, dayType);
   },

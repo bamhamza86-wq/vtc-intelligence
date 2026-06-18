@@ -37,6 +37,7 @@ async function getFlightDataCached(): Promise<any> {
 import {
   getAllCachedRoutes,
   getCachedRoute,
+  getRouteForZone,
   getCacheStats,
   invalidateCache,
   refreshAllZones,
@@ -125,7 +126,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   // en 1 seul appel — réduit les requêtes de 3 → 1 par cycle 2s
   app.get("/api/current", async (req, res) => {
     const now = new Date();
-    const h = now.getHours();
+    const h = (now.getUTCHours()+2)%24;
     const dayType = [0,6].includes(now.getDay()) ? 'weekend' : 'weekday';
 
     try {
@@ -188,7 +189,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
 
   app.get("/api/profitability", async (req, res) => {
     const _hourRaw = parseInt(req.query.hour as string);
-    const hour = isNaN(_hourRaw) ? new Date().getHours() : _hourRaw;
+    const hour = isNaN(_hourRaw) ? (new Date().getUTCHours()+2)%24 : _hourRaw;
     const dayType = req.query.dayType as string || ([0,6].includes(new Date().getDay()) ? 'weekend' : 'weekday');
     const scores = storage.getProfitabilityByHour(hour, dayType);
 
@@ -236,7 +237,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
 
   app.get("/api/top-zones", (req, res) => {
     const _hourRaw2 = parseInt(req.query.hour as string);
-    const hour = isNaN(_hourRaw2) ? new Date().getHours() : _hourRaw2;
+    const hour = isNaN(_hourRaw2) ? (new Date().getUTCHours()+2)%24 : _hourRaw2;
     const dayType = req.query.dayType as string || ([0,6].includes(new Date().getDay()) ? 'weekend' : 'weekday');
     const limit = parseInt(req.query.limit as string) || 5;
     const scores = storage.getTopZones(hour, dayType, limit);
@@ -387,7 +388,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       const diff = storage.getDailyDiff();
       const flightData = await getFlightDataCached();
       const now = new Date();
-      const h = now.getHours();
+      const h = (now.getUTCHours()+2)%24;
       const dayType = [0,6].includes(now.getDay()) ? 'weekend' : 'weekday';
       const currentScores = storage.getProfitabilityByHour(h, dayType);
 
@@ -526,7 +527,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   app.get("/api/traffic", (req, res) => {
     try {
       const hQuery = parseInt(req.query.hour as string ?? "", 10);
-      const h = isNaN(hQuery) ? (new Date().getHours() + 2) % 24 : Math.max(0, Math.min(23, hQuery));
+      const h = isNaN(hQuery) ? (new Date().getUTCHours()+2)%24 : Math.max(0, Math.min(23, hQuery));
       const lat = parseFloat(req.query.lat as string ?? "") || DEFAULT_ORIGIN.lat;
       const lng = parseFloat(req.query.lng as string ?? "") || DEFAULT_ORIGIN.lng;
 
@@ -655,7 +656,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       nextUpdate:         routingNextRefresh.toISOString(),
       updateCount:        routingRefreshCount,
       calibrationDate:    "2026-06-10",
-      currentHourlyRatio: getHourlyRatio(new Date().getHours()),
+      currentHourlyRatio: getHourlyRatio((new Date().getUTCHours()+2)%24),
       zonesCount:         Object.keys(entries).length,
       cacheStats:         stats,
     });
@@ -672,8 +673,8 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       nextUpdate:         routingNextRefresh.toISOString(),
       secondsUntilNext,
       updateCount:        routingRefreshCount,
-      currentHour:        now.getHours(),
-      currentHourlyRatio: getHourlyRatio(now.getHours()),
+      currentHour:        (now.getUTCHours()+2)%24,
+      currentHourlyRatio: getHourlyRatio((now.getUTCHours()+2)%24),
       calibrationDate:    "2026-06-10",
       zonesCount:         Object.keys(CALIBRATED_DATA).length,
       cacheSource:        stats.googleAvailable ? "google" : (stats.osrmAvailable ? "osrm" : "calibrated"),
@@ -736,7 +737,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         return res.status(400).json({ error: "lat et lng requis (number)" });
       }
 
-      const hour = new Date().getHours();
+      const hour = (new Date().getUTCHours()+2)%24;
       const dayType = [0, 6].includes(new Date().getDay()) ? "weekend" : "weekday";
       const zones = storage.getAllZones() as any[];
       const scores = storage.getProfitabilityByHour(hour, dayType) as any[];
@@ -758,12 +759,12 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       const scoreMap: Record<string, any> = {};
       scores.forEach((s: any) => { scoreMap[s.zone_id] = s; });
 
-      const results = zones.map((z: any) => {
+      const results = await Promise.all(zones.map(async (z: any) => {
         const straightKm = haversineKm(lat, lng, z.lat, z.lng);
 
         // ── Distances et ETA depuis routingCache (OSRM / Google / calibré) ────────
-        // Cache 30min — source réelle si disponible, sinon fallback calibré
-        const rcEntry = getCachedRoute(z.id, lat, lng);
+        // Calculé en parallèle (Promise.all) depuis la vraie position GPS utilisateur
+        const rcEntry = await getRouteForZone(z.id, lat, lng, GOOGLE_MAPS_KEY || undefined);
 
         // Distance routière réelle (OSRM ou mesure calibrée)
         const distanceKm = rcEntry.roadKm > 0
@@ -840,7 +841,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
             { lat: z.lat, lng: z.lng, label: z.name },
           ],
         };
-      });
+      }));
 
       results.sort((a, b) => b.globalScore - a.globalScore || a.distanceKm - b.distanceKm);
       const top5 = results.slice(0, 5);
@@ -1204,7 +1205,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
 
       const clickTs    = clickedAt ? new Date(clickedAt) : new Date();
       const now        = new Date();
-      const hour       = now.getHours();
+      const hour       = (now.getUTCHours()+2)%24;
       const dayType    = [0, 6].includes(now.getDay()) ? "weekend" : "weekday";
       const dayOfWeek  = now.getDay();
 
@@ -1557,7 +1558,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         return res.status(400).json({ error: "lat, lng, destLat, destLng requis (number)" });
       }
 
-      const hour = new Date().getHours();
+      const hour = (new Date().getUTCHours()+2)%24;
       const dayType = [0, 6].includes(new Date().getDay()) ? "weekend" : "weekday";
       const zones = storage.getAllZones() as any[];
       const scores = storage.getProfitabilityByHour(hour, dayType) as any[];
@@ -1608,7 +1609,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       const directEtaMin = (() => {
         // Pas de cache pour trajet direct générique → utiliser distance routière / vitesse réelle
         // Vitesse moyenne pondérée selon heure : rush → 18km/h, normal → 28km/h, off → 35km/h
-        const _h = new Date().getHours();
+        const _h = (new Date().getUTCHours()+2)%24;
         const _speedKmH = (_h >= 7 && _h <= 9) || (_h >= 17 && _h <= 19) ? 18
           : (_h >= 10 && _h <= 16) ? 28
           : 35;
@@ -1841,7 +1842,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   app.get("/api/surge-transparency", (_req, res) => {
     try {
       const now = new Date();
-      const h = now.getHours();
+      const h = (now.getUTCHours()+2)%24;
       const dayType = [0, 6].includes(now.getDay()) ? "weekend" : "weekday";
       const scores = storage.getProfitabilityByHour(h, dayType) as any[];
       const activeEvents = storage.getActiveEvents() as any[];
@@ -1897,7 +1898,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   app.get("/api/idle-optimizer", (_req, res) => {
     try {
       const now = new Date();
-      const h = now.getHours();
+      const h = (now.getUTCHours()+2)%24;
       const hNext = (h + 1) % 24;
       const dayType = [0, 6].includes(now.getDay()) ? "weekend" : "weekday";
       const dayTypeNext = (() => {

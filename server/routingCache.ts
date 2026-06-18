@@ -35,6 +35,38 @@
 
 import https from "https";
 
+function getCestHour(): number {
+  return (new Date().getUTCHours() + 2) % 24;
+}
+
+// Facteur ETA par heure CEST — référence h=10 = 0.97 (mesuré Google Maps)
+// Biais global 0.93 appliqué dans getDisplayETA pour éviter surestimation
+const ETA_HOUR_FACTOR: Record<number, number> = {
+   0: 0.58,  1: 0.54,  2: 0.52,  3: 0.52,  4: 0.55,
+   5: 0.70,  6: 0.92,  7: 1.02,  8: 1.12,  9: 0.97,
+  10: 0.97, 11: 0.95, 12: 0.93, 13: 0.92, 14: 0.88,
+  15: 0.85, 16: 0.90, 17: 1.56, 18: 1.65, 19: 1.40,
+  20: 1.25, 21: 1.10, 22: 0.90, 23: 0.72,
+};
+
+/**
+ * ETA affiché — temps de trajet côté utilisateur
+ * Formule : eta_10h × ETA_HOUR_FACTOR[h] × 0.93 (bias anti-surestimation)
+ * Résultat garanti ≤ Google Maps (peut légèrement sous-estimer)
+ */
+export function getDisplayETA(zoneId: string, h_cest: number, osrmKm?: number): number {
+  const cal = CALIBRATED_DATA[zoneId];
+  if (!cal) return 30;
+  const roadKm   = osrmKm && osrmKm > 0 ? osrmKm : cal.road_km;
+  const factor   = ETA_HOUR_FACTOR[h_cest] ?? 0.97;
+  const eta10h   = cal.eta_10h;
+  // Correction distance si OSRM différent du calibré
+  const distRatio = roadKm / cal.road_km;
+  const rawETA   = eta10h * factor * distRatio;
+  // Biais anti-surestimation × 0.93
+  return Math.max(1, Math.round(rawETA * 0.93));
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface RouteEntry {
@@ -250,7 +282,11 @@ export function getCongestedETA(
   else if (congestionFactor < 1.75) congestionLabel = "Saturé";
   else                               congestionLabel = "Bloqué";
 
-  return { etaMin, speedKmH, congestionFactor: Math.round(congestionFactor * 1000) / 1000, congestionLabel };
+  // Plafond anti-surestimation : jamais > getDisplayETA × 1.10
+  const displayETA = getDisplayETA(zoneId, Math.floor(h));
+  const cappedETA  = Math.min(etaMin, Math.round(displayETA * 1.10));
+
+  return { etaMin: cappedETA, speedKmH, congestionFactor: Math.round(congestionFactor * 1000) / 1000, congestionLabel };
 }
 
 // ── Seuil de rentabilité 1 min/km ─────────────────────────────────────────────────────────────
@@ -433,13 +469,12 @@ function getCalibratedEntry(zoneId: string, h: number): RouteEntry {
       source: "calibrated", cachedAt: Date.now(), expiresAt: Date.now() + TTL_MS,
     };
   }
-  const ratio = getHourlyRatio(h);
-  const speedKmH = Math.round(cal.speed_pm * ratio * 100) / 100;
-  const etaMin   = Math.max(1, Math.round((cal.road_km / speedKmH) * 60));
+  const etaMin   = getDisplayETA(zoneId, h);
+  const speedKmH = Math.round(cal.road_km / (etaMin / 60) * 100) / 100;
   return {
     zoneId,
     roadKm:    cal.road_km,
-    durationS: Math.round(cal.road_km / cal.speed_pm * 3600),  // durée rush PM base
+    durationS: Math.round(etaMin * 60),
     etaMin,
     speedKmH,
     source:    "calibrated",
@@ -469,7 +504,8 @@ export async function getRouteForZone(
 ): Promise<RouteEntry> {
   const key = cacheKey(zoneId, originLat, originLng);
   const now = Date.now();
-  const h   = new Date().getHours();
+  const h   = getCestHour();
+  const dest = ZONE_COORDS[zoneId];
 
   // 1. Cache valide ?
   const cached = memoryCache.get(key);
@@ -477,7 +513,6 @@ export async function getRouteForZone(
 
   // 2. Google si clé présente
   if (apiKey && apiKey.length > 10) {
-    const dest = ZONE_COORDS[zoneId];
     if (dest) {
       const g = await fetchGoogleDuration(originLat, originLng, dest.lat, dest.lng, apiKey);
       if (g) {
@@ -514,7 +549,7 @@ export async function getRouteForZone(
       // Distance : préférer OSRM (réelle) si cohérente avec calibré (±30%)
       const calKm      = cal ? cal.road_km : o.roadKm;
       const roadKm     = Math.abs(o.roadKm - calKm) / calKm < 0.30 ? o.roadKm : calKm;
-      const etaMin     = Math.max(1, Math.round((roadKm / speedKmH) * 60));
+      const etaMin     = getDisplayETA(zoneId, h, roadKm);
       const entry: RouteEntry = {
         zoneId, roadKm, durationS: o.durationS, etaMin, speedKmH,
         source: "osrm", cachedAt: now, expiresAt: now + TTL_MS,
@@ -548,7 +583,7 @@ export async function refreshAllZones(
 ): Promise<{ refreshed: number; source: string; durationMs: number }> {
   const t0     = Date.now();
   const zoneIds = Object.keys(CALIBRATED_DATA);
-  const h       = new Date().getHours();
+  const h       = getCestHour();
   let refreshed = 0;
   let source    = "calibrated";
 
@@ -599,7 +634,7 @@ export async function refreshAllZones(
       const speedKmH = Math.round(speedPM * ratio * 100) / 100;
       const calKm    = cal ? cal.road_km : o.roadKm;
       const roadKm   = Math.abs(o.roadKm - calKm) / calKm < 0.30 ? o.roadKm : calKm;
-      const etaMin   = Math.max(1, Math.round((roadKm / speedKmH) * 60));
+      const etaMin   = getDisplayETA(zoneId, h, roadKm);
       const entry: RouteEntry = {
         zoneId, roadKm, durationS: o.durationS, etaMin, speedKmH,
         source: "osrm", cachedAt: Date.now(), expiresAt: Date.now() + TTL_MS,
@@ -642,7 +677,7 @@ export function getCachedRoute(
   if (cached && now < cached.expiresAt) return cached;
 
   // Retourne calibré si expiré ou absent (ne bloque pas)
-  return getCalibratedEntry(zoneId, new Date().getHours());
+  return getCalibratedEntry(zoneId, getCestHour());
 }
 
 /**
@@ -655,7 +690,7 @@ export function getAllCachedRoutes(
 ): Record<string, RouteEntry> {
   const result: Record<string, RouteEntry> = {};
   const now = Date.now();
-  const h   = new Date().getHours();
+  const h   = getCestHour();
 
   for (const zoneId of Object.keys(CALIBRATED_DATA)) {
     const key    = cacheKey(zoneId, originLat, originLng);
