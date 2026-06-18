@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { User, BarChart, Wrench, Brain, Gauge, AlertTriangle, Lightbulb, MapPin, Clock } from "lucide-react";
+import { User, BarChart, Wrench, Brain, Gauge, AlertTriangle, Lightbulb, MapPin, Clock, Plug, CheckCircle2, XCircle, AlertCircle, RefreshCw } from "lucide-react";
 
 const ZONES_93 = [
   { id: "z_cdg", name: "CDG" }, { id: "z_orly", name: "Orly" },
@@ -46,6 +46,14 @@ export default function ProfilePage() {
   const { data: stats } = useQuery({ queryKey: ["/api/rides/stats"], queryFn: () => apiRequest("GET", "/api/rides/stats").then(r => r.json()), refetchInterval: 3_000 });
   const { data: maintenance } = useQuery<{ maintenance: any[] }>({ queryKey: ["/api/maintenance"], queryFn: () => apiRequest("GET", "/api/maintenance").then(r => r.json()), refetchInterval: 3_000 });
   const { data: performance } = useQuery<any>({ queryKey: ["/api/driver-performance"], queryFn: () => apiRequest("GET", "/api/driver-performance").then(r => r.json()), refetchInterval: 3_000 });
+
+  const [platformKeys, setPlatformKeys] = useState<Record<string, string>>({ uber: "", gigdata: "" });
+  const [platformTesting, setPlatformTesting] = useState<Record<string, boolean>>({});
+  const { data: platformCreds, refetch: refetchCreds } = useQuery({
+    queryKey: ["/api/platforms/credentials"],
+    queryFn: () => apiRequest("GET", "/api/platforms/credentials").then(r => r.json()),
+    refetchInterval: 3_000,
+  });
 
   useEffect(() => {
     if (!profile) return;
@@ -205,6 +213,155 @@ export default function ProfilePage() {
             <p className="text-sm text-muted-foreground">Total kilométrage parcouru</p>
             <p className="text-lg font-bold">{Math.round(form.totalKmDriven).toLocaleString("fr-FR")} km</p>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* ── CONNEXIONS PLATEFORMES ── */}
+      <Card className="border-violet-500/30 bg-violet-500/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Plug size={14} className="text-violet-400" />
+            Connexions plateformes
+          </CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Connectez vos comptes pour afficher la demande temps réel dans chaque zone
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4 px-4 pb-4">
+          {/* UBER */}
+          {(() => {
+            const cred = Array.isArray(platformCreds) ? platformCreds.find((c: any) => c.platform === "uber") : null;
+            const status = cred?.status ?? "unconfigured";
+            const hasKey = cred?.has_key;
+            return (
+              <div className="rounded-lg border border-border/50 bg-card/50 p-3 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded bg-black flex items-center justify-center text-white text-[10px] font-black">U</div>
+                    <div>
+                      <p className="text-sm font-medium">Uber</p>
+                      <p className="text-[10px] text-muted-foreground">Riders API — offre temps réel</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {status === "connected" && <><CheckCircle2 size={14} className="text-emerald-400" /><span className="text-[11px] text-emerald-400">Connecté</span></>}
+                    {status === "error"     && <><XCircle size={14} className="text-red-400" /><span className="text-[11px] text-red-400">Erreur</span></>}
+                    {(status === "unconfigured" || !hasKey) && <span className="text-[11px] text-muted-foreground">Non configuré</span>}
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-xs">Client ID : Client Secret</Label>
+                  <Input
+                    type="password"
+                    placeholder="clientId:clientSecret"
+                    value={platformKeys.uber}
+                    onChange={e => setPlatformKeys(k => ({ ...k, uber: e.target.value }))}
+                    className="h-9 text-sm mt-1 font-mono"
+                  />
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    Obtenez vos clés sur <a href="https://developer.uber.com" target="_blank" rel="noreferrer" className="text-primary underline">developer.uber.com</a>
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" className="flex-1 h-8 text-xs"
+                    disabled={!platformKeys.uber || platformTesting.uber}
+                    onClick={async () => {
+                      setPlatformTesting(t => ({ ...t, uber: true }));
+                      await apiRequest("PUT", "/api/platforms/credentials/uber", { api_key: platformKeys.uber });
+                      await apiRequest("POST", "/api/platforms/test/uber", {});
+                      await refetchCreds();
+                      setPlatformKeys(k => ({ ...k, uber: "" }));
+                      setPlatformTesting(t => ({ ...t, uber: false }));
+                    }}>
+                    {platformTesting.uber ? <><RefreshCw size={11} className="animate-spin mr-1" />Test...</> : "Sauvegarder & tester"}
+                  </Button>
+                  {status === "connected" && (
+                    <Button size="sm" variant="ghost" className="h-8 px-2 text-xs text-muted-foreground"
+                      onClick={async () => {
+                        await apiRequest("PUT", "/api/platforms/credentials/uber", { api_key: "" });
+                        await refetchCreds();
+                      }}>
+                      Déconnecter
+                    </Button>
+                  )}
+                </div>
+                {cred?.error_msg && status === "error" && (
+                  <p className="text-[10px] text-red-400 flex items-start gap-1"><AlertCircle size={10} className="mt-0.5 shrink-0" />{cred.error_msg}</p>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* GIGDATA */}
+          {(() => {
+            const cred = Array.isArray(platformCreds) ? platformCreds.find((c: any) => c.platform === "gigdata") : null;
+            const status = cred?.status ?? "unconfigured";
+            const hasKey = cred?.has_key;
+            return (
+              <div className="rounded-lg border border-border/50 bg-card/50 p-3 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded bg-violet-600 flex items-center justify-center text-white text-[10px] font-bold">G</div>
+                    <div>
+                      <p className="text-sm font-medium">GigData</p>
+                      <p className="text-[10px] text-muted-foreground">Uber + Bolt + Heetch + FreeNow agrégés</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {status === "connected" && <><CheckCircle2 size={14} className="text-emerald-400" /><span className="text-[11px] text-emerald-400">Connecté</span></>}
+                    {status === "error"     && <><XCircle size={14} className="text-red-400" /><span className="text-[11px] text-red-400">Erreur</span></>}
+                    {(status === "unconfigured" || !hasKey) && <span className="text-[11px] text-muted-foreground">Non configuré</span>}
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-xs">Clé API GigData</Label>
+                  <Input
+                    type="password"
+                    placeholder="sk_live_xxxxxxxxxxxx"
+                    value={platformKeys.gigdata}
+                    onChange={e => setPlatformKeys(k => ({ ...k, gigdata: e.target.value }))}
+                    className="h-9 text-sm mt-1 font-mono"
+                  />
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    Obtenez votre clé sur <a href="https://gigdata.fr" target="_blank" rel="noreferrer" className="text-primary underline">gigdata.fr</a> — agrège Uber, Bolt, Heetch, FreeNow
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" className="flex-1 h-8 text-xs"
+                    disabled={!platformKeys.gigdata || platformTesting.gigdata}
+                    onClick={async () => {
+                      setPlatformTesting(t => ({ ...t, gigdata: true }));
+                      await apiRequest("PUT", "/api/platforms/credentials/gigdata", { api_key: platformKeys.gigdata });
+                      await apiRequest("POST", "/api/platforms/test/gigdata", {});
+                      await refetchCreds();
+                      setPlatformKeys(k => ({ ...k, gigdata: "" }));
+                      setPlatformTesting(t => ({ ...t, gigdata: false }));
+                    }}>
+                    {platformTesting.gigdata ? <><RefreshCw size={11} className="animate-spin mr-1" />Test...</> : "Sauvegarder & tester"}
+                  </Button>
+                  {status === "connected" && (
+                    <Button size="sm" variant="ghost" className="h-8 px-2 text-xs text-muted-foreground"
+                      onClick={async () => {
+                        await apiRequest("PUT", "/api/platforms/credentials/gigdata", { api_key: "" });
+                        await refetchCreds();
+                      }}>
+                      Déconnecter
+                    </Button>
+                  )}
+                </div>
+                {cred?.error_msg && status === "error" && (
+                  <p className="text-[10px] text-red-400 flex items-start gap-1"><AlertCircle size={10} className="mt-0.5 shrink-0" />{cred.error_msg}</p>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Résumé si au moins une plateforme connectée */}
+          {Array.isArray(platformCreds) && platformCreds.some((c: any) => c.status === "connected") && (
+            <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 p-2.5 text-xs text-emerald-400">
+              ✅ Données de demande temps réel actives — visibles dans la carte et les alertes
+            </div>
+          )}
         </CardContent>
       </Card>
 

@@ -2,6 +2,11 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { getFlightData, getFlightBoostForZone } from "./flightService";
+import {
+  testUberConnection,
+  testGigDataConnection,
+  fetchAllPlatformDemand,
+} from "./platformDemand";
 
 // ← F3: Cache en mémoire pour getFlightData avec mutex concurrent-safe
 // TTL = 3min (aligné sur REFRESH_INTERVAL_MS storage)
@@ -380,6 +385,63 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   app.get("/api/driver-profile", (_req, res) => { res.json(storage.getDriverProfile() || null); });
 
   app.put("/api/driver-profile", (req, res) => { res.json(storage.updateDriverProfile(req.body)); });
+
+  // ─── Platform credentials ────────────────────────────────────────────────────
+  app.get("/api/platforms/credentials", (_req, res) => {
+    const creds = storage.getPlatformCredentials();
+    // Masquer les clés (ne retourner que les 4 premiers caractères + "****")
+    const masked = creds.map((c: any) => ({
+      ...c,
+      api_key: c.api_key ? c.api_key.slice(0, 4) + "****" : "",
+      has_key: c.api_key?.length > 0,
+    }));
+    res.json(masked);
+  });
+
+  app.put("/api/platforms/credentials/:platform", (req, res) => {
+    const { platform } = req.params;
+    const { api_key } = req.body as { api_key: string };
+    if (!["uber", "gigdata"].includes(platform)) {
+      return res.status(400).json({ error: "Plateforme non supportée" });
+    }
+    storage.savePlatformCredential(platform, api_key || "");
+    res.json({ success: true });
+  });
+
+  app.post("/api/platforms/test/:platform", async (req, res) => {
+    const { platform } = req.params;
+    const cred = storage.getPlatformCredential(platform);
+    if (!cred?.api_key) {
+      return res.status(400).json({ ok: false, error: "Aucune clé configurée" });
+    }
+
+    let result: { ok: boolean; error?: string };
+
+    if (platform === "uber") {
+      result = await testUberConnection(cred.api_key);
+    } else if (platform === "gigdata") {
+      result = await testGigDataConnection(cred.api_key);
+    } else {
+      return res.status(400).json({ ok: false, error: "Plateforme inconnue" });
+    }
+
+    storage.updatePlatformStatus(platform, result.ok ? "connected" : "error", result.error || "");
+    res.json(result);
+  });
+
+  app.get("/api/platforms/demand", async (_req, res) => {
+    const uberCred   = storage.getPlatformCredential("uber");
+    const gigCred    = storage.getPlatformCredential("gigdata");
+    const uberKey    = uberCred?.api_key && uberCred.status === "connected" ? uberCred.api_key : null;
+    const gigdataKey = gigCred?.api_key  && gigCred.status  === "connected" ? gigCred.api_key  : null;
+
+    if (!uberKey && !gigdataKey) {
+      return res.json({ zones: [], message: "Aucune plateforme configurée" });
+    }
+
+    const zones = await fetchAllPlatformDemand(uberKey, gigdataKey);
+    res.json({ zones, fetched_at: new Date().toISOString() });
+  });
 
   // ─── Analytics : refresh quotidien + diff historique ──────────────────────────
   app.get("/api/analytics/refresh", async (_req, res) => {

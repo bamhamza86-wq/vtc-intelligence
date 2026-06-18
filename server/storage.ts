@@ -89,6 +89,24 @@ for (const mig of driverProfileMigrations) {
   try { sqlite.exec(mig); } catch { /* colonne déjà présente */ }
 }
 
+// ─── Table platform_credentials ───────────────────────────────────────────────
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS platform_credentials (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform    TEXT    NOT NULL UNIQUE,   -- 'uber' | 'gigdata'
+    api_key     TEXT    NOT NULL DEFAULT '',
+    status      TEXT    NOT NULL DEFAULT 'unconfigured', -- 'unconfigured'|'connected'|'error'
+    last_tested INTEGER,
+    error_msg   TEXT    DEFAULT ''
+  )
+`);
+
+// Insérer les entrées par défaut si elles n'existent pas
+const existingUber = sqlite.prepare("SELECT id FROM platform_credentials WHERE platform='uber'").get();
+if (!existingUber) sqlite.exec("INSERT INTO platform_credentials (platform, api_key) VALUES ('uber', '')");
+const existingGig = sqlite.prepare("SELECT id FROM platform_credentials WHERE platform='gigdata'").get();
+if (!existingGig) sqlite.exec("INSERT INTO platform_credentials (platform, api_key) VALUES ('gigdata', '')");
+
 // ─── Index pour accélération hot-path ──────────────────────────────────
 sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_prof_hour_daytype ON profitability_scores(hour, day_type);
@@ -1591,6 +1609,10 @@ export interface IStorage {
   getDriverPerformance(): any;
   computeDriverPerformance(period: "daily" | "weekly"): any;
   incrementProfileKm(addedKm: number): void;
+  getPlatformCredentials(): any[];
+  getPlatformCredential(platform: string): any;
+  savePlatformCredential(platform: string, apiKey: string): void;
+  updatePlatformStatus(platform: string, status: string, errorMsg?: string): void;
 }
 
 export const storage: IStorage = {
@@ -1888,5 +1910,19 @@ export const storage: IStorage = {
     }).filter(Boolean);
 
     return { today, yesterday, diff, hasHistory: true, todayLabel: DAY_COEFFICIENTS[new Date().getDay()]?.label, yesterdayLabel: DAY_COEFFICIENTS[(new Date().getDay() + 6) % 7]?.label };
+  },
+
+  // ─── Platform credentials ───────────────────────────────────────────────────
+  getPlatformCredentials(): any[] {
+    return sqlite.prepare("SELECT * FROM platform_credentials").all();
+  },
+  getPlatformCredential(platform: string): any {
+    return sqlite.prepare("SELECT * FROM platform_credentials WHERE platform=?").get(platform);
+  },
+  savePlatformCredential(platform: string, apiKey: string): void {
+    sqlite.prepare("UPDATE platform_credentials SET api_key=?, status='unconfigured', error_msg='' WHERE platform=?").run(apiKey, platform);
+  },
+  updatePlatformStatus(platform: string, status: string, errorMsg: string = ''): void {
+    sqlite.prepare("UPDATE platform_credentials SET status=?, last_tested=?, error_msg=? WHERE platform=?").run(status, Date.now(), errorMsg, platform);
   },
 };
