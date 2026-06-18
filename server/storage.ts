@@ -695,9 +695,14 @@ function computeScore(
     12: 0.84, 13: 0.86, 14: 0.68, 15: 0.60, 16: 0.88, 17: 0.72,
     18: 0.72, 19: 0.85, 20: 1.05, 21: 0.90, 22: 0.58, 23: 0.35,
   };
-  // Zones urbaines : commute bimodal (rush AM/PM = peak), nuit 0h-5h = faible sauf weekend
+  // Zones urbaines : commute bimodal (rush AM/PM = peak), nuit 0h-5h calibrée 18/06/2026
+  // Calibration nuit 18/06 : URBAN_AVAILABILITY_WEEKDAY[0..3] corrigé depuis historique réel
+  // Méthode : finalProfIdx = profIdx_raw × avail → avail_req = hist_target / profIdx_raw
+  // Données : h=0 hist=50.2 (avail 0.38→0.86), h=1 hist=54.2 (0.30→0.83),
+  //           h=2 hist=44.1 (0.25→0.67), h=3 hist=33.4 (0.25→0.53)
+  // Interprétation : travailleurs nuit 93 (logistique CDG, sécurité, restauration) actifs h=0..2
   const URBAN_AVAILABILITY_WEEKDAY: Record<number, number> = {
-    0: 0.38, 1: 0.30, 2: 0.25, 3: 0.25, 4: 0.30, 5: 0.48,
+    0: 0.86, 1: 0.83, 2: 0.67, 3: 0.53, 4: 0.55, 5: 0.48,  // calibré 18/06/2026 données terrain
     // Entraînement 17/06/2026 : h=7+0.07, h=8+0.13, h=9+0.17 (rush AM zones 93 DiRIF sous-estimé)
     6: 0.82, 7: 1.07, 8: 1.13, 9: 1.09, 10: 0.75, 11: 0.78,
     12: 0.78, 13: 0.72, 14: 0.68, 15: 0.65, 16: 0.72, 17: 1.00,
