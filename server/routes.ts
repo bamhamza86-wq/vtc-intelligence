@@ -638,6 +638,46 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     }
   });
 
+  // ─── GET /api/seeds/live — Seeds actives en temps réel (recalculées 3 min) ─
+  // Retourne livePat complet : pour chaque zone, les seeds actuellement utilisées
+  // par computeScore (fusion statiques + overrides dynamiques).
+  // Inclut les métadonnées du dernier run (MAE avant/après, zones mises à jour).
+  app.get("/api/seeds/live", (_req, res) => {
+    try {
+      const live = storage.getLiveSeeds();
+      const meta = storage.getLiveSeedsMeta();
+      // Résumé propre par zone : masquer les champs internes
+      const summary: Record<string, any> = {};
+      for (const [zoneId, pat] of Object.entries(live as Record<string, any>)) {
+        summary[zoneId] = {
+          peakHours:       pat.peakHours,
+          demandBoost6_10: pat.demandBoost6_10  ?? 0,
+          demandBoost10:   pat.demandBoost10    ?? 0,
+          demandBoost11_14:pat.demandBoost11_14 ?? 0,
+          demandBoost14_18:pat.demandBoost14_18 ?? 0,
+          baseAvgDist:     pat.baseAvgDist,
+          baseLongRide:    pat.baseLongRide,
+          _live:           pat._live ?? false,
+          _updated_at:     pat._updated_at ?? null,
+        };
+      }
+      res.json({
+        seeds: summary,
+        meta: {
+          last_update:    meta.last_update,
+          mae_before:     Number(meta.mae_before.toFixed(2)),
+          mae_after:      Number(meta.mae_after.toFixed(2)),
+          zones_updated:  meta.zones_updated,
+          run_count:      meta.run_count,
+          refresh_interval_min: 3,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   app.post("/api/seeds/update", (req, res) => {
     try {
       const { seeds, trigger, mae_before, mae_after } = req.body as {

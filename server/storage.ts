@@ -395,6 +395,265 @@ function getYesterdayStr(): string {
   return d.toISOString().split("T")[0];
 }
 
+// ─── livePat — Seeds dynamiques (recalculées toutes les 3 min) ───────────────
+// Objet en mémoire qui fusionne les patterns statiques + les overrides calculés
+// à partir de l'historique réel accumulé. computeScore lit livePat au lieu de
+// patterns, donc chaque cycle 3 min les seeds s'auto-ajustent aux données réelles.
+//
+// Structure d'un override dynamique :
+//   { demandBoost6_10, demandBoost10, demandBoost11_14, demandBoost14_18,
+//     baseAvgDist, baseLongRide, _live: true, _updated_at, _mae_before, _mae_after }
+//
+// Règle métier absolue : légère sous-estimation OK, sur-estimation interdite.
+//   → Tous les boosts calculés sont plafonnés à 95% de la valeur qui atteindrait
+//     exactement l'historique (marge de sécurité de 5% vers la sous-estimation).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Copie mutable des patterns statiques, enrichie des overrides dynamiques
+// Initialisation : copie des patterns statiques + injection du type de zone
+// (nécessaire pour getBaseDemand() qui calcule les morningCaps)
+let livePat: Record<string, any> = {};
+function initLivePat(): void {
+  for (const [k, v] of Object.entries(patterns)) {
+    const zone = zones93.find(z => z.id === k);
+    livePat[k] = { ...v, _zoneType: zone?.type ?? 'business' };
+  }
+}
+// Initialisation différée après zones93 disponible
+initLivePat();
+
+// Métadonnées du dernier calcul de seeds dynamiques
+let livePatMeta: {
+  last_update: string;
+  mae_before:  number;
+  mae_after:   number;
+  zones_updated: string[];
+  run_count:   number;
+} = { last_update: "", mae_before: 0, mae_after: 0, zones_updated: [], run_count: 0 };
+
+/**
+ * updateLivePatterns() — appelé dans le setInterval 3 min
+ *
+ * Pour chaque zone, compare les prédictions actuelles aux données réelles
+ * du score_history d'aujourd'hui (heures écoulées) et recalcule les boosts.
+ *
+ * Algorithme par heure écoulée :
+ *   1. pred = score actuel (profitability_scores)
+ *   2. hist = moyenne des demand_score stockés dans score_history today
+ *   3. delta = hist - pred
+ *   4. Si |delta| > seuil (5 pts) → recalibrer le boost correspondant à cette heure
+ *   5. EMA (α=0.4) pour lisser les oscillations
+ *
+ * Les boosts recalibrés sont écrits dans livePat[zone_id] (en mémoire)
+ * et aussi dans seed_meta (persistance redémarrage).
+ */
+function updateLivePatterns(): void {
+  const t0 = Date.now();
+  const now = new Date();
+  const today = now.toISOString().split("T")[0];
+  // Heure courante CEST (UTC+2)
+  const hNowCEST = (now.getUTCHours() + 2) % 24;
+  const dayOfWeek = now.getDay();
+  const dayCo = DAY_COEFFICIENTS[dayOfWeek] || DAY_COEFFICIENTS[2];
+
+  // ── 1. Historique réel accumulé aujourd'hui ──────────────────────────────
+  // Moyenner sur les N derniers cycles (plusieurs runs dans la même heure)
+  const histRows = sqlite.prepare(`
+    SELECT zone_id, hour, AVG(demand_score) as demand_real, COUNT(*) as n
+    FROM score_history
+    WHERE seed_date = ? AND day_type = 'weekday'
+    GROUP BY zone_id, hour
+  `).all(today) as { zone_id: string; hour: number; demand_real: number; n: number }[];
+
+  if (histRows.length === 0) return; // cold start — pas encore de données
+
+  // ── 2. Prédictions actuelles ─────────────────────────────────────────────
+  const predRows = sqlite.prepare(`
+    SELECT zone_id, hour, demand_score as demand_pred
+    FROM profitability_scores
+    WHERE day_type = 'weekday'
+  `).all() as { zone_id: string; hour: number; demand_pred: number }[];
+
+  const predMap = new Map<string, number>();
+  for (const r of predRows) predMap.set(`\${r.zone_id}|\${r.hour}`, r.demand_pred);
+
+  // ── 3. Overrides persistés (EMA — pour lisser sur plusieurs cycles) ──────
+  const overrideRows = sqlite.prepare(
+    "SELECT key, value FROM seed_meta WHERE key LIKE 'live_seed_%'"
+  ).all() as { key: string; value: string }[];
+  const overrideMap = new Map<string, any>();
+  for (const r of overrideRows) {
+    try { overrideMap.set(r.key.replace('live_seed_', ''), JSON.parse(r.value)); } catch {}
+  }
+
+  // ── 4. Calcul des nouveaux boosts par zone ───────────────────────────────
+  const EMA_ALPHA   = 0.40;  // poids mesure récente (vs historique EMA)
+  const DELTA_MIN   = 5;     // delta minimal pour déclencher une mise à jour (pts)
+  const SAFETY_PCT  = 0.95;  // règle métier : 5% de marge vers la sous-estimation
+  const zonesUpdated: string[] = [];
+  const maesBefore: number[] = [];
+  const maesAfter: number[]  = [];
+
+  // Grouper l'historique par zone
+  const histByZone = new Map<string, Map<number, number>>();
+  for (const r of histRows) {
+    if (!histByZone.has(r.zone_id)) histByZone.set(r.zone_id, new Map());
+    histByZone.get(r.zone_id)!.set(r.hour, r.demand_real);
+  }
+
+  const insOverride = sqlite.prepare(
+    "INSERT OR REPLACE INTO seed_meta (key, value) VALUES (?, ?)"
+  );
+
+  const tx = sqlite.transaction(() => {
+    for (const [zoneId, hourMap] of histByZone) {
+      const pat = { ...(patterns[zoneId] || {}), ...(livePat[zoneId] || {}) };
+      if (!pat.peakHours) continue;
+
+      const overrideKey = zoneId;
+      const existing: any = overrideMap.get(overrideKey) || {};
+      const newOverride: Record<string, number | string | boolean> = { ...existing };
+      let changed = false;
+
+      // Itérer sur les heures écoulées avec données réelles
+      for (const [h, hist] of hourMap) {
+        if (h > hNowCEST) continue;      // heure future → ignorer
+        if (hist < 5) continue;           // bruit → ignorer
+
+        const predKey = `\${zoneId}|\${h}`;
+        const pred = predMap.get(predKey) ?? 0;
+        if (pred < 1) continue;
+
+        const delta = hist - pred;
+        maesBefore.push(Math.abs(delta / hist) * 100);
+
+        if (Math.abs(delta) < DELTA_MIN) {
+          // Seeds OK pour cette heure → pas de modification
+          maesAfter.push(Math.abs(delta / hist) * 100);
+          continue;
+        }
+
+        // Déterminer quel boost est responsable de cette heure
+        // et calculer la correction nécessaire
+        // cible = hist × SAFETY_PCT (légère sous-estimation)
+        const target = hist * SAFETY_PCT;
+        const currentBoost = getBoostForHour(h, pat);
+        // target = (morningCapOrBase + boost) × dayCo → boost_needed = target/dayCo - base
+        const base = getBaseDemand(h, pat, dayCo);
+        const boostNeeded = Math.max(0, (target / dayCo.demand) - base);
+
+        // EMA : mélanger avec la valeur existante pour stabilité
+        const existingBoost = existing[getBoostKeyForHour(h)] ?? currentBoost;
+        const smoothedBoost = Math.round(EMA_ALPHA * boostNeeded + (1 - EMA_ALPHA) * existingBoost);
+
+        const boostKey = getBoostKeyForHour(h);
+        if (boostKey && smoothedBoost !== Math.round(existingBoost)) {
+          newOverride[boostKey] = smoothedBoost;
+          changed = true;
+        }
+
+        // MAE après correction
+        const predCorrected = (base + smoothedBoost) * dayCo.demand;
+        maesAfter.push(Math.abs((predCorrected - hist) / hist) * 100);
+      }
+
+      if (changed) {
+        // Appliquer dans livePat (mémoire)
+        livePat[zoneId] = { ...(patterns[zoneId] || {}), ...newOverride, _live: true, _updated_at: now.toISOString() };
+        // Persister dans seed_meta (survie redémarrage)
+        insOverride.run(`live_seed_\${zoneId}`, JSON.stringify(newOverride));
+        zonesUpdated.push(zoneId);
+      }
+    }
+  });
+  tx();
+
+  // ── 5. Mise à jour métadonnées ───────────────────────────────────────────
+  const mae_before = maesBefore.length ? maesBefore.reduce((a,b)=>a+b,0)/maesBefore.length : 0;
+  const mae_after  = maesAfter.length  ? maesAfter.reduce((a,b)=>a+b,0)/maesAfter.length   : 0;
+  livePatMeta = {
+    last_update:   now.toISOString(),
+    mae_before,
+    mae_after,
+    zones_updated: zonesUpdated,
+    run_count:     livePatMeta.run_count + 1,
+  };
+
+  sqlite.prepare("INSERT OR REPLACE INTO seed_meta (key,value) VALUES ('live_seeds_last_run',?)")
+    .run(JSON.stringify({ ts: now.toISOString(), mae_before, mae_after, zones: zonesUpdated, run: livePatMeta.run_count }));
+
+  const durationMs = Date.now() - t0;
+  if (zonesUpdated.length > 0 || livePatMeta.run_count % 10 === 0) {
+    console.log(
+      `[seeds] 3min recal — MAE: \${mae_before.toFixed(1)}%→\${mae_after.toFixed(1)}% | ` +
+      `zones: \${zonesUpdated.length} | run #\${livePatMeta.run_count} | \${durationMs}ms`
+    );
+  }
+}
+
+/** Retourne la valeur de boost statique actuelle pour une heure donnée */
+function getBoostForHour(h: number, pat: any): number {
+  if (h >= 5 && h < 10)  return pat.demandBoost6_10  ?? 0;
+  if (h === 10)          return pat.demandBoost10     ?? 0;
+  if (h >= 11 && h <= 13) return pat.demandBoost11_14 ?? 0;
+  if (h >= 14 && h <= 18) return pat.demandBoost14_18 ?? 0;
+  return 0;
+}
+
+/** Retourne la clé du boost pour une heure donnée */
+function getBoostKeyForHour(h: number): string | null {
+  if (h >= 5 && h < 10)   return 'demandBoost6_10';
+  if (h === 10)            return 'demandBoost10';
+  if (h >= 11 && h <= 13) return 'demandBoost11_14';
+  if (h >= 14 && h <= 18) return 'demandBoost14_18';
+  return null;
+}
+
+/** Retourne la base de demande AVANT boost et AVANT ×dayCo pour une heure/zone */
+function getBaseDemand(h: number, pat: any, dayCo: { demand: number }): number {
+  const isPeak = (pat.peakHours ?? []).includes(h);
+  const isNight = h >= 0 && h < 5;
+  let base = isPeak ? 82 : (isNight ? 36 : 50);
+  // morningCap h<=11
+  if (h <= 11) {
+    const zoneType = (pat as any)._zoneType ?? 'business';
+    let cap: number;
+    if (h < 10) {
+      const isLow = zoneType === 'transport' || zoneType === 'residential';
+      cap = isLow ? 12 + (h - 5) * 2 : 15 + (h - 5) * 3;
+    } else if (h === 10) {
+      const caps10: Record<string, number> = { transport: 30, business: 38, residential: 41, entertainment: 10 };
+      cap = caps10[zoneType] ?? 38;
+    } else {
+      const caps11: Record<string, number> = { transport: 35, business: 42, residential: 44, entertainment: 16 };
+      cap = caps11[zoneType] ?? 42;
+    }
+    base = Math.min(base, cap);
+  }
+  return base;
+}
+
+/** Charge les overrides persistés depuis seed_meta au démarrage */
+function loadLiveSeedsFromDb(): void {
+  try {
+    const rows = sqlite.prepare(
+      "SELECT key, value FROM seed_meta WHERE key LIKE 'live_seed_%'"
+    ).all() as { key: string; value: string }[];
+    let loaded = 0;
+    for (const r of rows) {
+      const zoneId = r.key.replace('live_seed_', '');
+      try {
+        const override = JSON.parse(r.value);
+        livePat[zoneId] = { ...(patterns[zoneId] || {}), ...override, _live: true };
+        loaded++;
+      } catch {}
+    }
+    if (loaded > 0) console.log(`[seeds] \${loaded} overrides dynamiques chargés depuis DB`);
+  } catch (e) {
+    console.warn('[seeds] loadLiveSeedsFromDb:', e);
+  }
+}
+
 function computeScore(
   zone: typeof zones93[0],
   h: number,
@@ -403,7 +662,8 @@ function computeScore(
   seedVariance: number,
   preloadedEvents?: any[]  // ← audit C1: events préchargés depuis reseedScores (Map) — évite N+1
 ) {
-  const patBase = patterns[zone.id] || { peakHours: [8,12,18], baseAvgDist: 15, baseLongRide: 0.30 };
+  // ── Seeds dynamiques : livePat (recalculé 3min) > patterns (statique) ──────
+  const patBase = livePat[zone.id] || patterns[zone.id] || { peakHours: [8,12,18], baseAvgDist: 15, baseLongRide: 0.30 };
 
   // ── P2b context-aware patterns : salon actif → profil event, sinon base ───
   // Utiliser les events préchargés si dispos, sinon fallback DB (appels directs depuis routes)
@@ -425,8 +685,10 @@ function computeScore(
     ...patBase,
     baseAvgDist:   patBase.baseAvgDist + salonRatio * (((patBase as any).baseAvgDistSalon  ?? patBase.baseAvgDist)  - patBase.baseAvgDist),
     baseLongRide:  patBase.baseLongRide + salonRatio * (((patBase as any).baseLongRideSalon ?? patBase.baseLongRide) - patBase.baseLongRide),
-    demandBoost11_14: (patBase as any).demandBoost11_14,
-    demandBoost14_18: (patBase as any).demandBoost14_18,
+    demandBoost10:    (patBase as any).demandBoost10,     // ← seeds dynamiques
+    demandBoost11_14: (patBase as any).demandBoost11_14,  // ← seeds dynamiques
+    demandBoost14_18: (patBase as any).demandBoost14_18,  // ← seeds dynamiques
+    demandBoost6_10:  (patBase as any).demandBoost6_10,   // ← seeds dynamiques
   };
 
   const isPeak = pat.peakHours.includes(h);
@@ -1230,6 +1492,8 @@ function seedData() {
 
     const newCnt = (sqlite.prepare("SELECT COUNT(*) as c FROM profitability_scores").get() as any).c;
     console.log(`[storage] ${newCnt} scores calculés pour ${today}`);
+    // Charger les overrides seeds dynamiques persistés (survie redémarrage)
+    loadLiveSeedsFromDb();
 
     // ── Archive temps réel : mettre à jour score_history pour today à chaque reseed ──────────
     // Cela permet à /api/history?date=today de retourner des données fraîches sans attendre minuit.
@@ -1590,6 +1854,11 @@ setInterval(() => {
     // Recalcul complet des 672 scores (14 zones × 24h × 2 day_types)
     // ← audit C2: transaction atomique — aucune requête HTTP ne voit la table vide
     const t0 = Date.now();
+    // ── Seeds dynamiques : recalibrer AVANT le reseed ──────────────────────
+    // updateLivePatterns() compare hist réel vs prédit et met à jour livePat.
+    // reseedScores() utilise ensuite computeScore → livePat (seeds fraîches).
+    updateLivePatterns();
+
     const reseedTx3min = sqlite.transaction(() => {
       sqlite.exec("DELETE FROM profitability_scores");
       reseedScores(today, dayOfWeek);
@@ -1648,6 +1917,8 @@ export interface IStorage {
   getLastRefreshTs(): string;
   getSeeds(): Record<string, Record<string, number>>;
   updateSeeds(seeds: Record<string, Record<string, number>>, meta?: {trigger?: string; mae_before?: number; mae_after?: number}): {zones_updated: number; zones: string[]};
+  getLiveSeeds(): Record<string, any>;
+  getLiveSeedsMeta(): typeof livePatMeta;
   generateDemandPredictions(): void;
   getPredictions(hoursAhead?: number, zoneId?: string): any;
   getMaintenance(): any[];
@@ -1871,6 +2142,8 @@ export const storage: IStorage = {
     return { zones_updated: updated.length, zones: updated };
   },
 
+  getLiveSeeds: () => livePat,
+  getLiveSeedsMeta: () => livePatMeta,
   generateDemandPredictions: () => generateDemandPredictions(),
 
   // THÈME 1 : prédictions des N prochaines heures, toutes zones (ou filtrées)
