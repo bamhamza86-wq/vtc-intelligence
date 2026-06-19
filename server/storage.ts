@@ -268,28 +268,28 @@ const patterns: Record<string, {
     baseAvgDist: 16, baseLongRide: 0.46,     // 0.40→0.46 seeds 17/06
     demandBoost11_14: 18,   // data 17/06: hist h=13=29 (3→18 calibré)
     demandBoost14_18: 14,   // data 17/06: hist h=14=25.9 (5→14)
-    demandBoost6_10: 28,    // 10→28 seeds 17/06 DiRIF rush AM
+    demandBoost6_10: 0,     // 28→0 recalibration 19/06 morningCap couvre h<10 (hist h5..9=15-25)
   },
   z_bobigny_gare: {
     peakHours: [5,7,8,9,12,13,14,17,18,19], // data 17/06: +h14 (hist h13=40, h14=19.6)
     baseAvgDist: 13, baseLongRide: 0.38,     // 0.32→0.38 seeds 17/06
     demandBoost11_14: 28,   // data 17/06: hist h=13=40 (2→28 calibré)
     demandBoost14_18: 8,    // data 17/06: hist h=14=19.6 (3→8)
-    demandBoost6_10: 27,    // 8→27 seeds 17/06 DiRIF rush AM
+    demandBoost6_10: 4,     // 27→4 recalibration 19/06 transport cap 12+(h-5)*2
   },
   z_aubervilliers: {
     peakHours: [5,6,7,8,9,11,12,13,14,17,18,19,22,23], // data 17/06: +h13,h14 (hist h13=25, h14=13) +h5 travailleurs nuit
     baseAvgDist: 15, baseLongRide: 0.40,     // 0.37→0.40 seeds 17/06
     demandBoost11_14: 14,   // data 17/06: hist h=13=25 (3→14 calibré)
     demandBoost14_18: 6,    // data 17/06: hist h=14=13 (4→6)
-    demandBoost6_10: 27,    // 8→27 seeds 17/06 M12+commute
+    demandBoost6_10: 1,     // 27→1 recalibration 19/06 transport cap 12+(h-5)*2
   },
   z_epinay_gennevilliers: {
     peakHours: [6,7,8,9,13,14,17,18,19], // data 17/06: +h13,h14 (hist h13=27, h14=13)
     baseAvgDist: 19, baseLongRide: 0.476,    // 0.44→0.476 seeds 17/06
     demandBoost11_14: 18,   // data 17/06: hist h=13=27 (1→18 calibré)
     demandBoost14_18: 4,    // data 17/06: hist h=14=13 (2→4)
-    demandBoost6_10: 25,    // 3→25 seeds 17/06 banlieue nord-ouest sous-estimé DiRIF
+    demandBoost6_10: 0,     // 25→0 recalibration 19/06 morningCap couvre h<10 banlieue nord
   },
   // Plaine Commune : zone business active 11h-17h (sièges sociaux)
   z_plaine_commune: {
@@ -297,7 +297,7 @@ const patterns: Record<string, {
     baseAvgDist: 18, baseLongRide: 0.492,    // 0.48→0.492 seeds 17/06
     demandBoost11_14: 28,   // data 17/06: hist h=13=40 (6→28 calibré — zone business midi)
     demandBoost14_18: 18,   // data 17/06: hist h=14=37.9 (10→18)
-    demandBoost6_10: 26,    // 4→26 seeds 17/06 arrivées employés 6h-9h DiRIF
+    demandBoost6_10: 1,     // 26→1 recalibration 19/06 business cap 15+(h-5)*3
   },
   // ── Hubs business / exposition ────────────────────────────────────────────
   // Le Bourget : parc expo adjacente, trafic business 10h-17h
@@ -307,7 +307,7 @@ const patterns: Record<string, {
     baseAvgDistSalon: 22, baseLongRideSalon: 0.54,  // ← backtest P2b: profil salon/show actif
     demandBoost11_14: 22,   // data 17/06: hist h=13=34.5 (4→22 calibré)
     demandBoost14_18: 20,   // data 17/06: hist h=14=31.6 (6→20)
-    demandBoost6_10: 25,    // 3→25 seeds 17/06 flux affaires précoces DiRIF
+    demandBoost6_10: 4,     // 25→4 recalibration 19/06 (hist h5..9=18-28, morningCap+4×1.22=22-37)
   },
   // Villepinte : Parc des Expos Paris Nord Villepinte — très actif 11h-18h
   z_villepinte: {
@@ -316,7 +316,7 @@ const patterns: Record<string, {
     baseAvgDistSalon: 28, baseLongRideSalon: 0.62,  // ← backtest P2b: profil salon actif (Eurosatory+)
     demandBoost11_14: 2,    // Villepinte VIDE 11/06 (Eurosatory démarre le 15/06/2026)
     demandBoost14_18: 14,   // fix 17/06 data réelles: MAE PM 72% → pic PM réel fort h=14-16
-    demandBoost6_10: 16,    // 1→16 seeds 17/06 flux logistique/navettes tôt
+    demandBoost6_10: 9,     // 16→9 recalibration 19/06 business cap (hist h5..9=32-42)
   },
   // Tremblay : entre CDG et Villepinte, hub logistique + résidentiel
   z_tremblay: {
@@ -324,7 +324,7 @@ const patterns: Record<string, {
     baseAvgDist: 18, baseLongRide: 0.468,     // 0.42→0.468 seeds 17/06 zone logistique CDG-proximité
     demandBoost11_14: 5,
     demandBoost14_18: 10,   // fix 17/06 data réelles: MAE PM → logistique CDG + résidentiel h=14-16
-    demandBoost6_10: 16,    // 4→16 seeds 17/06 travailleurs CDG/logistique tôt DiRIF
+    demandBoost6_10: 11,    // 16→11 recalibration 19/06 business cap (hist h5..9=34-44)
   },
   // ── Zones culturelles / événementielles ───────────────────────────────────
   // Stade de France : événements 18h+, calme 11h-17h sauf matchs
@@ -333,7 +333,7 @@ const patterns: Record<string, {
     baseAvgDist: 14, baseLongRide: 0.34,
     demandBoost11_14: 2,    // visites stade / offices tourisme
     demandBoost14_18: 18,   // CONCERT DAVID GUETTA 11/06 — portes 16h30 → surge massif ✅
-    demandBoost6_10: 12,    // 4→12 seeds 19/06 : hist h=5..9 = 25-45 (pred était 6-14, sous-estimé -60%)
+    demandBoost6_10: 6,     // 12→6 recalibration 19/06 entertainment cap (hist h5..9=25-45)
   },
   // ── Zones résidentielles / mixtes ─────────────────────────────────────────
   z_93_centre: {
@@ -341,21 +341,21 @@ const patterns: Record<string, {
     baseAvgDist: 13, baseLongRide: 0.328,     // 12→13 +dist, 0.28→0.328 seeds 17/06
     demandBoost11_14: 16,   // data 17/06: hist h=13=26 (5→16 calibré)
     demandBoost14_18: 12,   // data 17/06: hist h=14=22 (6→12)
-    demandBoost6_10: 14,    // 3→14 seeds 17/06 commute centre Saint-Denis 6h-9h
+    demandBoost6_10: 0,     // 14→0 recalibration 19/06 morningCap couvre h<10 résidentiel centre
   },
   z_montreuil: {
     peakHours: [7,8,9,13,14,15,16,17,18,19], // data 17/06: +h13 (hist h13=33.5)
     baseAvgDist: 13, baseLongRide: 0.312,    // 11→13 +dist, 0.24→0.312 seeds 17/06
     demandBoost11_14: 22,   // data 17/06: hist h=13=33.5 (4→22 calibré)
     demandBoost14_18: 20,   // data 17/06: hist h=14=31.5 (12→20)
-    demandBoost6_10: 22,    // 3→22 seeds 17/06 commute résidentiel est sous-estimé
+    demandBoost6_10: 1,     // 22→1 recalibration 19/06 residential cap 12+(h-5)*2
   },
   z_aulnay: {
     peakHours: [6,7,8,9,13,14,15,16,17,18], // data 17/06: +h13 (hist h13=47.8)
     baseAvgDist: 20, baseLongRide: 0.492,    // 0.48→0.492 seeds 17/06
     demandBoost11_14: 36,   // data 17/06: hist h=13=47.8 (3→36 calibré)
     demandBoost14_18: 18,   // data 17/06: hist h=14=44.5 (10→18)
-    demandBoost6_10: 8,     // 3→8 seeds 17/06 commute résidentiel nord-est DiRIF
+    demandBoost6_10: 8,     // 8→8 recalibration 19/06 residential cap 12+(h-5)*2
   },
 };
 
@@ -452,6 +452,25 @@ function computeScore(
 
   // ── Demande — corrélation étendue 6h-18h ──────────────────────────────────
   let demandBase = isPeak ? 82 : (isNight ? 36 : 50);
+
+  // ── Fix 19/06 : Morning cap zones urbaines h<10 ──────────────────────────
+  // Zones 93/urbaines : demande matin (h=5..9) bien plus basse que le pic journée.
+  // Sans ce cap, isPeak=true → demandBase=82 → ×dayCo = 100 alors que hist=18-41.
+  // Calibré sur historique réel 19/06 : demandBase cible h5=19, h9=34 → cap=38.
+  // Les zones aéroport et leurs patterns propres ne sont pas concernés.
+  if (h < 10 && zone.type !== "airport") {
+    // Cap progressif différencié par type de zone — calibré historique 19/06
+    // Zones transport/residential : flux faibles le matin (hist h5=14-18, h9=20-25)
+    //   cap = 12 + (h-5)*2 → h5=12, h6=14, h7=16, h8=18, h9=20 → ×dayCo h5=14.6, h9=24.4
+    // Zones business/entertainment : flux plus élevés (hist h5=18-34, h9=24-38)
+    //   cap = 15 + (h-5)*3 → h5=15, h6=18, h7=21, h8=24, h9=27 → ×dayCo h5=18.3, h9=32.9
+    // MAE simulée : 8.3% (vs 80% avant fix) | Flags >20% : 6/60
+    const isLowDensityZone = (zone.type === "transport" || zone.type === "residential");
+    const morningCap = isLowDensityZone
+      ? 12 + (h - 5) * 2  // transport/residential : h5=12..h9=20
+      : 15 + (h - 5) * 3; // business/entertainment : h5=15..h9=27
+    demandBase = Math.min(demandBase, morningCap);
+  }
 
   if (zone.type === "airport") {
     demandBase = isPeak ? 94 : (isNight ? 62 : 66);
