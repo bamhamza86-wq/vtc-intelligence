@@ -329,11 +329,11 @@ const patterns: Record<string, {
   // ── Zones culturelles / événementielles ───────────────────────────────────
   // Stade de France : événements 18h+, calme 11h-17h sauf matchs
   z_stade_france: {
-    peakHours: [13,16,17,18,19,20,21,22,23],  // ← backtest P1b: ajout 13h (montée charge concert 3h avant)
-    baseAvgDist: 14, baseLongRide: 0.34,      // 0.32→0.34 seeds 17/06
+    peakHours: [0,1,2,3,4,5,6,7,8,9,13,16,17,18,19,20,21,22,23],  // 19/06: +h0..9 résidents nuit + commute matin (hist nuit=18-35, matin=25-45)
+    baseAvgDist: 14, baseLongRide: 0.34,
     demandBoost11_14: 2,    // visites stade / offices tourisme
     demandBoost14_18: 18,   // CONCERT DAVID GUETTA 11/06 — portes 16h30 → surge massif ✅
-    demandBoost6_10: 4,     // 2→4 seeds 17/06 commute résidentiel secteur matin
+    demandBoost6_10: 12,    // 4→12 seeds 19/06 : hist h=5..9 = 25-45 (pred était 6-14, sous-estimé -60%)
   },
   // ── Zones résidentielles / mixtes ─────────────────────────────────────────
   z_93_centre: {
@@ -475,7 +475,8 @@ function computeScore(
   // Ajustements ponctuels validés
   if (zone.id === "z_cdg"  && h >= 6  && h <= 8)  demandBase = Math.min(demandBase + 4, 98);
   if (zone.id === "z_orly" && h === 8)             demandBase = Math.min(demandBase + 3, 94);
-  if (zone.id === "z_stade_france" && !isPeak)     demandBase = 20;
+  // z_stade_france : plus d'override brutal — h0..9 maintenant dans peakHours (19/06)
+  // if (zone.id === "z_stade_france" && !isPeak)     demandBase = 20; // SUPPRIMÉ 19/06
   if (isWeekendNight) demandBase += 24;
 
   // ── P3a : Perturbation transport (grève, incident) → boost demande zones RER ─

@@ -2,6 +2,7 @@
 vtc_collect_morning_6h.py — CRON 29554453
 Collecte prédictions rush matin (h=5..9) pour 14 zones.
 Exécuté à 06h00 CEST / 04h00 UTC, lun-ven.
+Fix 19/06: ré-authentification par heure (token JWT peut expirer en ~30min).
 """
 import sys, json
 from datetime import datetime, timezone, timedelta
@@ -32,17 +33,36 @@ def run():
     ts      = now_utc.isoformat()
 
     print(f"[{ts}] CRON 29554453 — collecte prédictions matin {today}")
-    token = login()
-    print("  Auth OK")
 
     predictions = {}
+    token = None
+
     for h in RUSH_HOURS:
-        raw = get_profitability(token, h)
-        for item in raw:
-            z = item.get("zone_id")
-            if z in ZONES_14:
-                predictions.setdefault(z, {})[str(h)] = item.get("profitability_index", 0)
-        print(f"  h={h}: {sum(1 for z in predictions if str(h) in predictions[z])} zones")
+        # Re-authentification à chaque heure (token peut expirer en ~30min)
+        if token is None:
+            token = login()
+            print(f"  Auth OK (h={h})")
+        
+        try:
+            raw = get_profitability(token, h)
+            for item in raw:
+                z = item.get("zone_id")
+                if z in ZONES_14:
+                    predictions.setdefault(z, {})[str(h)] = item.get("profitability_index", 0)
+            print(f"  h={h}: {sum(1 for z in predictions if str(h) in predictions[z])} zones")
+        except Exception as e:
+            # 401 = token expiré → ré-authentifier
+            if "401" in str(e) or "Unauthorized" in str(e):
+                print(f"  h={h}: 401 — ré-auth...")
+                token = login()
+                raw = get_profitability(token, h)
+                for item in raw:
+                    z = item.get("zone_id")
+                    if z in ZONES_14:
+                        predictions.setdefault(z, {})[str(h)] = item.get("profitability_index", 0)
+                print(f"  h={h} (retry): {sum(1 for z in predictions if str(h) in predictions[z])} zones")
+            else:
+                print(f"  h={h}: ERREUR {e}")
 
     out_path = DIAG_DIR / f"predictions_{today}.json"
     out_path.write_text(json.dumps({
