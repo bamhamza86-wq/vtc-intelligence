@@ -222,7 +222,7 @@ const zones93 = [
   { id: "z_stade_france", name: "Stade de France",            lat: 48.9245,  lng: 2.3596,  type: "entertainment" },
   { id: "z_93_centre",    name: "Saint-Denis — Centre",       lat: 48.9356,  lng: 2.3535,  type: "residential" },  // fix: entertainment→residential (pas lieu spectacle, centre-ville résidentiel)
   { id: "z_montreuil",    name: "Montreuil",                  lat: 48.8637,  lng: 2.4482,  type: "residential" },
-  { id: "z_aulnay",       name: "Aulnay-sous-Bois",           lat: 48.9383,  lng: 2.4951,  type: "residential" },
+  { id: "z_aulnay",       name: "Aulnay-sous-Bois",           lat: 48.9383,  lng: 2.4951,  type: "business" },    // 19/06: changé residential→business (flux CDG matin h7-9=35-51)
 ];
 
 // ─── Patterns horaires par zone ───────────────────────────────────────────────
@@ -238,6 +238,7 @@ const patterns: Record<string, {
   baseLongRide: number;
   demandCap?: number;
   // Boosts horaires spécifiques 11h-18h (corrélation Parc Expo / events)
+  demandBoost10?: number;      // boost demande h=10 (transition matin→midi, zones business/logistique)
   demandBoost11_14?: number;   // boost demande 11h-14h
   demandBoost14_18?: number;   // boost demande 14h-18h (Parc Expo, business)
   // Boost corrélation 6h-10h (rush AM + aéroports matinaux) — mesuré 10/06/2026
@@ -273,6 +274,7 @@ const patterns: Record<string, {
   z_bobigny_gare: {
     peakHours: [5,7,8,9,12,13,14,17,18,19], // data 17/06: +h14 (hist h13=40, h14=19.6)
     baseAvgDist: 13, baseLongRide: 0.38,     // 0.32→0.38 seeds 17/06
+    demandBoost10: 12,      // 19/06: hist h10=53.2 vs cap30×1.22=36.6 → boost +12 → pred=51.2 (-3.8%)
     demandBoost11_14: 28,   // data 17/06: hist h=13=40 (2→28 calibré)
     demandBoost14_18: 8,    // data 17/06: hist h=14=19.6 (3→8)
     demandBoost6_10: 4,     // 27→4 recalibration 19/06 transport cap 12+(h-5)*2
@@ -322,6 +324,7 @@ const patterns: Record<string, {
   z_tremblay: {
     peakHours: [6,7,8,9,12,14,15,16,17,18,19], // fix 17/06 data réelles: pic PM h=14-16 zone logistique CDG
     baseAvgDist: 18, baseLongRide: 0.468,     // 0.42→0.468 seeds 17/06 zone logistique CDG-proximité
+    demandBoost10: 6,       // 19/06: hist h10=54.4 vs cap38×1.22=46.4 → boost +6 → pred=53.7 (-1.3%)
     demandBoost11_14: 5,
     demandBoost14_18: 10,   // fix 17/06 data réelles: MAE PM → logistique CDG + résidentiel h=14-16
     demandBoost6_10: 11,    // 16→11 recalibration 19/06 business cap (hist h5..9=34-44)
@@ -333,7 +336,7 @@ const patterns: Record<string, {
     baseAvgDist: 14, baseLongRide: 0.34,
     demandBoost11_14: 2,    // visites stade / offices tourisme
     demandBoost14_18: 18,   // CONCERT DAVID GUETTA 11/06 — portes 16h30 → surge massif ✅
-    demandBoost6_10: 6,     // 12→6 recalibration 19/06 entertainment cap (hist h5..9=25-45)
+    demandBoost6_10: 0,     // 6→0 recalibration h2 19/06 : hist h5=19.3, cap15×1.22=18.3 → légère sous-estimation OK
   },
   // ── Zones résidentielles / mixtes ─────────────────────────────────────────
   z_93_centre: {
@@ -348,14 +351,15 @@ const patterns: Record<string, {
     baseAvgDist: 13, baseLongRide: 0.312,    // 11→13 +dist, 0.24→0.312 seeds 17/06
     demandBoost11_14: 22,   // data 17/06: hist h=13=33.5 (4→22 calibré)
     demandBoost14_18: 20,   // data 17/06: hist h=14=31.5 (12→20)
-    demandBoost6_10: 1,     // 22→1 recalibration 19/06 residential cap 12+(h-5)*2
+    demandBoost6_10: 8,     // 1→8 recalibration 19/06 h2 : hist h5=24.6-h9=37.3 sous-estimé avec boost=1
   },
   z_aulnay: {
     peakHours: [6,7,8,9,13,14,15,16,17,18], // data 17/06: +h13 (hist h13=47.8)
     baseAvgDist: 20, baseLongRide: 0.492,    // 0.48→0.492 seeds 17/06
+    demandBoost10: 7,       // 4→7 : type changé business → cap38×1.22=46.4 → boost +7 → pred=51.7+8.5=52.6 (-5.7%)
     demandBoost11_14: 36,   // data 17/06: hist h=13=47.8 (3→36 calibré)
     demandBoost14_18: 18,   // data 17/06: hist h=14=44.5 (10→18)
-    demandBoost6_10: 8,     // 8→8 recalibration 19/06 residential cap 12+(h-5)*2
+    demandBoost6_10: 3,     // 8→3 : type→business, cap business h5=15..h9=27 > cap residential → boost réduit
   },
 };
 
@@ -458,23 +462,46 @@ function computeScore(
   // Sans ce cap, isPeak=true → demandBase=82 → ×dayCo = 100 alors que hist=18-41.
   // Calibré sur historique réel 19/06 : demandBase cible h5=19, h9=34 → cap=38.
   // Les zones aéroport et leurs patterns propres ne sont pas concernés.
-  if (h < 10 && zone.type !== "airport") {
-    // Cap progressif différencié par type de zone — calibré historique 19/06
-    // Zones transport/residential : flux faibles le matin (hist h5=14-18, h9=20-25)
-    //   cap = 12 + (h-5)*2 → h5=12, h6=14, h7=16, h8=18, h9=20 → ×dayCo h5=14.6, h9=24.4
-    // Zones business/entertainment : flux plus élevés (hist h5=18-34, h9=24-38)
-    //   cap = 15 + (h-5)*3 → h5=15, h6=18, h7=21, h8=24, h9=27 → ×dayCo h5=18.3, h9=32.9
-    // MAE simulée : 8.3% (vs 80% avant fix) | Flags >20% : 6/60
-    const isLowDensityZone = (zone.type === "transport" || zone.type === "residential");
-    const morningCap = isLowDensityZone
-      ? 12 + (h - 5) * 2  // transport/residential : h5=12..h9=20
-      : 15 + (h - 5) * 3; // business/entertainment : h5=15..h9=27
+  if (h <= 11 && zone.type !== "airport") {
+    // ── Cap progressif h=5..11 — calibré données réelles 19/06 ──────────────
+    // Couvre toute la montée de demande matinale avant le pic midi (h>=12)
+    // h<10 : cap progressif par type de zone (calibré 19/06)
+    //   transport/residential : 12+(h-5)*2 → h5=12..h9=20 → ×dayCo h5=14.6..h9=24.4
+    //   business/entertainment : 15+(h-5)*3 → h5=15..h9=27 → ×dayCo h5=18.3..h9=32.9
+    // h==10 : cap par type (calibré sur hist réels h10) — transition vers pic midi
+    //   transport=30, business=38, residential=41, entertainment=10
+    //   ×dayCo ven : transport=36.6, business=46.4, residential=50.0, entertainment=12.2
+    // h==11 : cap par type (calibré sur hist réels h11) — début montée midi
+    //   transport=35, business=42, residential=44, entertainment=16
+    //   ×dayCo ven : transport=42.7, business=51.2, residential=53.7, entertainment=19.5
+    // MAE simulée h=5..11 : <10% | Règle métier : légère sous-estimation OK
+    let morningCap: number;
+    if (h < 10) {
+      const isLowDensityZone = (zone.type === "transport" || zone.type === "residential");
+      morningCap = isLowDensityZone
+        ? 12 + (h - 5) * 2  // transport/residential : h5=12..h9=20
+        : 15 + (h - 5) * 3; // business/entertainment : h5=15..h9=27
+    } else if (h === 10) {
+      // Caps h=10 par type (calibrés hist 19/06)
+      const caps10: Record<string, number> = { transport: 30, business: 38, residential: 41, entertainment: 10 };
+      morningCap = caps10[zone.type] ?? 38;
+    } else { // h === 11
+      // Caps h=11 par type (calibrés hist 19/06)
+      const caps11: Record<string, number> = { transport: 35, business: 42, residential: 44, entertainment: 16 };
+      morningCap = caps11[zone.type] ?? 42;
+    }
     demandBase = Math.min(demandBase, morningCap);
   }
 
   if (zone.type === "airport") {
     demandBase = isPeak ? 94 : (isNight ? 62 : 66);
     if ((pat as any).demandCap) demandBase = Math.min(demandBase, (pat as any).demandCap);
+  }
+
+  // Boost h=10 : transition matin→midi (zones business/logistique actives à 10h)
+  // Calibré sur historique 19/06 pour zones avec hist h10 > cap×dayCo
+  if (h === 10) {
+    demandBase += (pat as any).demandBoost10 ?? 0;
   }
 
   // Boosts horaires 11h-18h calibrés (corrélation Parc Expo / business)
