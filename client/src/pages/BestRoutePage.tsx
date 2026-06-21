@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { apiRequest } from "@/lib/queryClient";
+import { useGpsPosition } from "@/hooks/useGpsPosition";
+import { GpsFreshness } from "@/components/GpsFreshness";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -495,8 +497,8 @@ function EventBlockComponent({ block, userPos, isExpanded, onToggle }: {
 // ─── Page principale ───────────────────────────────────────────────────────────
 
 export default function BestRoutePage() {
-  const [gpsStatus, setGpsStatus] = useState<"idle" | "requesting" | "granted" | "denied" | "error">("idle");
-  const [position, setPosition] = useState<{ lat: number; lng: number } | null>(null);
+  // ── GPS temps réel (hook global, position toujours fraîche + fallback Bd Ney) ──
+  const { position, status: gpsStatus, isFallback, lastUpdatedAt, refresh } = useGpsPosition();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<BestRouteResponse | null>(null);
   const [eventSchedule, setEventSchedule] = useState<EventScheduleResponse | null>(null);
@@ -504,36 +506,14 @@ export default function BestRoutePage() {
   const [error, setError] = useState<string | null>(null);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [expandedEvent, setExpandedEvent] = useState<string | number | null>(null);
-  const watchIdRef = useRef<number | null>(null);
   const lastComputeRef = useRef<number>(0);
   const lastEventRef = useRef<number>(0);
 
+  // Relance une lecture GPS (utilisé par le bouton "Réessayer" si refusé)
   const startGeolocation = useCallback(() => {
-    if (!navigator.geolocation) { setGpsStatus("error"); setError("Géolocalisation non disponible."); return; }
-    setGpsStatus("requesting");
     setError(null);
-    if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
-    watchIdRef.current = navigator.geolocation.watchPosition(
-      (pos) => {
-        setPosition({
-          lat: Math.round(pos.coords.latitude * 100000) / 100000,
-          lng: Math.round(pos.coords.longitude * 100000) / 100000,
-        });
-        setGpsStatus("granted");
-      },
-      (err) => {
-        setGpsStatus(err.code === 1 ? "denied" : "error");
-        setError(err.code === 1
-          ? "Accès à la position refusé. Autorisez la géolocalisation."
-          : `Erreur GPS : ${err.message}`);
-      },
-      { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
-    );
-  }, []);
-
-  useEffect(() => () => {
-    if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
-  }, []);
+    refresh();
+  }, [refresh]);
 
   const compute = useCallback(async (pos: { lat: number; lng: number }) => {
     setLoading(true); setError(null);
@@ -559,7 +539,8 @@ export default function BestRoutePage() {
   }, []);
 
   useEffect(() => {
-    if (!position || gpsStatus !== "granted") return;
+    // position est toujours valide (fallback Bd Ney si GPS indisponible).
+    // On recalcule dès qu'une position est disponible — fraîche au moment de l'appel.
     const now = Date.now();
     if (now - lastComputeRef.current < 30000 && result) return;
     lastComputeRef.current = now;
@@ -568,7 +549,7 @@ export default function BestRoutePage() {
       lastEventRef.current = now;
       computeEvents(position);
     }
-  }, [position]);
+  }, [position.lat, position.lng]);
 
   // ─── États d'attente ───────────────────────────────────────────────────────
 
@@ -774,18 +755,14 @@ export default function BestRoutePage() {
               Top 4 zones + créneaux depuis votre GPS
             </p>
           </div>
-          {gpsStatus === "granted" && position && (
-            <div className="ml-auto flex items-center gap-1.5 text-xs text-green-400">
-              <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-              GPS actif
-            </div>
-          )}
+          <div className="ml-auto">
+            <GpsFreshness lastUpdatedAt={lastUpdatedAt} isFallback={isFallback} />
+          </div>
         </div>
       </div>
 
-      {gpsStatus === "idle" && renderIdle()}
-      {gpsStatus === "requesting" && !result && renderRequesting()}
-      {(gpsStatus === "denied" || gpsStatus === "error") && !result && renderDenied()}
+      {gpsStatus === "pending" && !result && renderRequesting()}
+      {(gpsStatus === "denied" || gpsStatus === "error" || gpsStatus === "unavailable") && !result && !loading && renderDenied()}
       {error && result && (
         <div className="mx-4 mt-3 flex items-center gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
           <AlertCircle size={13} /> {error}

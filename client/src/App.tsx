@@ -6,6 +6,7 @@ import { queryClient, API_BASE, getAuthToken, setAuthToken } from "./lib/queryCl
 import { Toaster } from "@/components/ui/toaster";
 import { ThemeProvider } from "./components/ThemeProvider";
 import Layout from "./components/Layout";
+import { useRoutingOriginSync } from "./hooks/useRoutingOriginSync";
 import MapPage from "./pages/MapPage";
 import SimulatorPage from "./pages/SimulatorPage";
 import AlertsPage from "./pages/AlertsPage";
@@ -84,6 +85,15 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// RoutingOriginSync — synchronise l'origine du cache routing backend avec le GPS
+// (monté une seule fois pour toute l'app, ne rend rien)
+// ──────────────────────────────────────────────────────────────────────────────
+function RoutingOriginSync() {
+  useRoutingOriginSync();
+  return null;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // App
 // ──────────────────────────────────────────────────────────────────────────────
 export default function App() {
@@ -91,6 +101,7 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <AuthGuard>
+          <RoutingOriginSync />
           <Router hook={useHashLocation}>
             <Layout>
               <Switch>

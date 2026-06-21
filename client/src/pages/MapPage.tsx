@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest, REALTIME_INTERVAL, SLOW_INTERVAL, STATIC_INTERVAL } from "@/lib/queryClient";
+import { useGpsPosition } from "@/hooks/useGpsPosition";
+import { GpsFreshness } from "@/components/GpsFreshness";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -175,18 +177,23 @@ function FlightPanel({ flightData }: { flightData: any }) {
 }
 
 export default function MapPage() {
+  // ── GPS temps réel (hook global — position toujours fraîche + fallback Bd Ney) ──
+  const { position, isFallback, lastUpdatedAt } = useGpsPosition();
+
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
   const eventMarkersRef = useRef<any[]>([]);
   const flightMarkersRef = useRef<any[]>([]);
+  const driverMarkerRef = useRef<any>(null);
   const now = new Date();
   const [selectedHour, setSelectedHour] = useState(now.getHours());
   const [dayType, setDayType] = useState([0,6].includes(now.getDay()) ? "weekend" : "weekday");
   const [selectedZone, setSelectedZone] = useState<any>(null);
 
   const { data: zones = [] } = useQuery({ queryKey: ["/api/zones"], queryFn: () => apiRequest("GET", "/api/zones").then(r => r.json()), refetchInterval: STATIC_INTERVAL, staleTime: 30_000 });
-  const { data: profitability = [] } = useQuery({ queryKey: ["/api/profitability", selectedHour, dayType], queryFn: () => apiRequest("GET", `/api/profitability?hour=${selectedHour}&dayType=${dayType}`).then(r => r.json()), refetchInterval: REALTIME_INTERVAL });
+  // ETA des zones calculé depuis la VRAIE position GPS du chauffeur (lat/lng frais).
+  const { data: profitability = [] } = useQuery({ queryKey: ["/api/profitability", selectedHour, dayType, position.lat, position.lng], queryFn: () => apiRequest("GET", `/api/profitability?hour=${selectedHour}&dayType=${dayType}&lat=${position.lat}&lng=${position.lng}`).then(r => r.json()), refetchInterval: REALTIME_INTERVAL });
   const { data: topZones = [] } = useQuery({ queryKey: ["/api/top-zones", selectedHour, dayType], queryFn: () => apiRequest("GET", `/api/top-zones?hour=${selectedHour}&dayType=${dayType}&limit=5`).then(r => r.json()), refetchInterval: REALTIME_INTERVAL });
   const { data: events = [] } = useQuery({ queryKey: ["/api/events"], queryFn: () => apiRequest("GET", "/api/events").then(r => r.json()), refetchInterval: SLOW_INTERVAL, staleTime: 20_000 });
   const { data: flightData } = useQuery({
@@ -212,6 +219,44 @@ export default function MapPage() {
     };
     setTimeout(tryInit, 500);
   }, []);
+
+  // ── Marqueur chauffeur (position GPS temps réel) ────────────────────────────
+  // Marqueur bleu pulsant qui suit la position du chauffeur en continu.
+  useEffect(() => {
+    const render = () => {
+      const L = (window as any).L;
+      if (!L || !mapInstance.current) { setTimeout(render, 400); return; }
+
+      // Icône bleue pulsante (CSS inline, point central + halo animé)
+      const driverIcon = L.divIcon({
+        className: "",
+        html: `<div style="position:relative;width:18px;height:18px;">
+          <span style="position:absolute;top:50%;left:50%;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;background:rgba(59,130,246,0.35);animation:gpsPulse 1.6s ease-out infinite;"></span>
+          <span style="position:absolute;top:50%;left:50%;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:#3b82f6;border:2px solid #fff;box-shadow:0 0 6px rgba(59,130,246,0.9);"></span>
+        </div>
+        <style>@keyframes gpsPulse{0%{transform:scale(0.6);opacity:0.9;}100%{transform:scale(2.6);opacity:0;}}</style>`,
+        iconSize: [18, 18],
+        iconAnchor: [9, 9],
+      });
+
+      if (driverMarkerRef.current) {
+        // Mise à jour de la position du marqueur existant (temps réel)
+        driverMarkerRef.current.setLatLng([position.lat, position.lng]);
+      } else {
+        driverMarkerRef.current = L.marker([position.lat, position.lng], {
+          icon: driverIcon,
+          zIndexOffset: 2000,
+          interactive: true,
+        }).addTo(mapInstance.current);
+        driverMarkerRef.current.bindPopup(
+          isFallback
+            ? "📍 Position par défaut (Bd Ney) — GPS indisponible"
+            : "📍 Votre position (GPS temps réel)"
+        );
+      }
+    };
+    render();
+  }, [position.lat, position.lng, isFallback]);
 
   // Markers zones profitabilité
   useEffect(() => {
@@ -366,9 +411,19 @@ export default function MapPage() {
             <SelectItem value="weekend">Weekend</SelectItem>
           </SelectContent>
         </Select>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-3">
+          <GpsFreshness lastUpdatedAt={lastUpdatedAt} isFallback={isFallback} />
           <UpdateWidget compact={true} />
         </div>
+      </div>
+
+      {/* Légende marqueur chauffeur */}
+      <div className="bg-card/60 px-3 py-1 flex items-center gap-2 text-[10px] border-b border-border">
+        <span className="relative inline-flex w-3 h-3">
+          <span className="absolute inline-flex h-full w-full rounded-full bg-blue-500 opacity-60 animate-ping" />
+          <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500 border border-white" />
+        </span>
+        <span className="text-muted-foreground">Votre position (GPS temps réel)</span>
       </div>
 
       {/* Panel vols temps réel */}

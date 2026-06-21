@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { useGpsPosition } from "@/hooks/useGpsPosition";
+import { GpsFreshness } from "@/components/GpsFreshness";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -500,48 +502,39 @@ function IdleOptimizer() {
 }
 
 export default function SmartPlanPage() {
-  const [position, setPosition] = useState<{ lat: number; lng: number } | null>(null);
-  const [gpsError, setGpsError] = useState<string | null>(null);
-  const [gpsAsked, setGpsAsked] = useState(false);
+  // ── GPS temps réel (hook global — position toujours fraîche + fallback Bd Ney) ──
+  const { position, status: gpsStatus, isFallback, lastUpdatedAt, error: gpsError } = useGpsPosition();
   const [lastFetchedAt, setLastFetchedAt] = useState<string | null>(null);
   const lastFetchTs = useRef<number>(0);
 
-  // ── GPS ────────────────────────────────────────────────────────────────────
-  const requestGps = useCallback(() => {
-    if (!navigator.geolocation) { setGpsError("GPS non disponible"); return; }
-    setGpsAsked(true);
-    navigator.geolocation.getCurrentPosition(
-      pos => setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      () => {
-        setGpsError("GPS refusé — position par défaut utilisée");
-        setPosition({ lat: 48.8976, lng: 2.3299 }); // Bd Ney fallback
-      },
-      { enableHighAccuracy: true, timeout: 8000 }
-    );
-  }, []);
-
-  useEffect(() => { requestGps(); }, [requestGps]);
+  // Référence toujours à jour vers la dernière position du hook : garantit qu'un
+  // fetch utilise la position FRAÎCHE au moment de l'appel (jamais celle du montage).
+  const positionRef = useRef(position);
+  useEffect(() => { positionRef.current = position; }, [position.lat, position.lng]);
 
   // ── Mutation smart-plan ────────────────────────────────────────────────────
   const mutation = useMutation<SmartPlan, Error, { lat: number; lng: number; clickedAt: string }>({
     mutationFn: body => apiRequest("POST", "/api/smart-plan", body).then(r => r.json()),
   });
 
-  const fetchPlan = useCallback(async (pos: { lat: number; lng: number }) => {
+  // fetchPlan lit TOUJOURS la position courante du hook (via positionRef) au moment
+  // de l'appel — jamais une position mise en cache au montage.
+  const fetchPlan = useCallback((force = false) => {
     const now = Date.now();
-    if (now - lastFetchTs.current < 30000) return; // throttle 30s
+    if (!force && now - lastFetchTs.current < 30000) return; // throttle 30s
     lastFetchTs.current = now;
+    const pos = positionRef.current;
     const clickedAt = new Date().toISOString();
     setLastFetchedAt(clickedAt);
-    mutation.mutate({ ...pos, clickedAt });
+    mutation.mutate({ lat: pos.lat, lng: pos.lng, clickedAt });
   }, [mutation]);
 
-  // Auto-fetch dès GPS disponible
+  // Auto-fetch dès GPS disponible / quand la position change
   useEffect(() => {
-    if (position && !mutation.data && !mutation.isPending) {
-      fetchPlan(position);
+    if (!mutation.data && !mutation.isPending) {
+      fetchPlan();
     }
-  }, [position]);
+  }, [position.lat, position.lng]);
 
   const plan = mutation.data;
   const isLoading = mutation.isPending;
@@ -558,17 +551,7 @@ export default function SmartPlanPage() {
           <span className="text-sm font-bold">Smart Planning</span>
         </div>
         <div className="flex items-center gap-2">
-          {position ? (
-            <div className="flex items-center gap-1 text-[10px] text-emerald-400">
-              <Crosshair size={11} />
-              <span>GPS actif</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-              <WifiOff size={11} />
-              <span>GPS…</span>
-            </div>
-          )}
+          <GpsFreshness lastUpdatedAt={lastUpdatedAt} isFallback={isFallback} />
           {plan && (
             <div className="text-[10px] text-muted-foreground">
               {plan.flightSource === "opensky" ? (
@@ -582,8 +565,8 @@ export default function SmartPlanPage() {
             size="sm"
             variant="outline"
             className="h-7 px-2 text-[11px]"
-            disabled={!position || isLoading}
-            onClick={() => position && (lastFetchTs.current = 0, fetchPlan(position))}
+            disabled={isLoading}
+            onClick={() => fetchPlan(true)}
           >
             <RefreshCw size={12} className={isLoading ? "animate-spin" : ""} />
             {isLoading ? "Calcul…" : "Actualiser"}
@@ -591,11 +574,11 @@ export default function SmartPlanPage() {
         </div>
       </div>
 
-      {/* ── Erreur GPS ── */}
-      {gpsError && (
+      {/* ── Erreur GPS (fallback Bd Ney conservé) ── */}
+      {(gpsError || isFallback) && gpsStatus !== "pending" && (
         <div className="mx-4 mt-3 px-3 py-2 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300 text-[11px] flex items-center gap-1.5">
           <AlertTriangle size={12} />
-          <span>{gpsError}</span>
+          <span>{gpsError ?? "GPS indisponible — position par défaut (Bd Ney) utilisée"}</span>
         </div>
       )}
 
@@ -643,8 +626,8 @@ export default function SmartPlanPage() {
           </div>
           <Button
             className="mt-2 bg-cyan-600 hover:bg-cyan-500 text-white"
-            disabled={!position}
-            onClick={() => position && (lastFetchTs.current = 0, fetchPlan(position))}
+            disabled={isLoading}
+            onClick={() => fetchPlan(true)}
           >
             <Crosshair size={16} className="mr-2" />
             Calculer mon plan

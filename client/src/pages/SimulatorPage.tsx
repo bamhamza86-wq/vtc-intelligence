@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { useGpsPosition } from "@/hooks/useGpsPosition";
+import { GpsFreshness } from "@/components/GpsFreshness";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,6 +23,11 @@ const SCENARIOS = [
 ];
 
 export default function SimulatorPage() {
+  // ── GPS optionnel (hook global — position toujours fraîche + fallback Bd Ney) ──
+  // Le simulateur reste un outil "what-if" manuel : le GPS permet d'ancrer le calcul
+  // à la vraie position du chauffeur si on veut envoyer lat/lng au backend.
+  const { position, isFallback, lastUpdatedAt } = useGpsPosition();
+
   const [dist, setDist] = useState("16");
   const [dur, setDur] = useState("16");
   const [fare, setFare] = useState("");
@@ -46,9 +53,12 @@ export default function SimulatorPage() {
 
   return (
     <div className="p-4 max-w-2xl mx-auto space-y-4">
-      <div>
-        <h2 className="font-bold text-lg">Simulateur de rentabilité</h2>
-        <p className="text-sm text-muted-foreground">Calcul du profit réel selon votre modèle économique</p>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h2 className="font-bold text-lg">Simulateur de rentabilité</h2>
+          <p className="text-sm text-muted-foreground">Calcul du profit réel selon votre modèle économique</p>
+        </div>
+        <GpsFreshness lastUpdatedAt={lastUpdatedAt} isFallback={isFallback} className="mt-1" />
       </div>
       <Card className="border-primary/30 bg-primary/5">
         <CardContent className="py-3 px-4">
@@ -75,7 +85,7 @@ export default function SimulatorPage() {
             <div><Label className="text-xs">Durée (min)</Label><Input type="number" value={dur} onChange={e => setDur(e.target.value)} className="h-9 text-sm mt-1" min="0" step="1" data-testid="input-duration" /></div>
             <div><Label className="text-xs">Tarif (€) <span className="text-muted-foreground">(opt.)</span></Label><Input type="number" value={fare} onChange={e => setFare(e.target.value)} className="h-9 text-sm mt-1" min="0" step="0.5" placeholder="Auto" data-testid="input-fare" /></div>
           </div>
-          <Button onClick={() => calc.mutate({ distanceKm: parseFloat(dist)||0, durationMin: parseFloat(dur)||0, fare: fare ? parseFloat(fare) : null })} disabled={calc.isPending || !dist} className="w-full" data-testid="button-calculate">
+          <Button onClick={() => calc.mutate({ distanceKm: parseFloat(dist)||0, durationMin: parseFloat(dur)||0, fare: fare ? parseFloat(fare) : null, lat: position.lat, lng: position.lng })} disabled={calc.isPending || !dist} className="w-full" data-testid="button-calculate">
             {calc.isPending ? "Calcul..." : "Calculer la rentabilité"}
           </Button>
         </CardContent>

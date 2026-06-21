@@ -196,6 +196,11 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     const _hourRaw = parseInt(req.query.hour as string);
     const hour = isNaN(_hourRaw) ? (new Date().getUTCHours()+2)%24 : _hourRaw;
     const dayType = req.query.dayType as string || ([0,6].includes(new Date().getDay()) ? 'weekend' : 'weekday');
+    // Origine GPS fraîche : si le frontend passe ?lat=&lng=, on calcule l'ETA des
+    // zones depuis la vraie position du chauffeur (clé de cache OSRM correcte).
+    // Sinon, fallback sur l'origine par défaut (Bd Ney).
+    const originLat = parseFloat(req.query.lat as string ?? "") || DEFAULT_ORIGIN.lat;
+    const originLng = parseFloat(req.query.lng as string ?? "") || DEFAULT_ORIGIN.lng;
     const scores = storage.getProfitabilityByHour(hour, dayType);
 
     // Enrichissement avec boost dynamique vols
@@ -212,8 +217,13 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         const boostedIndex = Math.min(95, Math.round(baseIdx + boostPts));
         // Surge boost multiplicatif plafonné à 4.5×
         const boostedSurge = isCurfew ? 1.0 : Math.min(4.5, Math.round(((s.surge_multiplier ?? s.surgeMultiplier ?? 1.0) * Math.min(flightBoost, 1.5)) * 100) / 100);
-        // Enrichissement congestion en temps réel sur les données stockées
-        const roadKm      = CALIBRATED_DATA[s.zone_id]?.road_km ?? 20;
+        // Enrichissement congestion en temps réel sur les données stockées.
+        // roadKm calculé depuis la VRAIE origine GPS (cache OSRM/Google par origine),
+        // fallback calibré si pas d'entrée fraîche pour cette origine.
+        const cachedRoute = getCachedRoute(s.zone_id, originLat, originLng);
+        const roadKm      = cachedRoute.roadKm > 0
+          ? cachedRoute.roadKm
+          : (CALIBRATED_DATA[s.zone_id]?.road_km ?? 20);
         const congestedRT = getCongestedETA(s.zone_id, roadKm, hour);
         const breakEvenRT = computeBreakEvenPenalty(s.zone_id, roadKm, congestedRT.etaMin, congestedRT.congestionFactor);
         return {
@@ -824,6 +834,32 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         durationMs: result.durationMs,
         nextRefresh: routingNextRefresh.toISOString(),
       });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ─── Mise à jour de l'origine routing depuis la vraie position GPS ─────────────
+  // POST /api/routing/update-origin
+  // Body: { lat: number, lng: number }
+  // Invalide le cache des zones depuis l'ancienne origine (DEFAULT_ORIGIN / Bd Ney)
+  // et recalcule l'ETA/distance de toutes les zones depuis la nouvelle position.
+  // Appelé par le frontend quand le chauffeur s'est déplacé de plus de 500m.
+  app.post("/api/routing/update-origin", async (req, res) => {
+    const { lat, lng } = req.body as { lat: number; lng: number };
+    if (typeof lat !== "number" || typeof lng !== "number") {
+      return res.status(400).json({ error: "lat/lng requis" });
+    }
+    // Invalider le cache des zones depuis l'ancienne origine
+    // et recalculer depuis la nouvelle position
+    try {
+      invalidateCache();
+      const result = await refreshAllZones(lat, lng, GOOGLE_MAPS_KEY || undefined);
+      routingLastRefresh = new Date();
+      routingNextRefresh = new Date(Date.now() + 30 * 60 * 1000);
+      routingRefreshCount++;
+      console.log(`[routing-cache] Origine GPS mise à jour (${lat.toFixed(4)},${lng.toFixed(4)}) — ${result.refreshed} zones via ${result.source} en ${result.durationMs}ms`);
+      res.json({ ok: true, zones: result.refreshed, source: result.source });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }

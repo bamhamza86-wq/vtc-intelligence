@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient, REALTIME_INTERVAL } from "@/lib/queryClient";
+import { useGpsPosition } from "@/hooks/useGpsPosition";
+import { GpsFreshness } from "@/components/GpsFreshness";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -471,36 +473,40 @@ function EventBlockCard({ block, userPos, isExpanded, onToggle }: {
 
 // ─── GPS Banner ──────────────────────────────────────────────────────────────
 
-function GpsBanner({ status, position, onActivate }: {
+function GpsBanner({ status, position, lastUpdatedAt, isFallback, onActivate }: {
   status: string;
-  position: { lat: number; lng: number } | null;
+  position: { lat: number; lng: number };
+  lastUpdatedAt: Date | null;
+  isFallback: boolean;
   onActivate: () => void;
 }) {
-  if (status === "granted" && position) {
+  // GPS réel actif : bandeau vert + indicateur de fraîcheur
+  if (status === "granted" && !isFallback) {
     return (
-      <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-green-500/10 border border-green-500/25 text-xs text-green-400">
-        <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse flex-shrink-0" />
+      <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-green-500/10 border border-green-500/25 text-xs text-green-400">
         <span className="tabular-nums font-medium">
           GPS actif — {position.lat.toFixed(5)}, {position.lng.toFixed(5)}
         </span>
+        <GpsFreshness lastUpdatedAt={lastUpdatedAt} isFallback={isFallback} />
       </div>
     );
   }
-  if (status === "requesting") {
+  if (status === "pending") {
     return (
       <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-blue-500/10 border border-blue-500/25 text-xs text-blue-400">
         <div className="w-3 h-3 rounded-full border border-blue-400/50 border-t-blue-400 animate-spin flex-shrink-0" />
-        Acquisition GPS…
+        Acquisition GPS… (position par défaut Bd Ney en attendant)
       </div>
     );
   }
+  // GPS refusé/indispo : on continue avec le fallback Bd Ney, bouton pour réessayer
   return (
     <button
       onClick={onActivate}
       className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary/10 border border-primary/30 text-xs text-primary w-full hover:bg-primary/15 transition-colors"
     >
       <Crosshair size={13} />
-      <span className="font-medium">Activer GPS pour les créneaux de positionnement</span>
+      <span className="font-medium">Activer le GPS (position par défaut Bd Ney utilisée)</span>
       <ArrowRight size={12} className="ml-auto" />
     </button>
   );
@@ -522,31 +528,13 @@ export default function AlertsPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/alerts"] }),
   });
 
-  // ── GPS ────────────────────────────────────────────────────────────────────
-  const [gpsStatus, setGpsStatus] = useState<"idle" | "requesting" | "granted" | "denied">("idle");
-  const [position, setPosition] = useState<{ lat: number; lng: number } | null>(null);
-  const watchIdRef = useRef<number | null>(null);
+  // ── GPS temps réel (hook global — position toujours fraîche + fallback Bd Ney) ──
+  const { position, status: gpsStatus, isFallback, lastUpdatedAt, refresh: startGps } = useGpsPosition();
 
-  const startGps = useCallback(() => {
-    if (!navigator.geolocation) return;
-    setGpsStatus("requesting");
-    if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
-    watchIdRef.current = navigator.geolocation.watchPosition(
-      (pos) => {
-        setPosition({
-          lat: Math.round(pos.coords.latitude * 100000) / 100000,
-          lng: Math.round(pos.coords.longitude * 100000) / 100000,
-        });
-        setGpsStatus("granted");
-      },
-      () => setGpsStatus("denied"),
-      { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 }
-    );
-  }, []);
-
-  useEffect(() => () => {
-    if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
-  }, []);
+  // Référence toujours à jour vers la position du hook : garantit qu'un fetch utilise
+  // la position FRAÎCHE au moment de l'appel (jamais la position au montage).
+  const positionRef = useRef(position);
+  useEffect(() => { positionRef.current = position; }, [position.lat, position.lng]);
 
   // ── Événements chronologiques ──────────────────────────────────────────────
   const [eventSchedule, setEventSchedule] = useState<EventScheduleResponse | null>(null);
@@ -554,11 +542,14 @@ export default function AlertsPage() {
   const [expandedEvent, setExpandedEvent] = useState<string | number | null>(null);
   const lastEventRef = useRef<number>(0);
 
-  const fetchEvents = useCallback(async (pos: { lat: number; lng: number }) => {
+  // Lit TOUJOURS la position courante du hook (via positionRef) — position fraîche
+  // au moment de l'appel, jamais une position figée.
+  const fetchEvents = useCallback(async () => {
     setEventLoading(true);
     try {
+      const pos = positionRef.current;
       const clickedAt = new Date().toISOString();
-      const resp = await apiRequest("POST", "/api/best-route/event-schedule", { ...pos, clickedAt });
+      const resp = await apiRequest("POST", "/api/best-route/event-schedule", { lat: pos.lat, lng: pos.lng, clickedAt });
       const data: EventScheduleResponse = await resp.json();
       setEventSchedule(data);
       // Auto-ouvrir le premier événement urgent
@@ -573,14 +564,14 @@ export default function AlertsPage() {
     }
   }, []);
 
-  // Auto-fetch événements dès GPS accordé (max 1x/60s)
+  // Auto-fetch événements dès qu'une position est disponible / quand elle change (max 1x/60s).
+  // position est toujours valide (fallback Bd Ney si GPS indisponible).
   useEffect(() => {
-    if (!position || gpsStatus !== "granted") return;
     const now = Date.now();
     if (now - lastEventRef.current < 60000 && eventSchedule) return;
     lastEventRef.current = now;
-    fetchEvents(position);
-  }, [position]);
+    fetchEvents();
+  }, [position.lat, position.lng]);
 
   // ── UI state ───────────────────────────────────────────────────────────────
 
@@ -657,7 +648,7 @@ export default function AlertsPage() {
 
         {/* ── GPS Banner ───────────────────────────────────────────────────── */}
         <div className="px-4">
-          <GpsBanner status={gpsStatus} position={position} onActivate={startGps} />
+          <GpsBanner status={gpsStatus} position={position} lastUpdatedAt={lastUpdatedAt} isFallback={isFallback} onActivate={startGps} />
         </div>
 
         {/* ── THÈME 5 : Transparence surge ─────────────────────────────────── */}
@@ -673,9 +664,9 @@ export default function AlertsPage() {
               Créneaux de positionnement
             </h2>
             {eventLoading && <RefreshCw size={10} className="animate-spin text-muted-foreground ml-1" />}
-            {!eventLoading && eventSchedule && position && (
+            {!eventLoading && eventSchedule && (
               <button
-                onClick={() => fetchEvents(position)}
+                onClick={() => fetchEvents()}
                 className="ml-auto text-[10px] text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors"
               >
                 <RefreshCw size={9} />Actualiser
@@ -683,35 +674,19 @@ export default function AlertsPage() {
             )}
           </div>
 
-          {/* GPS idle */}
-          {gpsStatus === "idle" && (
-            <div className="rounded-2xl border border-dashed border-border p-6 text-center">
-              <Crosshair size={26} className="text-muted-foreground/30 mx-auto mb-3" />
-              <p className="text-sm font-medium mb-1">Position GPS requise</p>
-              <p className="text-xs text-muted-foreground mb-4">
-                Activez le GPS pour calculer vos créneaux de positionnement en temps réel.
-                Les heures de départ sont calculées à la seconde près depuis votre position.
-              </p>
-              <Button size="sm" onClick={startGps} className="gap-2">
-                <Crosshair size={13} />
-                Activer GPS
-              </Button>
-            </div>
-          )}
-
-          {/* GPS refusé */}
-          {gpsStatus === "denied" && (
+          {/* GPS refusé/indispo — calcul tout de même depuis le fallback Bd Ney */}
+          {(gpsStatus === "denied" || gpsStatus === "unavailable" || gpsStatus === "error") && (
             <div className="rounded-2xl border border-orange-500/25 bg-orange-500/5 p-4 text-center">
               <AlertCircle size={22} className="text-orange-400 mx-auto mb-2" />
-              <p className="text-sm font-medium text-orange-400 mb-1">GPS refusé</p>
+              <p className="text-sm font-medium text-orange-400 mb-1">GPS indisponible</p>
               <p className="text-xs text-muted-foreground">
-                Autorisez la géolocalisation dans les paramètres de votre navigateur.
+                Créneaux calculés depuis la position par défaut (Bd Ney). Autorisez la géolocalisation pour une précision temps réel.
               </p>
             </div>
           )}
 
           {/* Chargement */}
-          {(gpsStatus === "granted" || gpsStatus === "requesting") && eventLoading && !eventSchedule && (
+          {eventLoading && !eventSchedule && (
             <div className="flex flex-col items-center py-10 gap-3">
               <div className="w-8 h-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
               <p className="text-xs text-muted-foreground">Calcul des créneaux depuis votre GPS…</p>
