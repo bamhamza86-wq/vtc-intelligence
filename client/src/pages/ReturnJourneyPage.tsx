@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { UpdateWidget } from "@/components/UpdateWidget";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
+import { PredictHQBadge } from "@/components/PredictHQBadge";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -36,6 +37,8 @@ interface RouteZone {
   reason: string;
   mapsDetourUrl: string;
   distanceSource?: string;
+  phq_boost?: number;
+  phq_event_title?: string;
 }
 
 interface ReturnJourneyResponse {
@@ -216,6 +219,9 @@ function RouteZoneCard({ zone, rank, isSelected, onClick }: {
             <div className="flex items-center gap-1">
               <span className="text-sm">{getZoneTypeIcon(zone.zone.type)}</span>
               <span className="font-semibold text-sm truncate">{zone.zone.name}</span>
+              {zone.phq_boost != null && zone.phq_boost > 1.0 && (
+                <PredictHQBadge boost={zone.phq_boost} eventTitle={zone.phq_event_title} compact />
+              )}
             </div>
             <p className="text-[10px] text-muted-foreground italic mt-0.5 line-clamp-1">{zone.reason}</p>
           </div>
@@ -577,6 +583,11 @@ export default function ReturnJourneyPage() {
               <span className="text-xl">{getZoneTypeIcon(zone.zone.type)}</span>
               <div className="min-w-0">
                 <div className="font-bold text-base leading-tight truncate">{zone.zone.name}</div>
+                {zone.phq_boost != null && zone.phq_boost > 1.0 && (
+                  <div className="mt-1">
+                    <PredictHQBadge boost={zone.phq_boost} eventTitle={zone.phq_event_title} compact />
+                  </div>
+                )}
                 <p className="text-[11px] text-muted-foreground italic mt-0.5">{zone.reason}</p>
               </div>
             </div>

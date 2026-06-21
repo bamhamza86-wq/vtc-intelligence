@@ -7,6 +7,22 @@ import {
   testGigDataConnection,
   fetchAllPlatformDemand,
 } from "./platformDemand";
+// ← PredictHQ : boost demande lié aux événements (concerts, sports, salons…)
+// Stub fourni par l'Agent 2 tant que l'Agent 1 n'a pas livré l'intégration réelle.
+import {
+  getEventBoostForZone,
+  getPredictHQStatus,
+  getActivePredictHQEvents,
+  fetchEventsForZones,
+  fetchDemandSurges,
+  refreshPredictHQEvents,
+  testPredictHQConnection,
+} from "./predictHQService";
+
+// Helper boost combiné flight × PredictHQ, plafonné à 2.5× au total.
+function combinePredictHQBoost(flightBoost: number, phqBoost: number): number {
+  return Math.min(2.5, (flightBoost || 1.0) * (phqBoost || 1.0));
+}
 
 // ← F3: Cache en mémoire pour getFlightData avec mutex concurrent-safe
 // TTL = 3min (aligné sur REFRESH_INTERVAL_MS storage)
@@ -148,16 +164,21 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       let enrichedScores = scores;
       try {
         const flightData = await getFlightDataCached();
-        enrichedScores = scores.map((s: any) => {
+        enrichedScores = await Promise.all(scores.map(async (s: any) => {
           const flightBoost = getFlightBoostForZone(s.zone_id, flightData);
+          // ← PredictHQ : boost events (1.0 si aucun). Combiné avec flight (cap 2.5×).
+          let phqBoost = 1.0;
+          try { phqBoost = await getEventBoostForZone(s.zone_id, h); } catch { phqBoost = 1.0; }
           const baseIdx = s.profitability_index ?? 0;
-          // Couvre-feu aéroports h=0..4 : score plancher = 5, flight_boost neutralisé
+          // Couvre-feu aéroports h=0..4 : score plancher = 5, boosts neutralisés
           const isCurfew = (s.zone_type === 'airport' || s.zone_id === 'z_cdg' || s.zone_id === 'z_orly') && baseIdx <= 5;
-          const boostPts = (flightBoost > 1 && !isCurfew) ? Math.round(Math.log(flightBoost) / Math.log(2) * 12) : 0;
+          const combinedBoost = isCurfew ? 1.0 : combinePredictHQBoost(flightBoost, phqBoost);
+          const boostPts = (combinedBoost > 1 && !isCurfew) ? Math.round(Math.log(combinedBoost) / Math.log(2) * 12) : 0;
           const boostedIndex = Math.min(95, Math.round(baseIdx + boostPts));
-          const boostedSurge = isCurfew ? 1.0 : Math.min(4.5, Math.round(((s.surge_multiplier ?? 1.0) * Math.min(flightBoost, 1.5)) * 100) / 100);
-          return { ...s, profitability_index: boostedIndex, profitabilityIndex: boostedIndex, surge_multiplier: boostedSurge, surgeMultiplier: boostedSurge, flight_boost: isCurfew ? 1.0 : flightBoost, flightBoost: isCurfew ? 1.0 : flightBoost };
-        });
+          const boostedSurge = isCurfew ? 1.0 : Math.min(4.5, Math.round(((s.surge_multiplier ?? 1.0) * Math.min(combinedBoost, 1.5)) * 100) / 100);
+          const effPhqBoost = isCurfew ? 1.0 : phqBoost;
+          return { ...s, profitability_index: boostedIndex, profitabilityIndex: boostedIndex, surge_multiplier: boostedSurge, surgeMultiplier: boostedSurge, flight_boost: isCurfew ? 1.0 : flightBoost, flightBoost: isCurfew ? 1.0 : flightBoost, phq_boost: Math.round(effPhqBoost * 100) / 100, phq_boost_active: effPhqBoost > 1.0, combined_event_boost: Math.round(combinedBoost * 100) / 100 };
+        }));
       } catch { /* garde scores non-enrichis */ }
 
       // Top 5 zones triées sur scores ENRICHIS (avec flight_boost appliqué)
@@ -209,17 +230,23 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     // Enrichissement avec boost dynamique vols
     try {
       const flightData = await getFlightDataCached();
-      const enriched = scores.map((s: any) => {
+      const enriched = await Promise.all(scores.map(async (s: any) => {
         const flightBoost = getFlightBoostForZone(s.zone_id, flightData);
-        // Flight boost additif (log-scale) — évite la saturation multiplicative
-        // flightBoost=1.9 → +8pts max, flightBoost=1.5 → +5pts, flightBoost=1.0 → +0
+        // ← PredictHQ : boost events (1.0 si aucun event). Combiné avec flight,
+        //    plafonné à 2.5× au total. Non bloquant (stub → 1.0).
+        let phqBoost = 1.0;
+        try { phqBoost = await getEventBoostForZone(s.zone_id, hour); } catch { phqBoost = 1.0; }
         const baseIdx = s.profitability_index ?? s.profitabilityIndex ?? 0;
-        // Couvre-feu aéroports h=0..4 : score plancher = 5, flight_boost neutralisé
+        // Couvre-feu aéroports h=0..4 : score plancher = 5, boosts neutralisés
         const isCurfew = (s.zone_type === 'airport' || s.zone_id === 'z_cdg' || s.zone_id === 'z_orly') && baseIdx <= 5;
-        const boostPts = (flightBoost > 1 && !isCurfew) ? Math.round(Math.log(flightBoost) / Math.log(2) * 12) : 0;
+        // Boost combiné flight × PredictHQ (cap 2.5×). Neutralisé en couvre-feu.
+        const combinedBoost = isCurfew ? 1.0 : combinePredictHQBoost(flightBoost, phqBoost);
+        // Boost additif (log-scale) sur le boost COMBINÉ — évite la saturation
+        // combinedBoost=2.5 → +14pts, 1.9 → +11pts, 1.5 → +7pts, 1.0 → +0
+        const boostPts = (combinedBoost > 1 && !isCurfew) ? Math.round(Math.log(combinedBoost) / Math.log(2) * 12) : 0;
         const boostedIndex = Math.min(95, Math.round(baseIdx + boostPts));
-        // Surge boost multiplicatif plafonné à 4.5×
-        const boostedSurge = isCurfew ? 1.0 : Math.min(4.5, Math.round(((s.surge_multiplier ?? s.surgeMultiplier ?? 1.0) * Math.min(flightBoost, 1.5)) * 100) / 100);
+        // Surge boost multiplicatif (sur boost combiné) plafonné à 4.5×
+        const boostedSurge = isCurfew ? 1.0 : Math.min(4.5, Math.round(((s.surge_multiplier ?? s.surgeMultiplier ?? 1.0) * Math.min(combinedBoost, 1.5)) * 100) / 100);
         // Enrichissement congestion en temps réel sur les données stockées.
         // roadKm calculé depuis la VRAIE origine GPS (cache OSRM/Google par origine),
         // fallback calibré si pas d'entrée fraîche pour cette origine.
@@ -229,6 +256,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           : (CALIBRATED_DATA[s.zone_id]?.road_km ?? 20);
         const congestedRT = getCongestedETA(s.zone_id, roadKm, hour);
         const breakEvenRT = computeBreakEvenPenalty(s.zone_id, roadKm, congestedRT.etaMin, congestedRT.congestionFactor);
+        const effPhqBoost = isCurfew ? 1.0 : phqBoost;
         return {
           ...s,
           profitability_index: boostedIndex,
@@ -237,6 +265,10 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           surgeMultiplier: boostedSurge,
           flight_boost: isCurfew ? 1.0 : flightBoost,
           flightBoost: isCurfew ? 1.0 : flightBoost,
+          // ← Champs PredictHQ
+          phq_boost:            Math.round(effPhqBoost * 100) / 100,
+          phq_boost_active:     effPhqBoost > 1.0,
+          combined_event_boost: Math.round(combinedBoost * 100) / 100,
           // Champs trafic historique
           congestion_factor:  congestedRT.congestionFactor,
           congestion_label:   congestedRT.congestionLabel,
@@ -246,7 +278,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           break_even_ok:      breakEvenRT.breakEvenOk,
           congestion_penalty: breakEvenRT.penalty,
         };
-      });
+      }));
       res.json(enriched);
     } catch {
       res.json(scores);
@@ -352,9 +384,34 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     }
   });
 
-  app.get("/api/alerts", (_req, res) => {
+  app.get("/api/alerts", async (_req, res) => {
     storage.clearExpiredAlerts();
-    res.json(storage.getActiveAlerts());
+    const dbAlerts = storage.getActiveAlerts();
+
+    // ← PredictHQ : alertes dynamiques (NON persistées en DB) pour les events
+    //    majeurs actifs (rank >= 70). Non bloquant : stub → aucun event.
+    let phqAlerts: any[] = [];
+    try {
+      const phqEvents = await getActivePredictHQEvents();
+      phqAlerts = phqEvents
+        .filter((e: any) => (e.rank ?? 0) >= 70)
+        .map((e: any) => {
+          const rank = e.rank ?? 0;
+          const demandBoost = e.demand_boost ?? 1.0;
+          return {
+            type: 'predicthq_event',
+            title: `🎯 ${e.title}`,
+            message: `${e.category} — ${e.phq_attendance} personnes attendues. Boost demande ×${demandBoost.toFixed(1)}`,
+            zone_id: e.zone_id,
+            priority: rank >= 80 ? 'high' : 'medium',
+            estimated_revenue: Math.round((e.transport_spend ?? 0) / 100),
+            expires_at: e.end,
+            demand_boost: demandBoost,
+          };
+        });
+    } catch { phqAlerts = []; }
+
+    res.json([...phqAlerts, ...dbAlerts]);
   });
 
   app.post("/api/alerts/:id/read", (req, res) => {
@@ -414,7 +471,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   app.put("/api/platforms/credentials/:platform", (req, res) => {
     const { platform } = req.params;
     const { api_key } = req.body as { api_key: string };
-    if (!["tomtom", "gigdata"].includes(platform)) {
+    if (!["tomtom", "gigdata", "predicthq"].includes(platform)) {
       return res.status(400).json({ error: "Plateforme non supportée" });
     }
     storage.savePlatformCredential(platform, api_key || "");
@@ -434,6 +491,8 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       result = await testTomTomConnection(cred.api_key);
     } else if (platform === "gigdata") {
       result = await testGigDataConnection(cred.api_key);
+    } else if (platform === "predicthq") {
+      result = await testPredictHQConnection(cred.api_key);
     } else {
       return res.status(400).json({ ok: false, error: "Plateforme inconnue" });
     }
@@ -454,6 +513,79 @@ export function registerRoutes(httpServer: Server, app: Express): void {
 
     const zones = await fetchAllPlatformDemand(tomtomKey, gigdataKey);
     res.json({ zones, fetched_at: new Date().toISOString() });
+  });
+
+  // ─── PredictHQ ──────────────────────────────────────────────────────────────
+  // Statut connexion + nb events actifs
+  app.get("/api/predicthq/status", (_req, res) => {
+    try {
+      const status = getPredictHQStatus();
+      res.json(status);
+    } catch (e: any) {
+      // Fallback gracieux : jamais d'erreur 500
+      res.json({
+        status: "no_key",
+        connected: false,
+        has_key: false,
+        active_events: 0,
+        max_boost: 1.0,
+        last_fetch: null,
+        cache_age_seconds: null,
+        error: e?.message ?? "Erreur interne",
+      });
+    }
+  });
+
+  // Liste de tous les events actifs (avec zone_id + boost)
+  app.get("/api/predicthq/events", async (_req, res) => {
+    try {
+      const events = await fetchEventsForZones();
+      const active = events.filter((e) => e.is_active);
+      res.json({
+        events: active,
+        total: events.length,
+        active_count: active.length,
+        fetched_at: new Date().toISOString(),
+      });
+    } catch {
+      // Fallback sur le cache SQLite
+      const fromDb = storage.getActivePredictHQEvents();
+      res.json({ events: fromDb, total: fromDb.length, active_count: fromDb.length, fetched_at: new Date().toISOString() });
+    }
+  });
+
+  // Events pour une zone spécifique
+  app.get("/api/predicthq/events/:zone_id", async (req, res) => {
+    const { zone_id } = req.params;
+    try {
+      // S'assure que le cache est rafraîchi puis lit la zone depuis SQLite
+      await fetchEventsForZones();
+    } catch {
+      /* fallback sur SQLite ci-dessous */
+    }
+    const events = storage.getActivePredictHQEvents(zone_id);
+    res.json({ zone_id, events, count: events.length, fetched_at: new Date().toISOString() });
+  });
+
+  // Prochains pics de demande (7 jours)
+  app.get("/api/predicthq/surges", async (_req, res) => {
+    try {
+      const surges = await fetchDemandSurges(7);
+      res.json({ surges, count: surges.length, fetched_at: new Date().toISOString() });
+    } catch (e: any) {
+      res.json({ surges: [], count: 0, error: e?.message ?? "Erreur interne", fetched_at: new Date().toISOString() });
+    }
+  });
+
+  // Force le refresh des events depuis l'API (auth requise via middleware /api/*)
+  app.post("/api/predicthq/refresh", async (_req, res) => {
+    try {
+      const result = await refreshPredictHQEvents();
+      const status = getPredictHQStatus();
+      res.json({ success: true, ...result, status_detail: status });
+    } catch (e: any) {
+      res.status(200).json({ success: false, count: 0, error: e?.message ?? "Erreur lors du refresh" });
+    }
   });
 
   // ─── Analytics : refresh quotidien + diff historique ──────────────────────────
@@ -801,9 +933,31 @@ export function registerRoutes(httpServer: Server, app: Express): void {
 
   // GET /api/routing-status
   // État de la migration TomTom Routing : source active + connexion clé TomTom
-  app.get("/api/routing-status", (_req, res) => {
+  app.get("/api/routing-status", async (_req, res) => {
     const stats      = getCacheStats();
     const tomtomCred = storage.getPlatformCredential("tomtom");
+
+    // ← PredictHQ : état connexion + nb events actifs + boost max. Non bloquant.
+    let phqConnected = false;
+    let phqActiveEvents = 0;
+    let phqMaxBoost = 1.0;
+    try {
+      const phqStatus = getPredictHQStatus();
+      phqConnected    = !!phqStatus.connected;
+      phqActiveEvents = phqStatus.active_events ?? 0;
+      phqMaxBoost     = phqStatus.max_boost ?? 1.0;
+      // Fallback : recalcule le boost max depuis les events si non fourni.
+      if ((!phqMaxBoost || phqMaxBoost <= 1.0)) {
+        try {
+          const evts = await getActivePredictHQEvents();
+          if (evts.length) {
+            phqMaxBoost = Math.max(1.0, ...evts.map((e: any) => e.demand_boost ?? 1.0));
+            if (!phqActiveEvents) phqActiveEvents = evts.length;
+          }
+        } catch { /* non bloquant */ }
+      }
+    } catch { /* stub indisponible → valeurs neutres */ }
+
     res.json({
       ...stats,
       lastRefresh:         routingLastRefresh.toISOString(),
@@ -817,7 +971,51 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       activeSource:        stats.tomtomHits > 0 ? "tomtom"
         : stats.googleAvailable ? "google"
         : (stats.osrmAvailable ? "osrm" : "calibrated"),
+      // ← Champs PredictHQ
+      predicthq_connected:    phqConnected,
+      predicthq_active_events: phqActiveEvents,
+      predicthq_max_boost:    Math.round(phqMaxBoost * 100) / 100,
     });
+  });
+
+  // ─── PredictHQ — aperçu du boost events par zone ────────────────────────────
+  // GET /api/predicthq/boost-preview?hour=10
+  // Retourne, pour les 14 zones, le boost PredictHQ, le boost vols et le boost
+  // combiné (cap 2.5×), avec la liste des events PredictHQ actifs de la zone.
+  app.get("/api/predicthq/boost-preview", async (req, res) => {
+    const _hourRaw = parseInt(req.query.hour as string);
+    const hour = isNaN(_hourRaw) ? (new Date().getUTCHours() + 2) % 24 : _hourRaw;
+    const zones = storage.getAllZones() as any[];
+
+    // Données vols (non bloquant) pour calculer le flight_boost par zone.
+    let flightData: any = null;
+    try { flightData = await getFlightDataCached(); } catch { flightData = null; }
+
+    // Events PredictHQ actifs indexés par zone (non bloquant : stub → vide).
+    const eventsByZone: Record<string, any[]> = {};
+    try {
+      const phqEvents = await getActivePredictHQEvents();
+      for (const ev of phqEvents) {
+        (eventsByZone[ev.zone_id] ||= []).push(ev);
+      }
+    } catch { /* aucun event */ }
+
+    const preview = await Promise.all(zones.map(async (z: any) => {
+      const flightBoost = flightData ? getFlightBoostForZone(z.id, flightData) : 1.0;
+      let phqBoost = 1.0;
+      try { phqBoost = await getEventBoostForZone(z.id, hour); } catch { phqBoost = 1.0; }
+      const combinedBoost = combinePredictHQBoost(flightBoost, phqBoost);
+      return {
+        zone_id: z.id,
+        zone_name: z.name,
+        phq_boost: Math.round(phqBoost * 100) / 100,
+        flight_boost: Math.round(flightBoost * 100) / 100,
+        combined_boost: Math.round(combinedBoost * 100) / 100,
+        events: eventsByZone[z.id] ?? [],
+      };
+    }));
+
+    res.json(preview);
   });
 
   // ─── Cache routing — stats et refresh admin ─────────────────────────────────
@@ -912,6 +1110,17 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       let flightData: any = null;
       try { flightData = await getFlightDataCached(); } catch { /* non bloquant */ }
 
+      // ← PredictHQ : events actifs indexés par zone (titre du plus gros event/zone)
+      let phqEventsByZone: Record<string, any> = {};
+      try {
+        const phqEvents = await getActivePredictHQEvents();
+        for (const ev of phqEvents) {
+          const cur = phqEventsByZone[ev.zone_id];
+          if (!cur || (ev.rank ?? 0) > (cur.rank ?? 0)) phqEventsByZone[ev.zone_id] = ev;
+        }
+      } catch { phqEventsByZone = {}; }
+      const currentHour = hour;
+
       // ── Distance Haversine (vol d'oiseau) ─────────────────────────────────────
       const haversineKm = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
         const R = 6371;
@@ -952,6 +1161,13 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         let flightBoost = 1.0;
         if (flightData) flightBoost = getFlightBoostForZone(z.id, flightData);
 
+        // ← PredictHQ : boost events pour cette zone (1.0 si aucun). Non bloquant.
+        let phqBoost = 1.0;
+        try { phqBoost = await getEventBoostForZone(z.id, currentHour); } catch { phqBoost = 1.0; }
+        const phqEvent = phqEventsByZone[z.id];
+        // Boost combiné flight × PredictHQ, plafonné à 2.5×
+        const combinedBoost = combinePredictHQBoost(flightBoost, phqBoost);
+
         // Pénalité distance routière (km réels)
         const distancePenalty = distanceKm <= 3 ? 1.0
           : distanceKm <= 8 ? 0.93
@@ -960,8 +1176,9 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           : distanceKm <= 40 ? 0.55
           : 0.35;
 
-        const globalScore = Math.round(profitIdx * distancePenalty * surge * flightBoost);
-        const estimatedRevenue = Math.round(avgFare * surge * flightBoost * 100) / 100;
+        // Score et revenu calculés sur le boost COMBINÉ (flight × PredictHQ)
+        const globalScore = Math.round(profitIdx * distancePenalty * surge * combinedBoost);
+        const estimatedRevenue = Math.round(avgFare * surge * combinedBoost * 100) / 100;
 
         let reason = "Zone active";
         if (z.id === "z_cdg" || z.id === "z_orly") {
@@ -989,6 +1206,10 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           profitabilityIndex: profitIdx,
           surgeMultiplier: Math.round(surge * 100) / 100,
           flightBoost: Math.round(flightBoost * 100) / 100,
+          // ← Champs PredictHQ
+          phq_boost: Math.round(phqBoost * 100) / 100,
+          phq_event_title: phqBoost > 1.0 && phqEvent ? phqEvent.title : null,
+          combined_event_boost: Math.round(combinedBoost * 100) / 100,
           avgFare: Math.round(avgFare * 100) / 100,
           longRideProbability: Math.round(longRide * 100) / 100,
           ratioDO: Math.round(ratio * 100) / 100,

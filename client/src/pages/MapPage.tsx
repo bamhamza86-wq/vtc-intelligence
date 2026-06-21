@@ -10,6 +10,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TrendingUp, Clock, Zap, Plane, ChevronDown, ChevronUp, Navigation } from "lucide-react";
 import { UpdateWidget } from "@/components/UpdateWidget";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
+import { PredictHQBadge } from "@/components/PredictHQBadge";
+import { usePredictHQ } from "@/hooks/usePredictHQ";
 
 const COLORS = { ultraHigh: "#22c55e", high: "#86efac", medium: "#fbbf24", low: "#f97316", veryLow: "#ef4444" };
 
@@ -191,6 +193,7 @@ export default function MapPage() {
   const [selectedHour, setSelectedHour] = useState(now.getHours());
   const [dayType, setDayType] = useState([0,6].includes(now.getDay()) ? "weekend" : "weekday");
   const [selectedZone, setSelectedZone] = useState<any>(null);
+  const { boostByZone: phqBoostByZone } = usePredictHQ();
 
   const { data: zones = [] } = useQuery({ queryKey: ["/api/zones"], queryFn: () => apiRequest("GET", "/api/zones").then(r => r.json()), refetchInterval: STATIC_INTERVAL, staleTime: 30_000 });
   // ETA des zones calculé depuis la VRAIE position GPS du chauffeur (lat/lng frais).
@@ -472,6 +475,8 @@ export default function MapPage() {
             const flightBoost = p.flight_boost ?? p.flightBoost ?? 1.0;
             const etaToZone = p.eta_to_zone ?? p.etaToZone ?? p.eta_min ?? null;
             const isAirport = selectedZone.zone.type === "airport";
+            const phqBoost = phqBoostByZone[selectedZone.zone.id] ?? p.phq_boost ?? 1.0;
+            const phqEventTitle = p.phq_event_title ?? selectedZone.zone.phq_event_title;
             const airportKey = selectedZone.zone.id === "z_cdg" ? "cdg" : selectedZone.zone.id === "z_orly" ? "orly" : null;
             const airportStats = airportKey && flightData ? flightData[airportKey] : null;
 
@@ -483,6 +488,11 @@ export default function MapPage() {
                       <div>
                         <CardTitle className="text-sm">{selectedZone.zone.name}</CardTitle>
                         <p className="text-xs text-muted-foreground capitalize">{selectedZone.zone.type}</p>
+                        {phqBoost > 1.0 && (
+                          <div className="mt-1">
+                            <PredictHQBadge boost={phqBoost} eventTitle={phqEventTitle} compact />
+                          </div>
+                        )}
                       </div>
                       <div className="flex items-center gap-1.5">
                         <span className="w-3 h-3 rounded-full" style={{ background: getProfitColor(profIdx) }} />

@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { UpdateWidget } from "@/components/UpdateWidget";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
+import { PredictHQBadge } from "@/components/PredictHQBadge";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,11 @@ interface ZoneResult {
   reason: string;
   waypoints: { lat: number; lng: number; label: string }[];
   distanceSource?: string;
+  // ─── PredictHQ — impact événementiel ───
+  phq_boost?: number;
+  phq_boost_active?: boolean;
+  combined_event_boost?: number;
+  phq_event_title?: string;
 }
 
 interface BestRouteResponse {
@@ -284,6 +290,11 @@ function ZoneCardVertical({ zone, rank, isSelected, onClick, userPos }: {
               )}
               <RouteSourceBadge source={zone.distanceSource ?? "calibrated"} size="xs" />
             </div>
+            {zone.phq_boost != null && zone.phq_boost > 1.0 && (
+              <div className="mt-1">
+                <PredictHQBadge boost={zone.phq_boost} eventTitle={zone.phq_event_title} compact />
+              </div>
+            )}
             <p className="text-[10px] text-muted-foreground italic mt-0.5 leading-tight">{zone.reason}</p>
           </div>
         </div>
@@ -674,6 +685,25 @@ export default function BestRoutePage() {
 
         {/* ── TOP 4 ZONES — Cartes verticales sous la map ─────────────────── */}
         <div className="px-4">
+          {(() => {
+            const best = data.top5[0];
+            const ceb = best?.combined_event_boost ?? best?.phq_boost ?? 1.0;
+            if (!best || ceb <= 1.3) return null;
+            return (
+              <div className="flex items-center gap-2 rounded-2xl border border-emerald-400/50 bg-emerald-500/10 px-4 py-3 mb-3">
+                <Zap size={16} className="text-emerald-400 animate-pulse flex-shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-emerald-300">⚡ Événement en cours</div>
+                  <div className="text-[11px] text-emerald-200/80 truncate">
+                    {best.phq_event_title || "Pic de demande détecté"} — {best.zone.name}
+                  </div>
+                </div>
+                <div className="ml-auto">
+                  <PredictHQBadge boost={ceb} eventTitle={best.phq_event_title} />
+                </div>
+              </div>
+            );
+          })()}
           <div className="flex items-center gap-2 mb-3">
             <TrendingUp size={14} className="text-primary" />
             <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">

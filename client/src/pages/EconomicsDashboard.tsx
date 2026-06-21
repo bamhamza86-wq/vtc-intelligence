@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
+import { PredictHQBadge } from "@/components/PredictHQBadge";
+import { usePredictHQ } from "@/hooks/usePredictHQ";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine, Cell,
@@ -61,6 +63,8 @@ interface Ride {
 interface ProfitabilityScore {
   zone_id: string;
   zone_name?: string;
+  phq_boost?: number;
+  phq_event_title?: string;
   zone_type?: string;
   hour: number;
   day_type: string;
@@ -391,6 +395,7 @@ function buildInsights(agg: DailyAgg, scores: ProfitabilityScore[], profile: Dri
 // ──────────────────────────────────────────────────────────────────────────────
 export default function EconomicsDashboard() {
   const { profileQ, ridesQ, profitQ, distQ, profile } = useEconomicsData();
+  const { boostByZone, activeEventCount } = usePredictHQ();
 
   const rides: Ride[] = ridesQ.data ?? [];
   const scores: ProfitabilityScore[] = profitQ.data ?? [];
@@ -421,15 +426,18 @@ export default function EconomicsDashboard() {
         && s.avg_fare >= s.avg_distance_km
         && s.avg_duration_min <= s.avg_distance_km;
       const road = routeEntries[s.zone_id];
+      const phqBoost = boostByZone[s.zone_id] ?? s.phq_boost ?? 1.0;
       return {
         zoneId: s.zone_id,
         name: shortZoneName(s.zone_name, s.zone_id),
         hourlyNet,
         profitable,
         roadKm: road?.roadKm ?? s.avg_distance_km,
+        phqBoost,
+        phqEventTitle: s.phq_event_title,
       };
     });
-  }, [scores, profile, routeEntries]);
+  }, [scores, profile, routeEntries, boostByZone]);
 
   // Données du graphique comparatif (Section 5) — par heure 6h→22h
   const chartData = useMemo(() => {
@@ -455,6 +463,12 @@ export default function EconomicsDashboard() {
             <BarChart2 size={20} className="text-primary" />
             Unit Economics — Chauffeur VTC
           </h2>
+          {activeEventCount > 0 && (
+            <p className="text-xs font-semibold text-emerald-400 flex items-center gap-1 mt-0.5">
+              <Zap size={12} className="animate-pulse" />
+              {activeEventCount} événement{activeEventCount > 1 ? "s" : ""} actif{activeEventCount > 1 ? "s" : ""} boostent la demande
+            </p>
+          )}
           <p className="text-sm text-muted-foreground">
             Rentabilité réelle · Seine-Saint-Denis (93) · seuil 1€/km &amp; 1min/km
           </p>
@@ -579,6 +593,11 @@ export default function EconomicsDashboard() {
                       <span className="text-xs font-medium leading-tight">{z.name}</span>
                       <Car size={12} className="text-muted-foreground shrink-0 mt-0.5" />
                     </div>
+                    {z.phqBoost > 1.0 && (
+                      <div className="mt-1">
+                        <PredictHQBadge boost={z.phqBoost} eventTitle={z.phqEventTitle} compact />
+                      </div>
+                    )}
                     <p className="text-xl font-bold mt-1" style={{ color }}>
                       {z.hourlyNet.toFixed(0)} <span className="text-xs font-normal">€/h</span>
                     </p>

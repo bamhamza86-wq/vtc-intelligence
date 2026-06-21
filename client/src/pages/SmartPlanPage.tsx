@@ -14,6 +14,55 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import PredictionPanel from "@/components/PredictionPanel";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
+import { PredictHQBadge } from "@/components/PredictHQBadge";
+import { usePredictHQSurges, type PredictHQSurge } from "@/hooks/usePredictHQ";
+
+// ─── Événements à venir (PredictHQ, 7 jours) ────────────────────────────
+function formatSurgeDay(s: PredictHQSurge): string {
+  if (s.label) return s.label;
+  if (!s.date) return "À venir";
+  try {
+    const d = new Date(s.date);
+    return d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
+  } catch {
+    return s.date;
+  }
+}
+
+function UpcomingEventsSection() {
+  const { surges, isLoading } = usePredictHQSurges();
+  const next = surges.slice(0, 3);
+  if (isLoading || next.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Calendar size={14} className="text-emerald-400" />
+        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+          Événements à venir (7 jours)
+        </h2>
+      </div>
+      <div className="space-y-2">
+        {next.map((s, i) => {
+          const boost = s.boost ?? s.intensity ?? 1.0;
+          return (
+            <div key={i} className="flex items-center gap-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3 py-2">
+              <Flame size={16} className="text-emerald-400 flex-shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium capitalize truncate">
+                  {formatSurgeDay(s)}
+                </div>
+                <div className="text-[11px] text-muted-foreground truncate">
+                  {s.title || "Pic de demande"}{s.zone_name ? ` — ${s.zone_name}` : ""}
+                </div>
+              </div>
+              <PredictHQBadge boost={boost} eventTitle={s.title} />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -603,6 +652,7 @@ export default function SmartPlanPage() {
       {/* ── THÈME 1 & 6 : Prédiction IA + Optimiseur temps mort (toujours visibles) ── */}
       <div className="px-4 pt-4 space-y-5">
         <PredictionPanel />
+        <UpcomingEventsSection />
         <IdleOptimizer position={position} />
       </div>
 

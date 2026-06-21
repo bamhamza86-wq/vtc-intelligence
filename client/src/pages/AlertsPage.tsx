@@ -9,7 +9,7 @@ import {
   Bell, BellOff, Clock, Euro, AlertTriangle, Zap, Cloud,
   Train, CheckCheck, Crosshair, Navigation, CalendarClock,
   ChevronDown, Timer, RefreshCw, AlertCircle, MapPin,
-  Plane, TrendingUp, Users, ArrowRight
+  Plane, TrendingUp, Users, ArrowRight, Target
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import SurgeTransparencyWidget from "@/components/SurgeTransparencyWidget";
@@ -119,6 +119,7 @@ const TYPE_ICONS: Record<string, any> = {
   weather_boost: Cloud,
   transport_disruption: Train,
   long_ride_opportunity: Bell,
+  predicthq_event: Target,
 };
 
 function getEventTypeIcon(type: string): string {
@@ -187,15 +188,18 @@ function AlertDetail({ alert, onMarkRead, isPending }: {
 }) {
   const cfg = PRIORITY_CONFIG[alert.priority] || PRIORITY_CONFIG.low;
   const TypeIcon = TYPE_ICONS[alert.type] || Bell;
+  const isPredictHQ = alert.type === "predicthq_event";
 
   return (
-    <div className={`rounded-2xl border p-4 ${cfg.bg} ${cfg.border} transition-all duration-200`}>
+    <div className={`rounded-2xl border p-4 transition-all duration-200 ${isPredictHQ ? "bg-emerald-500/10 border-emerald-400/50" : `${cfg.bg} ${cfg.border}`}`}>
       <div className="flex items-start gap-3 mb-3">
         <div
-          className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-          style={{ background: `${cfg.color}20`, border: `1px solid ${cfg.color}40` }}
+          className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-lg"
+          style={isPredictHQ
+            ? { background: "rgba(16,185,129,0.15)", border: "1px solid rgba(52,211,153,0.5)" }
+            : { background: `${cfg.color}20`, border: `1px solid ${cfg.color}40` }}
         >
-          <TypeIcon size={18} style={{ color: cfg.color }} />
+          {isPredictHQ ? <span aria-hidden>🎯</span> : <TypeIcon size={18} style={{ color: cfg.color }} />}
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2 mb-1">
@@ -763,21 +767,24 @@ export default function AlertsPage() {
                 const cfg = PRIORITY_CONFIG[alert.priority] || PRIORITY_CONFIG.low;
                 const TypeIcon = TYPE_ICONS[alert.type] || Bell;
                 const isOpen = expandedAlertId === alert.id;
+                const isPredictHQ = alert.type === "predicthq_event";
                 return (
                   <div key={alert.id}>
                     {/* Carte cliquable */}
                     <button
                       className={`w-full text-left rounded-2xl border p-3.5 transition-all duration-200
-                        ${isOpen ? `${cfg.bg} ${cfg.border}` : "border-border hover:border-muted-foreground/40 bg-card"}
+                        ${isPredictHQ ? "border-emerald-400/50 bg-emerald-500/10" : isOpen ? `${cfg.bg} ${cfg.border}` : "border-border hover:border-muted-foreground/40 bg-card"}
                         ${alert.is_read ? "opacity-60" : ""}`}
                       onClick={() => setExpandedAlertId(prev => prev === alert.id ? null : alert.id)}
                     >
                       <div className="flex items-start gap-3">
                         <div
-                          className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
-                          style={{ background: `${cfg.color}20`, border: `1px solid ${cfg.color}40` }}
+                          className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-base"
+                          style={isPredictHQ
+                            ? { background: "rgba(16,185,129,0.15)", border: "1px solid rgba(52,211,153,0.5)" }
+                            : { background: `${cfg.color}20`, border: `1px solid ${cfg.color}40` }}
                         >
-                          <TypeIcon size={16} style={{ color: cfg.color }} />
+                          {isPredictHQ ? <span aria-hidden>🎯</span> : <TypeIcon size={16} style={{ color: cfg.color }} />}
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-start justify-between gap-2 mb-1">

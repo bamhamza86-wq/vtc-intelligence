@@ -1,9 +1,15 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { RefreshCw, Database, Plane, Clock, TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, Navigation } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { RefreshCw, Database, Plane, Clock, TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, Navigation, Target, ExternalLink, Zap } from "lucide-react";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
+import { PredictHQBadge } from "@/components/PredictHQBadge";
+import { usePredictHQ } from "@/hooks/usePredictHQ";
 
 const ZONE_LABELS: Record<string, string> = {
   z_cdg: "CDG", z_orly: "Orly", z_saint_denis_gare: "Gare Saint-Denis",
@@ -33,6 +39,41 @@ function peakColor(level: string) {
 }
 
 export default function DataSourcesPage() {
+  // PredictHQ Events Intelligence
+  const { events: phqEvents, isConnected: phqConnected, hasKey: phqHasKey, activeEventCount: phqActiveCount, lastUpdated: phqLastUpdated } = usePredictHQ();
+  const [phqModalOpen, setPhqModalOpen] = useState(false);
+  const [phqKeyInput, setPhqKeyInput] = useState("");
+  const [phqSaving, setPhqSaving] = useState(false);
+  const [phqSaveMsg, setPhqSaveMsg] = useState<string | null>(null);
+
+  const phqTop3 = [...phqEvents]
+    .filter((e) => (e.boost ?? 1) > 1.0)
+    .sort((a, b) => (b.boost ?? 1) - (a.boost ?? 1))
+    .slice(0, 3);
+
+  const phqStatus: { label: string; color: string } = phqConnected
+    ? { label: "Connect\u00e9", color: "#22c55e" }
+    : phqHasKey
+    ? { label: "D\u00e9connect\u00e9", color: "#f97316" }
+    : { label: "Pas de cl\u00e9 API", color: "#94a3b8" };
+
+  async function savePhqKey() {
+    if (!phqKeyInput.trim()) return;
+    setPhqSaving(true);
+    setPhqSaveMsg(null);
+    try {
+      await apiRequest("PUT", "/api/platforms/credentials/predicthq", { api_key: phqKeyInput.trim() });
+      await apiRequest("POST", "/api/platforms/test/predicthq").catch(() => {});
+      setPhqSaveMsg("Cl\u00e9 enregistr\u00e9e \u2014 reconnexion en cours\u2026");
+      setPhqKeyInput("");
+      setTimeout(() => setPhqModalOpen(false), 1200);
+    } catch (e: any) {
+      setPhqSaveMsg(`Erreur : ${e?.message ?? "\u00e9chec enregistrement"}`);
+    } finally {
+      setPhqSaving(false);
+    }
+  }
+
   const { data: analytics, isLoading: loadingAnalytics, refetch } = useQuery({
     queryKey: ["/api/analytics/refresh"],
     queryFn: () => apiRequest("GET", "/api/analytics/refresh").then(r => r.json()),
@@ -332,6 +373,123 @@ export default function DataSourcesPage() {
       </Card>
 
       {/* ─── Sources de données ─── */}
+      {/* PredictHQ Events Intelligence */}
+      <Card className="border-emerald-500/30">
+        <CardHeader className="pb-2 pt-3 px-4">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Target size={14} className="text-emerald-400" />
+            PredictHQ Events Intelligence
+            <Badge
+              variant="outline"
+              className="text-[9px] py-0 ml-auto"
+              style={{ borderColor: `${phqStatus.color}80`, color: phqStatus.color }}
+            >
+              {phqStatus.label}
+            </Badge>
+          </CardTitle>
+          <p className="text-[10px] text-muted-foreground mt-0.5">
+            Impact des événements (concerts, matchs, salons) sur la demande VTC — boost par zone en quasi temps réel.
+          </p>
+        </CardHeader>
+        <CardContent className="px-4 pb-3">
+          <div className="grid grid-cols-3 gap-2 mb-3">
+            <div className="rounded-lg border p-2.5 bg-card text-center">
+              <p className="text-[10px] text-muted-foreground mb-1">Statut connexion</p>
+              <div className="flex justify-center items-center gap-1">
+                {phqConnected
+                  ? <CheckCircle size={12} className="text-green-500" />
+                  : <AlertTriangle size={12} style={{ color: phqStatus.color }} />}
+                <span className="text-xs font-bold" style={{ color: phqStatus.color }}>{phqStatus.label}</span>
+              </div>
+            </div>
+            <div className="rounded-lg border p-2.5 bg-card text-center">
+              <p className="text-[10px] text-muted-foreground mb-1">Événements actifs</p>
+              <p className="text-lg font-bold" style={{ color: phqActiveCount > 0 ? "#10b981" : "#94a3b8" }}>
+                {phqActiveCount}
+              </p>
+              <p className="text-[9px] text-muted-foreground">boostent la demande</p>
+            </div>
+            <div className="rounded-lg border p-2.5 bg-card text-center">
+              <p className="text-[10px] text-muted-foreground mb-1">Dernière MAJ</p>
+              <p className="text-xs font-bold text-foreground">{phqLastUpdated ? fmtTs(phqLastUpdated) : "—"}</p>
+              <p className="text-[9px] text-muted-foreground">refresh auto 3 s</p>
+            </div>
+          </div>
+
+          {phqTop3.length > 0 && (
+            <div className="space-y-1 mb-3">
+              <p className="text-[11px] font-semibold text-muted-foreground">Top 3 événements</p>
+              {phqTop3.map((e) => (
+                <div key={e.id} className="flex items-center gap-2 text-[10px] rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-2 py-1.5">
+                  <Zap size={12} className="text-emerald-400 flex-shrink-0" />
+                  <span className="flex-1 truncate font-medium">{e.title}</span>
+                  {e.zone_name && <span className="text-muted-foreground truncate max-w-[90px]">{e.zone_name}</span>}
+                  <PredictHQBadge boost={e.boost} eventTitle={e.title} compact />
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-xs h-8 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10"
+              onClick={() => setPhqModalOpen(true)}
+            >
+              <Target size={12} className="mr-1" /> Configurer clé API
+            </Button>
+            <a
+              href="https://control.predicthq.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              <ExternalLink size={12} /> control.predicthq.com
+            </a>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Modal configuration clé API PredictHQ */}
+      <Dialog open={phqModalOpen} onOpenChange={setPhqModalOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Target size={16} className="text-emerald-400" /> Clé API PredictHQ
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <p className="text-xs text-muted-foreground">
+              Collez votre Access Token PredictHQ (control.predicthq.com → API Tokens).
+            </p>
+            <Input
+              type="password"
+              placeholder="phq_xxxxxxxxxxxxxxxx"
+              value={phqKeyInput}
+              onChange={(e) => setPhqKeyInput(e.target.value)}
+              autoComplete="off"
+            />
+            {phqSaveMsg && (
+              <p className={`text-xs ${phqSaveMsg.startsWith("Erreur") ? "text-red-400" : "text-emerald-400"}`}>
+                {phqSaveMsg}
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setPhqModalOpen(false)}>Annuler</Button>
+            <Button
+              size="sm"
+              className="bg-emerald-600 hover:bg-emerald-500 text-white"
+              disabled={phqSaving || !phqKeyInput.trim()}
+              onClick={savePhqKey}
+            >
+              {phqSaving ? "Enregistrement…" : "Enregistrer"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {sources?.categories && (
         <Card>
           <CardHeader className="pb-2 pt-3 px-4">

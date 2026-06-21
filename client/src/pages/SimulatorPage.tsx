@@ -11,8 +11,9 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import {
   Navigation, MapPin, Crosshair, RefreshCw, CheckCircle, XCircle,
-  TrendingUp, Clock, Route as RouteIcon, Gauge, Info,
+  TrendingUp, Clock, Route as RouteIcon, Gauge, Info, Zap, Plane,
 } from "lucide-react";
+import { PredictHQBadge } from "@/components/PredictHQBadge";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SimulatorPage — Simulateur de trajet temps réel (TomTom / OSRM)
@@ -379,6 +380,38 @@ export default function SimulatorPage() {
                   <p className="text-muted-foreground mt-0.5">Tarif réf. {profile?.avgFare} €</p>
                 </div>
               </div>
+
+              {/* Boost combiné : TomTom (trafic) × PredictHQ (événements) × Vols */}
+              {(() => {
+                const surge = selectedZone.surgeMultiplier ?? 1.0;
+                const phq = selectedZone.phq_boost ?? 1.0;
+                const flight = selectedZone.flightBoost ?? 1.0;
+                const combined = selectedZone.combined_event_boost ?? (surge * phq * flight);
+                if (combined <= 1.0 && phq <= 1.0 && flight <= 1.0) return null;
+                return (
+                  <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-2.5">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[11px] font-semibold text-indigo-300 flex items-center gap-1">
+                        <Zap size={12} /> Boost combiné
+                      </span>
+                      <span className="text-sm font-black text-indigo-300">×{combined.toFixed(2)}</span>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap text-[10px]">
+                      <span className="flex items-center gap-1 text-muted-foreground">
+                        <span className="text-amber-400">⚡</span> Surge ×{surge.toFixed(2)}
+                      </span>
+                      {flight > 1.0 && (
+                        <span className="flex items-center gap-1 text-sky-400">
+                          <Plane size={10} /> Vols ×{flight.toFixed(2)}
+                        </span>
+                      )}
+                      {phq > 1.0 && (
+                        <PredictHQBadge boost={phq} eventTitle={selectedZone.phq_event_title} compact />
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {!r ? (
                 <p className="text-sm text-muted-foreground text-center py-3">
