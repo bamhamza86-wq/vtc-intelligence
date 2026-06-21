@@ -205,9 +205,11 @@ function mapRawEvent(raw: any): PredictHQEvent | null {
   const endMs = new Date(end).getTime();
   const hoursUntilStart = Math.round(((startMs - now) / (60 * 60 * 1000)) * 10) / 10;
 
-  // Actif : en cours OU démarre dans les 3 prochaines heures
+  // Actif : en cours OU démarre dans les 7 prochains jours
+  // Raison : les events PredictHQ à venir (ex. Top 14 Final le 28 juin) doivent
+  // déjà influer sur le boost de demande afin d'anticiper les pics.
   const isOngoing = startMs <= now && endMs >= now;
-  const startsSoon = startMs > now && startMs - now <= 3 * 60 * 60 * 1000;
+  const startsSoon = startMs > now && startMs - now <= 7 * 24 * 60 * 60 * 1000;
   const isActive = isOngoing || startsSoon;
 
   const zoneId = findNearestZone(lat, lng);

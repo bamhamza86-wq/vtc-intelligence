@@ -2359,7 +2359,8 @@ export const storage: IStorage = {
       const startMs = new Date(r.start_time).getTime();
       const endMs = new Date(r.end_time).getTime();
       const isOngoing = startMs <= nowMs && endMs >= nowMs;
-      const startsSoon = startMs > nowMs && startMs - nowMs <= 3 * 60 * 60 * 1000;
+      // Actif = en cours OU démarre dans les 7 prochains jours (fenêtre horizon)
+      const startsSoon = startMs > nowMs && startMs - nowMs <= 7 * 24 * 60 * 60 * 1000;
       return {
         id: r.id,
         title: r.title,
@@ -2381,30 +2382,49 @@ export const storage: IStorage = {
   },
 
   getPredictHQBoostForZone(zone_id: string, hour: number): number {
-    // Cherche les events de la zone qui couvrent l'heure demandée (aujourd'hui).
-    // Retourne le boost maximal trouvé, ou 1.0 si aucun event.
+    // Cherche les events de la zone actifs dans les 7 prochains jours.
+    // Stratégie : priorité aux events du jour (chevauchement horaire exact),
+    // puis fallback sur le max des events à venir dans la fenêtre horizon (atténué).
+    const nowMs = Date.now();
+    const horizonMs = nowMs + 7 * 24 * 60 * 60 * 1000;
+
     const rows = sqlite.prepare(
-      "SELECT start_time, end_time, demand_boost FROM predicthq_events WHERE zone_id=?"
-    ).all(zone_id) as any[];
+      "SELECT start_time, end_time, demand_boost FROM predicthq_events WHERE zone_id=? AND end_time >= ?"
+    ).all(zone_id, new Date(nowMs).toISOString()) as any[];
     if (rows.length === 0) return 1.0;
 
+    // 1) Chercher un chevauchement exact avec l'heure demandée (aujourd'hui)
     const ref = new Date();
     ref.setHours(hour, 0, 0, 0);
     const refStart = ref.getTime();
-    const refEnd = refStart + 60 * 60 * 1000; // fenêtre d'une heure
+    const refEnd = refStart + 60 * 60 * 1000;
 
-    let maxBoost = 1.0;
+    let exactBoost = 1.0;
+    let futureBoost = 1.0;
+
     for (const r of rows) {
       const s = new Date(r.start_time).getTime();
       const e = new Date(r.end_time).getTime();
-      // chevauchement entre [s,e] et [refStart,refEnd]
+      const b = Number(r.demand_boost) || 1.0;
+
+      // chevauchement exact
       if (s < refEnd && e > refStart) {
-        const b = Number(r.demand_boost) || 1.0;
-        if (b > maxBoost) maxBoost = b;
+        if (b > exactBoost) exactBoost = b;
+      }
+      // event à venir dans les 7 prochains jours → atténué selon la distance temporelle
+      else if (s > nowMs && s <= horizonMs) {
+        const daysUntil = (s - nowMs) / (24 * 60 * 60 * 1000);
+        // atténuation linéaire : jour J=boost plein, J+7=boost 0 (plancher 1.0)
+        const attenuation = Math.max(0, 1 - daysUntil / 7);
+        const attenuatedBoost = 1.0 + (b - 1.0) * attenuation;
+        if (attenuatedBoost > futureBoost) futureBoost = attenuatedBoost;
       }
     }
+
+    // Retourner le max entre boost exact du jour et boost atténué des futurs
+    const maxBoost = Math.max(exactBoost, futureBoost);
     // Plafond métier absolu
-    return Math.min(2.5, maxBoost);
+    return Math.min(2.5, Math.round(maxBoost * 100) / 100);
   },
 
   clearOldPredictHQEvents(): void {
