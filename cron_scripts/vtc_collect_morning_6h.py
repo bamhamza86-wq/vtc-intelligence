@@ -13,7 +13,7 @@ for p in [SCRIPT_DIR, Path("/home/user/workspace/cron_scripts")]:
     if (p / "vtc_api_client.py").exists():
         sys.path.insert(0, str(p)); break
 
-from vtc_api_client import login, get_profitability
+from vtc_api_client import login, get_profitability, get_routing_status
 
 DIAG_DIR = Path("/home/user/workspace/cron_tracking/vtc_diagnostic")
 DIAG_DIR.mkdir(parents=True, exist_ok=True)
@@ -36,12 +36,21 @@ def run():
 
     predictions = {}
     token = None
+    routing_source = "unknown"
 
     for h in RUSH_HOURS:
         # Re-authentification à chaque heure (token peut expirer en ~30min)
         if token is None:
             token = login()
             print(f"  Auth OK (h={h})")
+            # Logger la source ETA active (TomTom / OSRM / calibrated) après auth
+            try:
+                routing_status = get_routing_status(token)
+                routing_source = routing_status.get("routing_priority", "unknown")
+                print(f"  Source ETA active: {routing_source}"
+                      f" (tomtomHits={routing_status.get('tomtomHits', 'n/a')})")
+            except Exception as e:
+                print(f"  routing-status: ERREUR {e}")
         
         try:
             raw = get_profitability(token, h)
@@ -66,7 +75,9 @@ def run():
 
     out_path = DIAG_DIR / f"predictions_{today}.json"
     out_path.write_text(json.dumps({
-        "date": today, "collected_at": ts, "predictions": predictions
+        "date": today, "collected_at": ts,
+        "routing_source": routing_source,
+        "predictions": predictions
     }, indent=2))
     print(f"  Sauvegardé: {len(predictions)} zones × {len(RUSH_HOURS)} heures → {out_path}")
     return len(predictions), len(RUSH_HOURS)

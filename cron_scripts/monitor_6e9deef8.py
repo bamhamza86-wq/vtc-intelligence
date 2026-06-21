@@ -11,7 +11,7 @@ for p in [SCRIPT_DIR, Path("/home/user/workspace/cron_scripts")]:
     if (p / "vtc_api_client.py").exists():
         sys.path.insert(0, str(p)); break
 
-from vtc_api_client import login, get_profitability, get_events, get_alerts
+from vtc_api_client import login, get_profitability, get_events, get_alerts, get_routing_status
 
 BASE      = Path("/home/user/workspace/cron_tracking/6e9deef8")
 BASELINES = BASE / "baselines_by_day"
@@ -25,7 +25,10 @@ ZONES = [
     "z_93_centre", "z_stade_france"
 ]
 RUSH_HOURS  = [5, 6, 7, 8, 9]
-DELTA_ALERT = 15.0
+# Seuil d'alerte dépendant de la source ETA :
+# TomTom est plus précis → tolérance réduite (±15%) ; OSRM/calibrated → ±20%.
+DELTA_ALERT          = 20.0   # défaut (OSRM / calibrated / inconnu)
+DELTA_ALERT_TOMTOM   = 15.0   # source TomTom (plus précise)
 
 
 def run():
@@ -44,6 +47,18 @@ def run():
         _log(ts, today, day_type, dow, 0, [], error=str(e))
         return
 
+    # Source ETA active : conditionne le seuil de régression (TomTom = plus précis)
+    routing_source = "unknown"
+    try:
+        routing_status = get_routing_status(token)
+        routing_source = routing_status.get("routing_priority", "unknown")
+        print(f"  Source ETA active: {routing_source}"
+              f" (tomtomHits={routing_status.get('tomtomHits', 'n/a')})")
+    except Exception as e:
+        print(f"  routing-status: ERREUR {e}")
+    delta_alert = DELTA_ALERT_TOMTOM if routing_source == "tomtom" else DELTA_ALERT
+    print(f"  Seuil régression: ±{delta_alert}% (source={routing_source})")
+
     # Collecte h=5..9
     scores = {z: {} for z in ZONES}
     for h in RUSH_HOURS:
@@ -60,7 +75,7 @@ def run():
     bl_path = BASELINES / f"{dow}_baseline.json"
     if not bl_path.exists():
         print(f"  Baseline {dow} absent — initialisation")
-        _save_baseline(bl_path, today, day_type, dow, scores)
+        _save_baseline(bl_path, today, day_type, dow, scores, routing_source)
         _update_main(today, scores)
         _log(ts, today, day_type, dow, 0, [], note=f"Baseline {dow} initialisé")
         return
@@ -68,7 +83,7 @@ def run():
     baseline = json.loads(bl_path.read_text())
     if baseline.get("day_type") != day_type:
         print(f"  Mismatch day_type — réinitialisation")
-        _save_baseline(bl_path, today, day_type, dow, scores)
+        _save_baseline(bl_path, today, day_type, dow, scores, routing_source)
         _update_main(today, scores)
         _log(ts, today, day_type, dow, 0, [], note="Baseline réinitialisé (day_type mismatch)")
         return
@@ -81,10 +96,18 @@ def run():
         if avg_bl <= 0 or avg_today <= 0:
             continue
         delta_pct = (avg_today - avg_bl) / avg_bl * 100
-        if abs(delta_pct) > DELTA_ALERT:
+        # Comparaison source baseline vs source actuelle : un changement de source
+        # peut expliquer un écart léger (TomTom ≠ OSRM) sans être une vraie régression.
+        bl_source = baseline.get("routing_source", "unknown")
+        if abs(delta_pct) > delta_alert:
             regressions.append({"zone": z, "avg_baseline": round(avg_bl, 1),
                                  "avg_today": round(avg_today, 1),
-                                 "delta_pct": round(delta_pct, 1)})
+                                 "delta_pct": round(delta_pct, 1),
+                                 "threshold_pct": delta_alert,
+                                 "source_now": routing_source,
+                                 "source_baseline": bl_source,
+                                 "source_changed": (bl_source != "unknown"
+                                                    and bl_source != routing_source)})
 
     # Events / alertes
     try:
@@ -99,7 +122,10 @@ def run():
 
     suspects = []
     for r in regressions:
-        if r["zone"] not in event_zones and not has_alert:
+        if r.get("source_changed"):
+            # Changement de source ETA (ex: TomTom → OSRM) : écart attendu, pas une régression moteur.
+            r["cause"] = f"changement source ETA ({r.get('source_baseline')} → {r.get('source_now')})"
+        elif r["zone"] not in event_zones and not has_alert:
             r["cause"] = "RÉGRESSION SUSPECTE"
             suspects.append(r)
         else:
@@ -111,7 +137,7 @@ def run():
         _create_issue(today, suspects)
         _write_notif(today, ts, suspects)
     else:
-        _save_baseline(bl_path, today, day_type, dow, scores)
+        _save_baseline(bl_path, today, day_type, dow, scores, routing_source)
         _update_main(today, scores)
 
     _log(ts, today, day_type, dow, len(suspects), suspects)
@@ -122,9 +148,10 @@ def _avg(d):
     vals = [v for k, v in d.items() if k.startswith("h") and isinstance(v, (int, float)) and v > 0]
     return sum(vals) / len(vals) if vals else 0.0
 
-def _save_baseline(path, today, day_type, dow, scores):
+def _save_baseline(path, today, day_type, dow, scores, routing_source="unknown"):
     path.write_text(json.dumps({
         "date": today, "day_type": day_type, "day_of_week": dow,
+        "routing_source": routing_source,
         "zones": {z: {f"h{h}": scores.get(z, {}).get(f"h{h}", 0) for h in RUSH_HOURS} for z in ZONES}
     }, indent=2))
 

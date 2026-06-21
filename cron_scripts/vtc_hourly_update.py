@@ -45,7 +45,7 @@ def _ensure_deps():
 
 _client_dir = _ensure_deps()
 
-from vtc_api_client import login, get_profitability, get_history, parse_history_zones
+from vtc_api_client import login, get_profitability, get_history, parse_history_zones, get_routing_status
 
 # ── Configuration ────────────────────────────────────────────────────────────
 BASE = Path("/home/user/workspace/cron_tracking/vtc_hourly")
@@ -91,11 +91,24 @@ def run():
         _log_error(ts, today, H_prev, day_type, dow, str(e))
         return
 
+    # Source ETA active (TomTom / OSRM / calibrated)
+    routing_source = "unknown"
+    try:
+        routing_status = get_routing_status(token)
+        routing_source = routing_status.get("routing_priority", "unknown")
+        print(f"  Source ETA active: {routing_source}"
+              f" (tomtomHits={routing_status.get('tomtomHits', 'n/a')})")
+    except Exception as e:
+        print(f"  routing-status: ERREUR {e}")
+
     # ── Prédits (H_prev) ─────────────────────────────────────────────────────
     try:
         raw = get_profitability(token, H_prev)
         predicted = {item["zone_id"]: item["profitability_index"]
                      for item in raw if item.get("zone_id") in ZONES}
+        # distanceSource désormais retourné par zone → distinguer TomTom vs OSRM
+        zone_source = {item["zone_id"]: item.get("distanceSource")
+                       for item in raw if item.get("zone_id") in ZONES and item.get("distanceSource")}
         print(f"  Prédits h={H_prev}: {len(predicted)} zones")
     except Exception as e:
         _log_error(ts, today, H_prev, day_type, dow, f"profitability: {e}")
@@ -127,6 +140,10 @@ def run():
 
     # ── Métriques ────────────────────────────────────────────────────────────
     deltas, p_vals, q_vals, flags = [], [], [], []
+    # Deltas par source ETA pour distinguer MAE/KL TomTom vs OSRM
+    deltas_by_src = {"tomtom": [], "osrm": [], "calibrated": [], "unknown": []}
+    pq_by_src     = {"tomtom": ([], []), "osrm": ([], []),
+                     "calibrated": ([], []), "unknown": ([], [])}
     for z in ZONES:
         pred = predicted.get(z)
         hist = historical.get(z)
@@ -137,9 +154,16 @@ def run():
         deltas.append(delta)
         p_vals.append(float(pred))
         q_vals.append(float(hist))
+        src = zone_source.get(z, routing_source)
+        if src not in deltas_by_src:
+            src = "unknown"
+        deltas_by_src[src].append(delta)
+        pq_by_src[src][0].append(float(pred))
+        pq_by_src[src][1].append(float(hist))
         if err > 20:
             flags.append({"zone": z, "pred": pred, "hist": hist,
                           "err_pct": round(err, 1),
+                          "source": src,
                           "dir": "SOUS-ESTIMÉ" if pred < hist else "SUR-ESTIMÉ"})
 
     if not deltas:
@@ -152,7 +176,21 @@ def run():
     flags_count = len(flags)
     alerte = (MAE > ALERTE_MAE) or (KL > ALERTE_KL) or (flags_count >= ALERTE_FLAGS)
 
-    print(f"  MAE={MAE:.2f} KL={KL:.4f} flags={flags_count} alerte={alerte}")
+    # MAE/KL ventilés par source ETA (TomTom vs OSRM)
+    metrics_by_source = {}
+    for src, ds in deltas_by_src.items():
+        if not ds:
+            continue
+        pv, qv = pq_by_src[src]
+        metrics_by_source[src] = {
+            "zones": len(ds),
+            "mae": round(sum(abs(d) for d in ds) / len(ds), 2),
+            "kl": round(kl_divergence(pv, qv), 4) if len(pv) > 1 else 0.0,
+        }
+
+    print(f"  MAE={MAE:.2f} KL={KL:.4f} flags={flags_count} alerte={alerte} source={routing_source}")
+    for src, m in metrics_by_source.items():
+        print(f"    [{src}] zones={m['zones']} MAE={m['mae']} KL={m['kl']}")
     for f in flags[:3]:
         print(f"    ⚠ {f['zone']}: pred={f['pred']} hist={f['hist']} err={f['err_pct']}% {f['dir']}")
 
@@ -167,7 +205,9 @@ def run():
         "date": today, "run_at": ts, "h": H_prev, "H_cest": H_cest,
         "day_type": day_type, "mae": round(MAE, 2), "kl": round(KL, 4),
         "flags_count": flags_count, "flags": flags, "bl_update": bl_update,
-        "alerte": alerte, "zones_checked": len(deltas)
+        "alerte": alerte, "zones_checked": len(deltas),
+        "routing_source": routing_source,
+        "metrics_by_source": metrics_by_source
     }
     (BASE / f"result_{today}_h{H_prev:02d}.json").write_text(json.dumps(result, indent=2))
 

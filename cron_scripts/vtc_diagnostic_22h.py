@@ -12,7 +12,7 @@ for p in [SCRIPT_DIR, Path("/home/user/workspace/cron_scripts")]:
     if (p / "vtc_api_client.py").exists():
         sys.path.insert(0, str(p)); break
 
-from vtc_api_client import login, get_profitability
+from vtc_api_client import login, get_profitability, get_routing_status
 
 DIAG_DIR = Path("/home/user/workspace/cron_tracking/vtc_diagnostic")
 DIAG_DIR.mkdir(parents=True, exist_ok=True)
@@ -38,8 +38,20 @@ def run():
     token = login()
     print("  Auth OK")
 
-    # Scores réels soir
+    # Source ETA active au moment du diagnostic (soir)
+    routing_source_now = "unknown"
+    tomtom_hits = None
+    try:
+        routing_status = get_routing_status(token)
+        routing_source_now = routing_status.get("routing_priority", "unknown")
+        tomtom_hits = routing_status.get("tomtomHits")
+        print(f"  Source ETA active (soir): {routing_source_now} (tomtomHits={tomtom_hits})")
+    except Exception as e:
+        print(f"  routing-status: ERREUR {e}")
+
+    # Scores réels soir + source distance par zone
     real_scores, tomorrow_preds = {}, {}
+    zone_source_now = {}
     for h in RUSH_HOURS:
         raw = get_profitability(token, h)
         for item in raw:
@@ -48,15 +60,33 @@ def run():
                 idx = item.get("profitability_index", 0)
                 real_scores.setdefault(z, {})[str(h)] = idx
                 tomorrow_preds.setdefault(z, {})[str(h)] = idx
+                # distanceSource désormais retourné par /api/profitability
+                ds = item.get("distanceSource")
+                if ds:
+                    zone_source_now[z] = ds
 
     # Prédictions matin
     pred_path = DIAG_DIR / f"predictions_{today}.json"
     morning_preds = {}
+    morning_routing_source = "unknown"
     if pred_path.exists():
-        morning_preds = json.loads(pred_path.read_text()).get("predictions", {})
-        print(f"  Prédictions matin: {len(morning_preds)} zones")
+        pred_data = json.loads(pred_path.read_text())
+        morning_preds = pred_data.get("predictions", {})
+        morning_routing_source = pred_data.get("routing_source", "unknown")
+        print(f"  Prédictions matin: {len(morning_preds)} zones (source ETA matin: {morning_routing_source})")
     else:
         print(f"  ⚠ Pas de prédictions matin pour {today}")
+
+    # Flags changement de source ETA (tomtom → osrm peut indiquer un quota épuisé)
+    source_changed_global = (
+        morning_routing_source not in ("unknown",)
+        and routing_source_now not in ("unknown",)
+        and morning_routing_source != routing_source_now
+    )
+    source_downgrade = (morning_routing_source == "tomtom" and routing_source_now != "tomtom")
+    if source_changed_global:
+        print(f"  ⚠ Source ETA changée: {morning_routing_source} → {routing_source_now}"
+              + (" (DOWNGRADE — quota TomTom ?)" if source_downgrade else ""))
 
     # Calcul flags
     flagged = []
@@ -82,6 +112,12 @@ def run():
         "date": today, "run_at": ts,
         "zones_checked": len(ZONES_93), "hours_checked": len(RUSH_HOURS),
         "flags_count": len(flagged), "flagged": flagged,
+        "routing_source_morning": morning_routing_source,
+        "routing_source_evening": routing_source_now,
+        "routing_source_changed": source_changed_global,
+        "routing_source_downgrade": source_downgrade,
+        "tomtom_hits": tomtom_hits,
+        "zone_source_now": zone_source_now,
         "tomorrow_predictions": tomorrow_preds,
         "real_scores_22h": real_scores
     }, indent=2, ensure_ascii=False))
@@ -119,8 +155,28 @@ def run():
                 f"|------|-----|-----|-----|-----|-----|\n"
                 f"{pred_rows}")
 
+    # ── Section Source données ETA (TomTom vs OSRM) ──────────────────────────
+    src_label = {"tomtom": "TomTom", "osrm": "OSRM", "calibrated": "Calibré (interne)"}
+    morning_lbl = src_label.get(morning_routing_source, morning_routing_source)
+    evening_lbl = src_label.get(routing_source_now, routing_source_now)
+    if source_downgrade:
+        src_alert = ("\n\n**⚠️ Changement de source détecté :** "
+                     f"{morning_lbl} (matin) → {evening_lbl} (soir). "
+                     "Un passage TomTom → OSRM peut indiquer un **quota TomTom épuisé** "
+                     "— les ETA peuvent être moins précis. À surveiller.")
+    elif source_changed_global:
+        src_alert = (f"\n\n**ℹ️ Changement de source :** {morning_lbl} (matin) → {evening_lbl} (soir).")
+    else:
+        src_alert = "\n\n✅ Source ETA stable sur la journée."
+    tomtom_hits_line = f"\n- TomTom hits : {tomtom_hits}" if tomtom_hits is not None else ""
+    src_sec = ("### 🛰️ Source données ETA\n\n"
+               f"- Source active ce soir : **{evening_lbl}**\n"
+               f"- Source au rush matin : **{morning_lbl}**{tomtom_hits_line}"
+               f"{src_alert}")
+
     body = (f"# VTC Intelligence — Rapport diagnostic {today}\n\n"
             f"*Généré le {cest_now}*\n\n"
+            f"{src_sec}\n\n"
             f"{anomaly}\n\n{pred_sec}\n\n"
             f"---\n*Seuil d'alerte : 20% d'écart prédit/réel*")
 
@@ -130,7 +186,10 @@ def run():
     # Écrire notification pending pour le main agent
     (DIAG_DIR / f"pending_email_{today}.json").write_text(json.dumps({
         "subject": subj, "body": body,
-        "flags_count": len(flagged), "date": today
+        "flags_count": len(flagged), "date": today,
+        "routing_source_morning": morning_routing_source,
+        "routing_source_evening": routing_source_now,
+        "routing_source_downgrade": source_downgrade
     }, indent=2, ensure_ascii=False))
 
     print(f"  Draft: {draft_path.name} | subject: {subj}")

@@ -64,6 +64,17 @@ def get_profitability(token, hour):
     return r.json()
 
 
+def get_routing_status(token):
+    """GET /api/routing-status → dict {routing_priority: 'tomtom'|'osrm'|'calibrated', tomtomHits, ...}
+    La clé TomTom est gérée côté serveur ; ce client ne fait que lire le statut."""
+    s = _get_session()
+    r = s.get(f"{BASE_URL}/api/routing-status",
+              headers={"Authorization": f"Bearer {token}"},
+              timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
 def get_history(token, date_str, hour):
     """GET /api/history?date={date}&hour={h}
     Retourne dict {zones: {zone_id: {profitability_index: N, ...}}} ou list."""
