@@ -11,6 +11,7 @@ import {
   Star, Euro, Activity
 } from "lucide-react";
 import { UpdateWidget } from "@/components/UpdateWidget";
+import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,7 @@ interface ZoneResult {
   estimatedRevenue: number;
   reason: string;
   waypoints: { lat: number; lng: number; label: string }[];
+  distanceSource?: string;
 }
 
 interface BestRouteResponse {
@@ -280,6 +282,7 @@ function ZoneCardVertical({ zone, rank, isSelected, onClick, userPos }: {
               {rank === 1 && (
                 <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400">TOP</span>
               )}
+              <RouteSourceBadge source={zone.distanceSource ?? "calibrated"} size="xs" />
             </div>
             <p className="text-[10px] text-muted-foreground italic mt-0.5 leading-tight">{zone.reason}</p>
           </div>
@@ -642,6 +645,12 @@ export default function BestRoutePage() {
             <RefreshCw size={12} className={(loading || eventLoading) ? "animate-spin" : ""} />
             {(loading || eventLoading) ? "Calcul…" : "Rafraîchir"}
           </Button>
+        </div>
+
+        {/* Indicateur de source globale ETA */}
+        <div className="flex items-center gap-2 px-4 -mt-2">
+          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Source ETA :</span>
+          <RouteSourceBadge source={data.all?.[0]?.distanceSource ?? "calibrated"} size="xs" />
         </div>
 
         <div className="px-4">

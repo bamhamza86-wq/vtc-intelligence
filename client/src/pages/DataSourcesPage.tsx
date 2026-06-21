@@ -2,7 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { RefreshCw, Database, Plane, Clock, TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle } from "lucide-react";
+import { RefreshCw, Database, Plane, Clock, TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, Navigation } from "lucide-react";
+import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 
 const ZONE_LABELS: Record<string, string> = {
   z_cdg: "CDG", z_orly: "Orly", z_saint_denis_gare: "Gare Saint-Denis",
@@ -43,6 +44,28 @@ export default function DataSourcesPage() {
     queryKey: ["/api/data-sources"],
     queryFn: () => apiRequest("GET", "/api/data-sources").then(r => r.json()),
   });
+
+  // ─── Statut Routing ETA (TomTom temps réel / OSRM fallback / Calibré) ───
+  // routingStatus contient : tomtomHits, tomtomAvailable, activeSource, tomtom_connected,
+  // tomtom_source_active, validEntries, lastRefresh, nextRefresh
+  const { data: routingStatus } = useQuery({
+    queryKey: ["/api/routing-status"],
+    queryFn: () => apiRequest("GET", "/api/routing-status").then(r => r.json()),
+    refetchInterval: 3_000,
+  });
+
+  // Source ETA active : priorité au champ explicite renvoyé par le backend, sinon dérivée.
+  const routingSource: string = routingStatus?.activeSource
+    ?? routingStatus?.routing_priority
+    ?? (routingStatus?.tomtom_source_active ? "tomtom"
+      : routingStatus?.osrmAvailable ? "osrm" : "calibrated");
+  const tomtomKeyConfigured: boolean =
+    routingStatus?.tomtom_connected ?? routingStatus?.tomtom_key_configured ?? routingStatus?.tomtomAvailable ?? false;
+  const routingSourceLabel: string =
+    routingSource === "tomtom" ? "TomTom — Trafic temps réel"
+    : routingSource === "osrm" ? "OSRM (fallback réseau)"
+    : routingSource === "google" ? "Google Maps"
+    : "Calibré (mesures terrain)";
 
   const diff = analytics?.historical_diff?.diff || [];
   const hasHistory = analytics?.historical_diff?.hasHistory;
@@ -121,6 +144,53 @@ export default function DataSourcesPage() {
           )}
         </div>
       </div>
+
+      {/* ─── Routing ETA — TomTom temps réel / OSRM fallback / Calibré ─── */}
+      <Card>
+        <CardHeader className="pb-2 pt-3 px-4">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Navigation size={14} className="text-green-400" />
+            Routing ETA temps réel
+          </CardTitle>
+          <p className="text-[10px] text-muted-foreground mt-0.5">
+            TomTom est désormais utilisé pour le <strong className="text-foreground">routing (ETA temps réel)</strong> en plus du traffic flow — calcul distance/temps de trajet zone par zone.
+          </p>
+        </CardHeader>
+        <CardContent className="px-4 pb-3">
+          <div className="grid grid-cols-3 gap-2">
+            {/* Source active */}
+            <div className="rounded-lg border p-2.5 bg-card text-center">
+              <p className="text-[10px] text-muted-foreground mb-1">Source active</p>
+              <div className="flex justify-center mb-1">
+                <RouteSourceBadge source={routingSource} size="xs" />
+              </div>
+              <p className="text-[9px] text-muted-foreground">{routingSourceLabel}</p>
+            </div>
+            {/* Zones avec données TomTom */}
+            <div className="rounded-lg border p-2.5 bg-card text-center">
+              <p className="text-[10px] text-muted-foreground mb-1">Zones données TomTom</p>
+              <p className="text-lg font-bold" style={{ color: (routingStatus?.tomtomHits ?? 0) > 0 ? "#22c55e" : "#94a3b8" }}>
+                {routingStatus?.tomtomHits ?? 0}
+              </p>
+              <p className="text-[9px] text-muted-foreground">{routingStatus?.validEntries ?? 0} entrées cache valides</p>
+            </div>
+            {/* Dernière mise à jour */}
+            <div className="rounded-lg border p-2.5 bg-card text-center">
+              <p className="text-[10px] text-muted-foreground mb-1">Dernière MAJ</p>
+              <p className="text-xs font-bold text-foreground">{fmtTs(routingStatus?.lastRefresh)}</p>
+              <p className="text-[9px] text-muted-foreground">refresh auto 3 min</p>
+            </div>
+          </div>
+          <div className="mt-2 flex items-center gap-2 text-[10px]">
+            {tomtomKeyConfigured
+              ? <CheckCircle size={11} className="text-green-500" />
+              : <AlertTriangle size={11} className="text-amber-500" />}
+            <span className="text-muted-foreground">
+              Clé TomTom : <strong className={tomtomKeyConfigured ? "text-green-400" : "text-amber-400"}>{tomtomKeyConfigured ? "configurée" : "non configurée (fallback OSRM/Calibré)"}</strong>
+            </span>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* ─── Analyse inversée J vs J-1 ─── */}
       <Card>

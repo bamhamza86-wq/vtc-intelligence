@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import PredictionPanel from "@/components/PredictionPanel";
+import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -81,12 +82,13 @@ interface SmartPlan {
   bestSlot: TimelineEntry | null;
   bestScore: number;
   timeline: TimelineEntry[];
-  etaCdg: { etaMin: number; distKm: number; zone: string; name: string };
-  etaOrly: { etaMin: number; distKm: number; zone: string; name: string };
+  etaCdg: { etaMin: number; distKm: number; zone: string; name: string; distanceSource?: string };
+  etaOrly: { etaMin: number; distKm: number; zone: string; name: string; distanceSource?: string };
   topZonesNow: TopZone[];
   hourlyScores: Record<string, { topZone: string; topScore: number; mean: number }>;
   realFlights: RealFlight[];
   flightSource: string;
+  primarySource?: string;
 }
 
 // ─── Configs ───────────────────────────────────────────────────────────────────
@@ -425,6 +427,7 @@ interface IdleReco {
   net_score: number;
   action: string;
   reason: string;
+  distance_source?: string;
 }
 
 function IdleOptimizer({ position }: { position: { lat: number; lng: number } }) {
@@ -480,6 +483,7 @@ function IdleOptimizer({ position }: { position: { lat: number; lng: number } })
             <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
               <span className="flex items-center gap-1"><Timer size={11} />{r.eta_min} min</span>
               <span className="flex items-center gap-1"><TrendingUp size={11} />{r.score_now}→{r.score_next_hour}</span>
+              <RouteSourceBadge source={r.distance_source} className="ml-auto" />
             </div>
             <p className="text-[11px] text-foreground">{r.action}</p>
             <p className="text-[10px] text-muted-foreground">{r.reason}</p>
@@ -536,6 +540,14 @@ export default function SmartPlanPage() {
     }
   }, [position.lat, position.lng]);
 
+  // Rafraîchissement temps réel : on tente un refetch toutes les 3s.
+  // Le throttle interne de fetchPlan (30s) protège l'API ; ce tick garantit
+  // que les données trafic/ETA restent fraîches sans intervention manuelle.
+  useEffect(() => {
+    const id = setInterval(() => fetchPlan(), 3000);
+    return () => clearInterval(id);
+  }, [fetchPlan]);
+
   const plan = mutation.data;
   const isLoading = mutation.isPending;
   const error = mutation.error;
@@ -552,6 +564,12 @@ export default function SmartPlanPage() {
         </div>
         <div className="flex items-center gap-2">
           <GpsFreshness lastUpdatedAt={lastUpdatedAt} isFallback={isFallback} />
+          {plan && (
+            <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+              <span className="text-muted-foreground">Données trafic :</span>
+              <RouteSourceBadge source={plan.primarySource} size="xs" />
+            </div>
+          )}
           {plan && (
             <div className="text-[10px] text-muted-foreground">
               {plan.flightSource === "opensky" ? (
@@ -687,6 +705,7 @@ export default function SmartPlanPage() {
                   <div className="flex items-baseline gap-1">
                     <span className="text-lg font-black text-cyan-400">{ap.etaMin}min</span>
                     <span className="text-[11px] text-muted-foreground">{ap.distKm}km</span>
+                    <RouteSourceBadge source={ap.distanceSource ?? plan.primarySource} size="xs" className="ml-auto" />
                   </div>
                   {/* Vols temps réel pour cet aéroport */}
                   {plan.realFlights.filter(f => f.airport === ap.zone.replace("z_", "").toUpperCase()).slice(0, 2).map(f => (

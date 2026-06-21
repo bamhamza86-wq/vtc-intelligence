@@ -13,6 +13,7 @@ import {
   ArrowRight, BarChart2, Activity,
 } from "lucide-react";
 import { UpdateWidget } from "@/components/UpdateWidget";
+import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -34,6 +35,7 @@ interface RouteZone {
   viability: boolean;
   reason: string;
   mapsDetourUrl: string;
+  distanceSource?: string;
 }
 
 interface ReturnJourneyResponse {
@@ -585,6 +587,7 @@ export default function ReturnJourneyPage() {
               >
                 {enChemin ? "EN CHEMIN" : "LÉGÈREMENT DÉVIÉ"}
               </Badge>
+              <RouteSourceBadge source={zone.distanceSource ?? "calibrated"} size="xs" />
               <div className="font-black text-2xl leading-none" style={{ color }}>{zone.routeScore}</div>
             </div>
           </div>

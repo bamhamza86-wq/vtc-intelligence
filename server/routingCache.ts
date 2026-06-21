@@ -35,6 +35,70 @@
 
 import https from "https";
 
+// ── TomTom Routing API ────────────────────────────────────────────────────────
+// Source PRIMAIRE pour les ETAs avec trafic temps réel.
+//  GET https://api.tomtom.com/routing/1/calculateRoute/{orig}:{dest}/json
+//      ?key={KEY}&traffic=true&travelMode=car&departAt=now&routeType=fastest
+//  → routes[0].summary.travelTimeInSeconds (avec trafic)
+//  → routes[0].summary.lengthInMeters
+//  Rate limit gratuit : 2500 req/jour. Fallback : OSRM puis calibré.
+const TOMTOM_ROUTING_BASE    = "https://api.tomtom.com/routing/1/calculateRoute";
+const TOMTOM_ROUTING_TIMEOUT_MS = 10_000;
+
+let _tomtomKeyCache: string | null = null;
+let _tomtomKeyCacheAt = 0;
+const TOMTOM_KEY_TTL = 60_000; // refresh clé depuis DB toutes les 60s
+
+/**
+ * Lit la clé TomTom depuis la BDD (table platform_credentials) avec cache 60s.
+ * Import dynamique de storage pour éviter une dépendance circulaire.
+ * Retourne null si pas de clé ou statut ≠ "connected".
+ */
+export async function getTomTomKey(): Promise<string | null> {
+  if (_tomtomKeyCache && Date.now() - _tomtomKeyCacheAt < TOMTOM_KEY_TTL) {
+    return _tomtomKeyCache;
+  }
+  try {
+    const { storage } = await import("./storage");
+    const cred = storage.getPlatformCredential("tomtom");
+    _tomtomKeyCache = (cred?.api_key && cred.status === "connected") ? cred.api_key : null;
+    _tomtomKeyCacheAt = Date.now();
+    return _tomtomKeyCache;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Appelle TomTom Routing API pour un point-à-point avec trafic temps réel.
+ * Retourne { durationS, distanceM } ou null en cas d'échec/quota dépassé.
+ */
+async function fetchTomTomRoute(
+  origLat: number, origLng: number,
+  destLat: number, destLng: number,
+  apiKey:  string,
+): Promise<{ durationS: number; distanceM: number } | null> {
+  const url =
+    `${TOMTOM_ROUTING_BASE}/${origLat},${origLng}:${destLat},${destLng}/json` +
+    `?key=${encodeURIComponent(apiKey)}&traffic=true&travelMode=car&departAt=now&routeType=fastest`;
+  try {
+    const ctrl = new AbortController();
+    const tid  = setTimeout(() => ctrl.abort(), TOMTOM_ROUTING_TIMEOUT_MS);
+    const resp = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(tid);
+    if (!resp.ok) return null; // 403 clé invalide, 429 quota dépassé, etc.
+    const data    = await resp.json() as any;
+    const summary = data?.routes?.[0]?.summary;
+    if (!summary || typeof summary.travelTimeInSeconds !== "number") return null;
+    return {
+      durationS: summary.travelTimeInSeconds,
+      distanceM: summary.lengthInMeters,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function getCestHour(): number {
   return (new Date().getUTCHours() + 2) % 24;
 }
@@ -75,7 +139,7 @@ export interface RouteEntry {
   durationS: number;   // durée OSRM sans trafic (secondes)
   etaMin:    number;   // ETA avec trafic si Google, sinon OSRM × ratio
   speedKmH:  number;   // vitesse effective (roadKm / etaMin * 60)
-  source:    "google" | "osrm" | "calibrated";
+  source:    "tomtom" | "google" | "osrm" | "calibrated";
   cachedAt:  number;   // Date.now()
   expiresAt: number;   // cachedAt + TTL_MS
 }
@@ -84,11 +148,14 @@ export interface RoutingCacheStats {
   totalEntries:    number;
   validEntries:    number;
   expiredEntries:  number;
+  tomtomHits:      number;
   googleHits:      number;
   osrmHits:        number;
   calibratedHits:  number;
+  lastTomTomFetch: string | null;
   lastOsrmFetch:   string | null;
   lastGoogleFetch: string | null;
+  tomtomAvailable: boolean;
   googleAvailable: boolean;
   osrmAvailable:   boolean;
   refreshCount:    number;
@@ -96,7 +163,7 @@ export interface RoutingCacheStats {
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
-const TTL_MS              = 30 * 60 * 1000;  // 30 minutes
+const TTL_MS              = 3 * 60 * 1000;   // 3 minutes (trafic TomTom temps réel)
 const OSRM_BASE_URL       = "https://router.project-osrm.org";
 const OSRM_TIMEOUT_MS     = 8_000;
 const GOOGLE_TIMEOUT_MS   = 10_000;
@@ -322,12 +389,15 @@ export function computeBreakEvenPenalty(
 const memoryCache = new Map<string, RouteEntry>();
 
 // Stats globales
+let statsTomTom    = 0;
 let statsGoogle    = 0;
 let statsOsrm      = 0;
 let statsCalibrated = 0;
+let lastTomTomFetch: string | null = null;
 let lastOsrmFetch: string | null  = null;
 let lastGoogleFetch: string | null = null;
 let refreshCount   = 0;
+let tomtomAvailable = false; // mis à jour après premier appel TomTom réussi
 let osrmAvailable  = true;   // pessimiste → mis à jour après premier test
 let googleAvailable = false; // optimiste → mis à jour si clé présente
 
@@ -541,6 +611,30 @@ export async function getRouteForZone(
   const cached = memoryCache.get(key);
   if (cached && now < cached.expiresAt) return cached;
 
+  // 1bis. TomTom Routing (SOURCE PRIMAIRE — trafic temps réel)
+  if (dest) {
+    const tomtomKey = await getTomTomKey();
+    if (tomtomKey) {
+      const tt = await fetchTomTomRoute(originLat, originLng, dest.lat, dest.lng, tomtomKey);
+      if (tt) {
+        const roadKm   = Math.round((tt.distanceM / 1000) * 10) / 10;
+        // TomTom = temps avec trafic → seulement × 0.93 (anti-surestimation)
+        const etaMin   = Math.max(1, Math.round((tt.durationS / 60) * 0.93));
+        const speedKmH = roadKm > 0 && tt.durationS > 0
+          ? Math.round((roadKm / (tt.durationS / 3600)) * 100) / 100 : 0;
+        const entry: RouteEntry = {
+          zoneId, roadKm, durationS: tt.durationS, etaMin, speedKmH,
+          source: "tomtom", cachedAt: now, expiresAt: now + TTL_MS,
+        };
+        memoryCache.set(key, entry);
+        statsTomTom++;
+        lastTomTomFetch = new Date().toISOString();
+        tomtomAvailable = true;
+        return entry;
+      }
+    }
+  }
+
   // 2. Google si clé présente
   if (apiKey && apiKey.length > 10) {
     if (dest) {
@@ -622,6 +716,55 @@ export async function refreshAllZones(
   const h       = getCestHour();
   let refreshed = 0;
   let source    = "calibrated";
+
+  // ── Tentative TomTom Routing (SOURCE PRIMAIRE — trafic temps réel) ──────────
+  // La clé vient de la BDD (platform_credentials). On appelle le Routing API en
+  // batches de 5 pour respecter le rate limit gratuit (2500 req/jour).
+  // TomTom retourne déjà le temps AVEC trafic → pas de ETA_HOUR_FACTOR.
+  // On applique seulement × 0.93 (règle métier anti-surestimation).
+  const tomtomKey = await getTomTomKey();
+  if (tomtomKey) {
+    console.log(`[routing-cache] TomTom Routing pour ${zoneIds.length} zones (trafic temps réel)...`);
+    const BATCH = 5;
+    let tomtomOk = 0;
+    const tNow0  = Date.now();
+    for (let i = 0; i < zoneIds.length; i += BATCH) {
+      const batch = zoneIds.slice(i, i + BATCH);
+      await Promise.all(batch.map(async (zoneId) => {
+        const dest = ZONE_COORDS[zoneId];
+        if (!dest) return;
+        const result = await fetchTomTomRoute(originLat, originLng, dest.lat, dest.lng, tomtomKey);
+        if (!result) return;
+        const roadKm    = Math.round((result.distanceM / 1000) * 10) / 10;
+        const durationS = result.durationS;
+        // TomTom = temps avec trafic → seulement × 0.93 (anti-surestimation)
+        const etaMin    = Math.max(1, Math.round((durationS / 60) * 0.93));
+        const speedKmH  = roadKm > 0 && durationS > 0
+          ? Math.round((roadKm / (durationS / 3600)) * 100) / 100 : 0;
+        const now = Date.now();
+        memoryCache.set(cacheKey(zoneId, originLat, originLng), {
+          zoneId, roadKm, durationS, etaMin, speedKmH,
+          source: "tomtom", cachedAt: now, expiresAt: now + TTL_MS,
+        });
+        tomtomOk++;
+        refreshed++;
+        statsTomTom++;
+      }));
+      if (i + BATCH < zoneIds.length) await sleep(250); // throttle rate limit
+    }
+    if (tomtomOk >= zoneIds.length * 0.7) {
+      source          = "tomtom";
+      tomtomAvailable = true;
+      lastTomTomFetch = new Date().toISOString();
+      refreshCount++;
+      console.log(`[routing-cache] TomTom ✅ ${tomtomOk}/${zoneIds.length} zones avec trafic temps réel en ${Date.now() - tNow0}ms`);
+      return { refreshed, source, durationMs: Date.now() - t0 };
+    }
+    // Trop d'échecs (quota dépassé / clé KO) → fallback OSRM
+    tomtomAvailable = tomtomOk > 0;
+    refreshed = 0; // on repart sur OSRM proprement
+    console.warn(`[routing-cache] TomTom partiel (${tomtomOk}/${zoneIds.length}) → fallback OSRM`);
+  }
 
   // ── Tentative Google batch ──────────────────────────────────────────────────
   if (apiKey && apiKey.length > 10) {
@@ -768,11 +911,14 @@ export function getCacheStats(): RoutingCacheStats {
     totalEntries:    memoryCache.size,
     validEntries:    valid,
     expiredEntries:  expired,
+    tomtomHits:      statsTomTom,
     googleHits:      statsGoogle,
     osrmHits:        statsOsrm,
     calibratedHits:  statsCalibrated,
+    lastTomTomFetch,
     lastOsrmFetch,
     lastGoogleFetch,
+    tomtomAvailable,
     googleAvailable,
     osrmAvailable,
     refreshCount,

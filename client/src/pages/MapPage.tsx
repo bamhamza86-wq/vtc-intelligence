@@ -7,8 +7,9 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { TrendingUp, Clock, Zap, Plane, ChevronDown, ChevronUp } from "lucide-react";
+import { TrendingUp, Clock, Zap, Plane, ChevronDown, ChevronUp, Navigation } from "lucide-react";
 import { UpdateWidget } from "@/components/UpdateWidget";
+import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 
 const COLORS = { ultraHigh: "#22c55e", high: "#86efac", medium: "#fbbf24", low: "#f97316", veryLow: "#ef4444" };
 
@@ -202,6 +203,17 @@ export default function MapPage() {
     refetchInterval: 3 * 60 * 1000, // 3 min (aligné sur cache backend TTL 3min)
     staleTime: 2 * 60 * 1000,
   });
+  // Statut routing ETA temps réel (TomTom / OSRM / Calibré) — rafraîchi toutes les 3s.
+  const { data: routingStatus } = useQuery({
+    queryKey: ["/api/routing-status"],
+    queryFn: () => apiRequest("GET", "/api/routing-status").then(r => r.json()),
+    refetchInterval: 3_000,
+  });
+  // Source ETA active globale : champ backend explicite, sinon dérivée.
+  const etaSource: string = routingStatus?.activeSource
+    ?? routingStatus?.routing_priority
+    ?? (routingStatus?.tomtom_source_active ? "tomtom"
+      : routingStatus?.osrmAvailable ? "osrm" : "calibrated");
 
   useEffect(() => {
     if (!mapRef.current || mapInstance.current) return;
@@ -442,6 +454,13 @@ export default function MapPage() {
         <div className="flex-1 relative">
           <div ref={mapRef} style={{ width: "100%", height: "100%" }} data-testid="map-container" />
 
+          {/* Indicateur global — source ETA active (coin supérieur droit) */}
+          <div className="absolute top-3 right-3 z-[1000] flex items-center gap-1.5 rounded-lg bg-black/75 backdrop-blur px-2.5 py-1.5 border border-white/10" data-testid="eta-source-indicator">
+            <Navigation size={12} className="text-green-400" />
+            <span className="text-[10px] text-white/70">Source ETA active</span>
+            <RouteSourceBadge source={etaSource} size="xs" />
+          </div>
+
           {/* Popup zone sélectionnée — enrichie avec données vols */}
           {selectedZone && (() => {
             const p = selectedZone.prof;
@@ -451,6 +470,7 @@ export default function MapPage() {
             const longRide = p.long_ride_probability ?? p.longRideProbability ?? 0;
             const surge = p.surge_multiplier ?? p.surgeMultiplier ?? 1;
             const flightBoost = p.flight_boost ?? p.flightBoost ?? 1.0;
+            const etaToZone = p.eta_to_zone ?? p.etaToZone ?? p.eta_min ?? null;
             const isAirport = selectedZone.zone.type === "airport";
             const airportKey = selectedZone.zone.id === "z_cdg" ? "cdg" : selectedZone.zone.id === "z_orly" ? "orly" : null;
             const airportStats = airportKey && flightData ? flightData[airportKey] : null;
@@ -480,6 +500,17 @@ export default function MapPage() {
                       <span>Score: <strong className="text-foreground">{Math.round(profIdx)}/100</strong></span>
                       {surge > 1 && <span className="text-amber-500 font-medium">⚡ Surge ×{surge.toFixed(2)}</span>}
                     </div>
+
+                    {/* ETA temps réel depuis position GPS + badge source (TomTom/OSRM/Calibré) */}
+                    {etaToZone != null && (
+                      <div className="flex items-center justify-between text-xs mb-1 rounded-lg bg-muted/40 px-2 py-1.5">
+                        <span className="flex items-center gap-1.5 text-muted-foreground">
+                          <Navigation size={11} className="text-green-400" />
+                          ETA trajet : <strong className="text-foreground tabular-nums">{Math.round(etaToZone)} min</strong>
+                        </span>
+                        <RouteSourceBadge source={etaSource} size="xs" />
+                      </div>
+                    )}
 
                     {/* Données vols si aéroport */}
                     {isAirport && airportStats && (

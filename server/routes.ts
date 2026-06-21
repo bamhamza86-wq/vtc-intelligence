@@ -47,6 +47,7 @@ import {
   invalidateCache,
   refreshAllZones,
   warmupCache,
+  getTomTomKey,
   DEFAULT_ORIGIN,
   CALIBRATED_DATA,
   ROAD_FACTOR as RC_ROAD_FACTOR,
@@ -73,8 +74,10 @@ const getHourlyRatio = RC_getHourlyRatio;
 const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_KEY ?? "";
 
 // ── Gestion du cycle de vie du cache routingCache ─────────────────────────────
+// TTL TomTom = 3 minutes (trafic temps réel) → refresh aligné sur 3 min
+const ROUTING_REFRESH_MS = 3 * 60 * 1000;
 let routingLastRefresh: Date = new Date();
-let routingNextRefresh: Date = new Date(Date.now() + 30 * 60 * 1000);
+let routingNextRefresh: Date = new Date(Date.now() + ROUTING_REFRESH_MS);
 let routingRefreshCount = 0;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -97,12 +100,12 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         GOOGLE_MAPS_KEY || undefined
       );
       routingLastRefresh = new Date();
-      routingNextRefresh = new Date(Date.now() + 30 * 60 * 1000);
+      routingNextRefresh = new Date(Date.now() + ROUTING_REFRESH_MS);
       console.log(`[routing-cache] Refresh #${routingRefreshCount} — ${result.refreshed} zones via ${result.source} en ${result.durationMs}ms`);
     } catch (err) {
       console.warn(`[routing-cache] Refresh #${routingRefreshCount} échoué:`, err);
     }
-  }, 30 * 60 * 1000); // 30 minutes
+  }, ROUTING_REFRESH_MS); // 3 minutes (aligné TTL TomTom trafic temps réel)
 
   // Headers cache HTTP pour optimiser le refresh 2s côté navigateur
   // profitability/current/alerts : no-store (données toujours fraîches)
@@ -789,8 +792,31 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       currentHourlyRatio: getHourlyRatio((now.getUTCHours()+2)%24),
       calibrationDate:    "2026-06-10",
       zonesCount:         Object.keys(CALIBRATED_DATA).length,
-      cacheSource:        stats.googleAvailable ? "google" : (stats.osrmAvailable ? "osrm" : "calibrated"),
-      ttlMinutes:         30,
+      cacheSource:        stats.tomtomHits > 0 ? "tomtom"
+        : stats.googleAvailable ? "google"
+        : (stats.osrmAvailable ? "osrm" : "calibrated"),
+      ttlMinutes:         3,
+    });
+  });
+
+  // GET /api/routing-status
+  // État de la migration TomTom Routing : source active + connexion clé TomTom
+  app.get("/api/routing-status", (_req, res) => {
+    const stats      = getCacheStats();
+    const tomtomCred = storage.getPlatformCredential("tomtom");
+    res.json({
+      ...stats,
+      lastRefresh:         routingLastRefresh.toISOString(),
+      nextRefresh:         routingNextRefresh.toISOString(),
+      ttlMinutes:          3,
+      tomtom_connected:    !!(tomtomCred?.api_key && tomtomCred.status === "connected"),
+      tomtom_source_active: stats.tomtomHits > 0,
+      tomtom_key_configured: !!(tomtomCred?.api_key && tomtomCred.api_key.length > 5),
+      tomtom_status:       tomtomCred?.status ?? "unconfigured",
+      routing_priority:    stats.tomtomAvailable ? "tomtom" : stats.osrmAvailable ? "osrm" : "calibrated",
+      activeSource:        stats.tomtomHits > 0 ? "tomtom"
+        : stats.googleAvailable ? "google"
+        : (stats.osrmAvailable ? "osrm" : "calibrated"),
     });
   });
 
@@ -802,14 +828,17 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       ...stats,
       lastRefresh:  routingLastRefresh.toISOString(),
       nextRefresh:  routingNextRefresh.toISOString(),
-      ttlMinutes:   30,
+      ttlMinutes:   3,
       costEstimate: {
+        tomtomPerMonth: stats.tomtomAvailable
+          ? "0€ (free tier 2500 req/jour)"
+          : "N/A (clé non configurée)",
         osrmPerMonth:   "0€ (gratuit, open source)",
         googlePerMonth: stats.googleAvailable
           ? "~75€ brut → FREE TIER (crédit 200$/mois)"
           : "N/A (clé non configurée)",
-        reduction:      "90% vs refresh 3min (cache 30min × 14 zones)",
-        apiCallsSaved:  `${Math.round(stats.refreshCount * 14 * (10 - 1))} appels économisés vs refresh 3min`,
+        reduction:      "cache 3min × 14 zones (trafic temps réel)",
+        apiCallsSaved:  `${Math.round(stats.refreshCount * 14)} appels routing depuis le démarrage`,
       },
     });
   });
@@ -824,7 +853,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         GOOGLE_MAPS_KEY || undefined
       );
       routingLastRefresh = new Date();
-      routingNextRefresh = new Date(Date.now() + 30 * 60 * 1000);
+      routingNextRefresh = new Date(Date.now() + ROUTING_REFRESH_MS);
       routingRefreshCount++;
       console.log(`[routing-cache] Force refresh admin — ${result.refreshed} zones via ${result.source} en ${result.durationMs}ms`);
       res.json({
@@ -856,7 +885,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       invalidateCache();
       const result = await refreshAllZones(lat, lng, GOOGLE_MAPS_KEY || undefined);
       routingLastRefresh = new Date();
-      routingNextRefresh = new Date(Date.now() + 30 * 60 * 1000);
+      routingNextRefresh = new Date(Date.now() + ROUTING_REFRESH_MS);
       routingRefreshCount++;
       console.log(`[routing-cache] Origine GPS mise à jour (${lat.toFixed(4)},${lng.toFixed(4)}) — ${result.refreshed} zones via ${result.source} en ${result.durationMs}ms`);
       res.json({ ok: true, zones: result.refreshed, source: result.source });
@@ -966,8 +995,8 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           globalScore,
           estimatedRevenue,
           reason,
-          // Source des données de distance/ETA
-          distanceSource: rcEntry.source,
+          // Source des données de distance/ETA (tomtom / osrm / google / calibrated)
+          distanceSource: rcEntry.source ?? "calibrated",
           // Trafic historique — densité de congestion par zone
           congestionFactor:  congestedZ.congestionFactor,
           congestionLabel:   congestedZ.congestionLabel,
@@ -1354,13 +1383,13 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
       };
 
-      const etaToZone = (zoneId: string, zLat: number, zLng: number): { etaMin: number; distKm: number } => {
+      const etaToZone = (zoneId: string, zLat: number, zLng: number): { etaMin: number; distKm: number; distanceSource: string } => {
         const cached = getCachedRoute(zoneId, lat, lng);
-        if (cached.etaMin > 0 && cached.roadKm > 0) return { etaMin: cached.etaMin, distKm: cached.roadKm };
+        if (cached.etaMin > 0 && cached.roadKm > 0) return { etaMin: cached.etaMin, distKm: cached.roadKm, distanceSource: cached.source ?? "calibrated" };
         const straight = haversineKm(lat, lng, zLat, zLng);
         const road     = Math.round(straight * (ROAD_FACTOR[zoneId] ?? 1.35) * 10) / 10;
         const eta      = Math.max(3, Math.round(road / 20 * 60));
-        return { etaMin: eta, distKm: road };
+        return { etaMin: eta, distKm: road, distanceSource: "calibrated" };
       };
 
       const addMins = (base: Date, mins: number): Date => new Date(base.getTime() + mins * 60000);
@@ -1451,8 +1480,8 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       // ETA vers CDG et Orly depuis la position actuelle
       const cdgZone  = zoneMap["z_cdg"];
       const orlyZone = zoneMap["z_orly"];
-      const etaCdg   = cdgZone  ? etaToZone("z_cdg",  cdgZone.lat,  cdgZone.lng)  : { etaMin: 25, distKm: 26 };
-      const etaOrly  = orlyZone ? etaToZone("z_orly", orlyZone.lat, orlyZone.lng) : { etaMin: 35, distKm: 30 };
+      const etaCdg   = cdgZone  ? etaToZone("z_cdg",  cdgZone.lat,  cdgZone.lng)  : { etaMin: 25, distKm: 26, distanceSource: "calibrated" };
+      const etaOrly  = orlyZone ? etaToZone("z_orly", orlyZone.lat, orlyZone.lng) : { etaMin: 35, distKm: 30, distanceSource: "calibrated" };
 
       // Pour chaque heure à venir (et actuelle)
       for (let h = Math.max(6, hour); h <= 23; h++) {
@@ -1669,6 +1698,11 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         // Vols temps réel
         realFlights,
         flightSource: flightData?.source ?? "heuristic",
+        // Source primaire des données trafic/distance (tomtom / osrm / google / calibrated)
+        primarySource: (() => {
+          const st = getCacheStats();
+          return st.tomtomAvailable ? "tomtom" : st.osrmAvailable ? "osrm" : st.googleAvailable ? "google" : "calibrated";
+        })(),
       });
 
     } catch (err) {
@@ -1843,6 +1877,8 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           reason,
           mapsDetourUrl,
           globalScore,
+          // Source des données distance/ETA (tomtom = trafic temps réel)
+          distanceSource: rcEntry.source,
         };
       });
 
@@ -2073,6 +2109,8 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           eta_min: etaMin,
           repo_cost_min: repoCost,
           net_score: Math.round(netScore),
+          // Source distance/ETA (tomtom = trafic temps réel)
+          distance_source: route?.source ?? "calibrated",
           action: `Partir maintenant — arrivée optimale ${arrivalHM}`,
           reason: trend === "hausse" ? "Score en hausse — vague d'arrivées à venir"
             : trend === "baisse" ? "Score en baisse — fenêtre courte" : "Score stable — opportunité solide",

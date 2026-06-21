@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
+import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine, Cell,
@@ -75,6 +76,7 @@ interface RouteEntry {
   roadKm: number;
   etaMin: number;
   speedKmH: number;
+  distanceSource?: string;
 }
 
 interface GmapsDistances {
@@ -393,6 +395,7 @@ export default function EconomicsDashboard() {
   const rides: Ride[] = ridesQ.data ?? [];
   const scores: ProfitabilityScore[] = profitQ.data ?? [];
   const routeEntries: Record<string, RouteEntry> = distQ.data?.entries ?? {};
+  const primarySource: string = Object.values(routeEntries)[0]?.distanceSource ?? "calibrated";
 
   const agg = useMemo(() => buildDailyAgg(rides, profile), [rides, profile]);
   const insights = useMemo(() => buildInsights(agg, scores, profile), [agg, scores, profile]);
@@ -456,9 +459,15 @@ export default function EconomicsDashboard() {
             Rentabilité réelle · Seine-Saint-Denis (93) · seuil 1€/km &amp; 1min/km
           </p>
         </div>
-        <Badge variant="outline" className="border-border text-muted-foreground gap-1">
-          <Settings size={12} /> {profile.platform_commission_pct}% comm.
-        </Badge>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Données temps réel :</span>
+            <RouteSourceBadge source={primarySource} size="xs" />
+          </div>
+          <Badge variant="outline" className="border-border text-muted-foreground gap-1">
+            <Settings size={12} /> {profile.platform_commission_pct}% comm.
+          </Badge>
+        </div>
       </div>
 
       {/* SECTION 1 — KPIs Journaliers */}
