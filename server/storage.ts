@@ -107,16 +107,17 @@ if (!existingUber) sqlite.exec("INSERT INTO platform_credentials (platform, api_
 const existingGig = sqlite.prepare("SELECT id FROM platform_credentials WHERE platform='gigdata'").get();
 if (!existingGig) sqlite.exec("INSERT INTO platform_credentials (platform, api_key) VALUES ('gigdata', '')");
 sqlite.exec("INSERT OR IGNORE INTO platform_credentials (platform, api_key, status) VALUES ('predicthq', '', 'disconnected')");
-// Injection automatique de la clé PredictHQ depuis l'env var PHQ_API_KEY
-// (utilisé sur le serveur déployé où la DB est vierge à chaque redeploy)
+// Injection automatique de la clé PredictHQ.
+// Priorité : env var PHQ_API_KEY, puis fallback hardcodé (clé du compte bamhamza86@gmail.com).
+// Nécessaire sur le serveur déployé où la DB SQLite est vierge à chaque redeploy.
 {
-  const envPhqKey = process.env.PHQ_API_KEY ?? '';
-  if (envPhqKey.length > 10) {
-    const existing = sqlite.prepare("SELECT api_key FROM platform_credentials WHERE platform='predicthq'").get() as any;
-    if (!existing || !existing.api_key || existing.api_key.length < 10) {
-      sqlite.prepare("UPDATE platform_credentials SET api_key=?, status='connected', last_tested=?, error_msg='' WHERE platform='predicthq'").run(envPhqKey, Date.now());
-      console.log('[Storage] PredictHQ API key injected from PHQ_API_KEY env var');
-    }
+  const PHQ_KEY_FALLBACK = 'H6vO4zDmjgTpPlXZUrewsFE-NLPD1wTHeowBiRHo';
+  const envPhqKey = (process.env.PHQ_API_KEY ?? '').trim();
+  const phqKeyToUse = envPhqKey.length > 10 ? envPhqKey : PHQ_KEY_FALLBACK;
+  const existingPhq = sqlite.prepare("SELECT api_key FROM platform_credentials WHERE platform='predicthq'").get() as any;
+  if (!existingPhq?.api_key || existingPhq.api_key.length < 10) {
+    sqlite.prepare("UPDATE platform_credentials SET api_key=?, status='connected', last_tested=?, error_msg='' WHERE platform='predicthq'").run(phqKeyToUse, Date.now());
+    console.log('[Storage] PredictHQ API key injected (source:', envPhqKey.length > 10 ? 'PHQ_API_KEY env' : 'fallback hardcode', ')');
   }
 }
 
@@ -2299,7 +2300,9 @@ export const storage: IStorage = {
     return sqlite.prepare("SELECT * FROM platform_credentials WHERE platform=?").get(platform);
   },
   savePlatformCredential(platform: string, apiKey: string): void {
-    sqlite.prepare("UPDATE platform_credentials SET api_key=?, status='unconfigured', error_msg='' WHERE platform=?").run(apiKey, platform);
+    // Si une clé non-vide est fournie, marquer 'connected' immédiatement (test asynchrone ensuite)
+    const newStatus = apiKey && apiKey.length > 10 ? 'connected' : 'unconfigured';
+    sqlite.prepare("UPDATE platform_credentials SET api_key=?, status=?, error_msg='' WHERE platform=?").run(apiKey, newStatus, platform);
   },
   updatePlatformStatus(platform: string, status: string, errorMsg: string = ''): void {
     sqlite.prepare("UPDATE platform_credentials SET status=?, last_tested=?, error_msg=? WHERE platform=?").run(status, Date.now(), errorMsg, platform);
