@@ -1093,6 +1093,20 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   });
 
   // ─── Meilleur Trajet — calcul itinéraire rentable depuis position GPS ──────────
+  // GET /api/best-route?from_lat=...&from_lng=...  (alias pratique pour tests)
+  // Injecte lat/lng dans req.body puis passe la main au POST handler
+  app.use("/api/best-route", (req: any, _res: any, next: any) => {
+    if (req.method === 'GET') {
+      const lat = parseFloat((req.query.from_lat ?? req.query.lat) as string);
+      const lng = parseFloat((req.query.from_lng ?? req.query.lng) as string);
+      if (!isNaN(lat) && !isNaN(lng)) {
+        req.body = { lat, lng };
+        req.method = 'POST'; // forcer le POST handler
+      }
+    }
+    next();
+  });
+
   // POST /api/best-route
   // Body: { lat: number, lng: number }
   app.post("/api/best-route", async (req, res) => {

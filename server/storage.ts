@@ -107,6 +107,18 @@ if (!existingUber) sqlite.exec("INSERT INTO platform_credentials (platform, api_
 const existingGig = sqlite.prepare("SELECT id FROM platform_credentials WHERE platform='gigdata'").get();
 if (!existingGig) sqlite.exec("INSERT INTO platform_credentials (platform, api_key) VALUES ('gigdata', '')");
 sqlite.exec("INSERT OR IGNORE INTO platform_credentials (platform, api_key, status) VALUES ('predicthq', '', 'disconnected')");
+// Injection automatique de la clé PredictHQ depuis l'env var PHQ_API_KEY
+// (utilisé sur le serveur déployé où la DB est vierge à chaque redeploy)
+{
+  const envPhqKey = process.env.PHQ_API_KEY ?? '';
+  if (envPhqKey.length > 10) {
+    const existing = sqlite.prepare("SELECT api_key FROM platform_credentials WHERE platform='predicthq'").get() as any;
+    if (!existing || !existing.api_key || existing.api_key.length < 10) {
+      sqlite.prepare("UPDATE platform_credentials SET api_key=?, status='connected', last_tested=?, error_msg='' WHERE platform='predicthq'").run(envPhqKey, Date.now());
+      console.log('[Storage] PredictHQ API key injected from PHQ_API_KEY env var');
+    }
+  }
+}
 
 // ─── Table PredictHQ events ────────────────────────────────────────────────────
 sqlite.exec(`
