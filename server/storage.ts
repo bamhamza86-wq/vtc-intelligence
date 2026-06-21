@@ -106,6 +106,30 @@ const existingUber = sqlite.prepare("SELECT id FROM platform_credentials WHERE p
 if (!existingUber) sqlite.exec("INSERT INTO platform_credentials (platform, api_key) VALUES ('tomtom', '')");
 const existingGig = sqlite.prepare("SELECT id FROM platform_credentials WHERE platform='gigdata'").get();
 if (!existingGig) sqlite.exec("INSERT INTO platform_credentials (platform, api_key) VALUES ('gigdata', '')");
+sqlite.exec("INSERT OR IGNORE INTO platform_credentials (platform, api_key, status) VALUES ('predicthq', '', 'disconnected')");
+
+// ─── Table PredictHQ events ────────────────────────────────────────────────────
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS predicthq_events (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL,
+    zone_id TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL,
+    rank INTEGER NOT NULL DEFAULT 0,
+    local_rank INTEGER NOT NULL DEFAULT 0,
+    phq_attendance INTEGER NOT NULL DEFAULT 0,
+    transport_spend REAL NOT NULL DEFAULT 0,
+    demand_boost REAL NOT NULL DEFAULT 1.0,
+    lat REAL,
+    lng REAL,
+    fetched_at TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1
+  );
+  CREATE INDEX IF NOT EXISTS idx_phq_zone_active ON predicthq_events(zone_id, is_active);
+  CREATE INDEX IF NOT EXISTS idx_phq_start ON predicthq_events(start_time);
+`);
 
 // ─── Index pour accélération hot-path ──────────────────────────────────
 sqlite.exec(`
@@ -1931,6 +1955,29 @@ export interface IStorage {
   getPlatformCredential(platform: string): any;
   savePlatformCredential(platform: string, apiKey: string): void;
   updatePlatformStatus(platform: string, status: string, errorMsg?: string): void;
+  upsertPredictHQEvents(events: PredictHQEventRow[]): void;
+  getActivePredictHQEvents(zone_id?: string): PredictHQEventRow[];
+  getPredictHQBoostForZone(zone_id: string, hour: number): number;
+  clearOldPredictHQEvents(): void;
+}
+
+// Type structurel local (évite l'import circulaire avec predictHQService.ts)
+export interface PredictHQEventRow {
+  id: string;
+  title: string;
+  category: string;
+  start: string;
+  end: string;
+  rank: number;
+  local_rank: number;
+  phq_attendance: number;
+  transport_spend: number;
+  lat: number;
+  lng: number;
+  zone_id: string;
+  demand_boost: number;
+  is_active: boolean;
+  hours_until_start: number;
 }
 
 export const storage: IStorage = {
@@ -2244,5 +2291,125 @@ export const storage: IStorage = {
   },
   updatePlatformStatus(platform: string, status: string, errorMsg: string = ''): void {
     sqlite.prepare("UPDATE platform_credentials SET status=?, last_tested=?, error_msg=? WHERE platform=?").run(status, Date.now(), errorMsg, platform);
+  },
+
+  // ─── PredictHQ events ───────────────────────────────────────────────────
+  upsertPredictHQEvents(events: PredictHQEventRow[]): void {
+    if (!Array.isArray(events) || events.length === 0) return;
+    const now = new Date().toISOString();
+    const stmt = sqlite.prepare(`
+      INSERT INTO predicthq_events
+        (id, title, category, zone_id, start_time, end_time, rank, local_rank,
+         phq_attendance, transport_spend, demand_boost, lat, lng, fetched_at, is_active)
+      VALUES
+        (@id, @title, @category, @zone_id, @start_time, @end_time, @rank, @local_rank,
+         @phq_attendance, @transport_spend, @demand_boost, @lat, @lng, @fetched_at, @is_active)
+      ON CONFLICT(id) DO UPDATE SET
+        title=excluded.title,
+        category=excluded.category,
+        zone_id=excluded.zone_id,
+        start_time=excluded.start_time,
+        end_time=excluded.end_time,
+        rank=excluded.rank,
+        local_rank=excluded.local_rank,
+        phq_attendance=excluded.phq_attendance,
+        transport_spend=excluded.transport_spend,
+        demand_boost=excluded.demand_boost,
+        lat=excluded.lat,
+        lng=excluded.lng,
+        fetched_at=excluded.fetched_at,
+        is_active=excluded.is_active
+    `);
+    const tx = sqlite.transaction((rows: PredictHQEventRow[]) => {
+      for (const e of rows) {
+        stmt.run({
+          id: e.id,
+          title: e.title,
+          category: e.category,
+          zone_id: e.zone_id,
+          start_time: e.start,
+          end_time: e.end,
+          rank: Math.round(e.rank ?? 0),
+          local_rank: Math.round(e.local_rank ?? 0),
+          phq_attendance: Math.round(e.phq_attendance ?? 0),
+          transport_spend: e.transport_spend ?? 0,
+          demand_boost: e.demand_boost ?? 1.0,
+          lat: e.lat ?? null,
+          lng: e.lng ?? null,
+          fetched_at: now,
+          is_active: e.is_active ? 1 : 0,
+        });
+      }
+    });
+    tx(events);
+  },
+
+  getActivePredictHQEvents(zone_id?: string): PredictHQEventRow[] {
+    // Un event est considéré actif s'il n'est pas terminé (end_time >= maintenant).
+    const nowIso = new Date().toISOString();
+    const rows = zone_id
+      ? sqlite.prepare(
+          "SELECT * FROM predicthq_events WHERE zone_id=? AND end_time >= ? ORDER BY start_time ASC"
+        ).all(zone_id, nowIso) as any[]
+      : sqlite.prepare(
+          "SELECT * FROM predicthq_events WHERE end_time >= ? ORDER BY start_time ASC"
+        ).all(nowIso) as any[];
+    const nowMs = Date.now();
+    return rows.map((r) => {
+      const startMs = new Date(r.start_time).getTime();
+      const endMs = new Date(r.end_time).getTime();
+      const isOngoing = startMs <= nowMs && endMs >= nowMs;
+      const startsSoon = startMs > nowMs && startMs - nowMs <= 3 * 60 * 60 * 1000;
+      return {
+        id: r.id,
+        title: r.title,
+        category: r.category,
+        zone_id: r.zone_id,
+        start: r.start_time,
+        end: r.end_time,
+        rank: r.rank,
+        local_rank: r.local_rank,
+        phq_attendance: r.phq_attendance,
+        transport_spend: r.transport_spend,
+        demand_boost: r.demand_boost,
+        lat: r.lat,
+        lng: r.lng,
+        is_active: isOngoing || startsSoon,
+        hours_until_start: Math.round(((startMs - nowMs) / (60 * 60 * 1000)) * 10) / 10,
+      } as PredictHQEventRow;
+    });
+  },
+
+  getPredictHQBoostForZone(zone_id: string, hour: number): number {
+    // Cherche les events de la zone qui couvrent l'heure demandée (aujourd'hui).
+    // Retourne le boost maximal trouvé, ou 1.0 si aucun event.
+    const rows = sqlite.prepare(
+      "SELECT start_time, end_time, demand_boost FROM predicthq_events WHERE zone_id=?"
+    ).all(zone_id) as any[];
+    if (rows.length === 0) return 1.0;
+
+    const ref = new Date();
+    ref.setHours(hour, 0, 0, 0);
+    const refStart = ref.getTime();
+    const refEnd = refStart + 60 * 60 * 1000; // fenêtre d'une heure
+
+    let maxBoost = 1.0;
+    for (const r of rows) {
+      const s = new Date(r.start_time).getTime();
+      const e = new Date(r.end_time).getTime();
+      // chevauchement entre [s,e] et [refStart,refEnd]
+      if (s < refEnd && e > refStart) {
+        const b = Number(r.demand_boost) || 1.0;
+        if (b > maxBoost) maxBoost = b;
+      }
+    }
+    // Plafond métier absolu
+    return Math.min(2.5, maxBoost);
+  },
+
+  clearOldPredictHQEvents(): void {
+    // Supprime les events terminés depuis plus de 2 heures.
+    const cutoff = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    sqlite.prepare("DELETE FROM predicthq_events WHERE end_time < ?").run(cutoff);
   },
 };
