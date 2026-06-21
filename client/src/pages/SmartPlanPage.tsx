@@ -427,10 +427,10 @@ interface IdleReco {
   reason: string;
 }
 
-function IdleOptimizer() {
+function IdleOptimizer({ position }: { position: { lat: number; lng: number } }) {
   const { data } = useQuery<{ recommendations: IdleReco[] }>({
-    queryKey: ["/api/idle-optimizer"],
-    queryFn: () => apiRequest("GET", "/api/idle-optimizer").then(r => r.json()),
+    queryKey: ["/api/idle-optimizer", position.lat, position.lng],
+    queryFn: () => apiRequest("GET", `/api/idle-optimizer?lat=${position.lat}&lng=${position.lng}`).then(r => r.json()),
     refetchInterval: 3_000,
   });
   const { data: profile } = useQuery<any>({
@@ -585,7 +585,7 @@ export default function SmartPlanPage() {
       {/* ── THÈME 1 & 6 : Prédiction IA + Optimiseur temps mort (toujours visibles) ── */}
       <div className="px-4 pt-4 space-y-5">
         <PredictionPanel />
-        <IdleOptimizer />
+        <IdleOptimizer position={position} />
       </div>
 
       {/* ── Loading skeleton ── */}

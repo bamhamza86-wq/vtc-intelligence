@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { apiRequest, API_BASE, getAuthToken } from "@/lib/queryClient";
+import { useGpsPosition } from "@/hooks/useGpsPosition";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -243,10 +244,9 @@ export default function ReturnJourneyPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // GPS
-  const [gpsStatus, setGpsStatus] = useState<"idle" | "requesting" | "granted" | "denied" | "error">("idle");
-  const [position, setPosition] = useState<{ lat: number; lng: number } | null>(null);
-  const watchIdRef = useRef<number | null>(null);
+  // GPS — hook singleton partagé (maximumAge=3s, fallback Bd Ney)
+  const { position: gpsPos, status: gpsStatus, isFallback } = useGpsPosition();
+  const position = gpsPos; // toujours valide (fallback Bd Ney si GPS refusé)
 
   // Destination
   const [destQuery, setDestQuery] = useState("");
@@ -270,33 +270,9 @@ export default function ReturnJourneyPage() {
   const [rideZone, setRideZone] = useState<RouteZone | null>(null);
   const [completing, setCompleting] = useState(false);
 
-  // ─── GPS ──────────────────────────────────────────────────────────────────
-  const startGeolocation = useCallback(() => {
-    if (!navigator.geolocation) { setGpsStatus("error"); setError("Géolocalisation non disponible."); return; }
-    setGpsStatus("requesting");
-    setError(null);
-    if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
-    watchIdRef.current = navigator.geolocation.watchPosition(
-      (pos) => {
-        setPosition({
-          lat: Math.round(pos.coords.latitude * 100000) / 100000,
-          lng: Math.round(pos.coords.longitude * 100000) / 100000,
-        });
-        setGpsStatus("granted");
-      },
-      (err) => {
-        setGpsStatus(err.code === 1 ? "denied" : "error");
-        setError(err.code === 1
-          ? "Accès à la position refusé. Autorisez la géolocalisation dans les paramètres."
-          : `Erreur GPS : ${err.message}`);
-      },
-      { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
-    );
-  }, []);
-
-  useEffect(() => () => {
-    if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
-  }, []);
+  // ─── GPS — géré par le hook singleton useGpsPosition ─────────────────────
+  // startGeolocation = no-op : le hook démarre automatiquement watchPosition
+  const startGeolocation = useCallback(() => { /* hook gère automatiquement */ }, []);
 
   // ─── Chrono course ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -371,7 +347,7 @@ export default function ReturnJourneyPage() {
 
   // Auto-calcul quand GPS + destination disponibles (max 1x/45s)
   useEffect(() => {
-    if (!position || !destination || gpsStatus !== "granted" || rideActive) return;
+    if (!destination || rideActive) return;  // position toujours valide (fallback Bd Ney)
     const now = Date.now();
     if (now - lastComputeRef.current < 45000 && result) return;
     lastComputeRef.current = now;
@@ -516,7 +492,7 @@ export default function ReturnJourneyPage() {
           <span className="tabular-nums">{position.lat.toFixed(4)}, {position.lng.toFixed(4)}</span>
           <CheckCircle2 size={14} className="ml-auto" />
         </div>
-      ) : gpsStatus === "requesting" ? (
+      ) : gpsStatus === "pending" ? (
         <div className="flex items-center gap-2 text-xs text-muted-foreground bg-card border border-border rounded-lg px-3 py-2">
           <div className="w-4 h-4 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
           Acquisition de la position…

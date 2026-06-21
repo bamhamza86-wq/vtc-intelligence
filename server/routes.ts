@@ -2033,7 +2033,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   });
 
   // THÈME 6 : optimiseur temps mort / repositionnement actif
-  app.get("/api/idle-optimizer", (_req, res) => {
+  app.get("/api/idle-optimizer", (req, res) => {
     try {
       const now = new Date();
       const h = (now.getUTCHours()+2)%24;
@@ -2043,6 +2043,9 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         const nd = new Date(now.getTime() + 3600000);
         return [0, 6].includes(nd.getDay()) ? "weekend" : "weekday";
       })();
+      // Vraie position GPS du chauffeur (query params)
+      const originLat = parseFloat(req.query.lat as string ?? "") || DEFAULT_ORIGIN.lat;
+      const originLng = parseFloat(req.query.lng as string ?? "") || DEFAULT_ORIGIN.lng;
 
       const scoresNow = storage.getProfitabilityByHour(h, dayType) as any[];
       const scoresNext = storage.getProfitabilityByHour(hNext, dayTypeNext) as any[];
@@ -2053,7 +2056,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         const next = nextById.get(s.zone_id) as any;
         const scoreNext = next?.profitability_index ?? scoreNow;
         const avgScore = (scoreNow + scoreNext) / 2;
-        const route = getCachedRoute(s.zone_id, DEFAULT_ORIGIN.lat, DEFAULT_ORIGIN.lng);
+        const route = getCachedRoute(s.zone_id, originLat, originLng);
         const etaMin = route?.etaMin ?? 30;
         const repoCost = etaMin;
         const netScore = avgScore - repoCost * 0.5;
@@ -2075,7 +2078,9 @@ export function registerRoutes(httpServer: Server, app: Express): void {
             : trend === "baisse" ? "Score en baisse — fenêtre courte" : "Score stable — opportunité solide",
         };
       })
-        .filter(r => r.eta_min < 20 && r.avg_score > 60)
+        // Filtre adaptatif : prendre les top zones triées par net_score
+        // Pas de filtre dur sur eta_min (peut être >20 si chauffeur est loin de 93)
+        .filter(r => r.avg_score > 40)
         .sort((a, b) => b.net_score - a.net_score)
         .slice(0, 5);
 

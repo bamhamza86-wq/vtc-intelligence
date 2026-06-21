@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient, API_BASE, getAuthToken } from "@/lib/queryClient";
+import { useGpsPosition, GPS_FALLBACK } from "@/hooks/useGpsPosition";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -139,6 +140,7 @@ function shortZoneName(name: string | undefined, zoneId: string): string {
 // Hooks de données partagés (dashboard complet + widget)
 // ──────────────────────────────────────────────────────────────────────────────
 function useEconomicsData() {
+  const { position } = useGpsPosition();
   const profileQ = useQuery<DriverProfile | null>({
     queryKey: ["/api/driver-profile"],
     refetchInterval: 3_000,
@@ -152,7 +154,8 @@ function useEconomicsData() {
     refetchInterval: 3_000,
   });
   const profitQ = useQuery<ProfitabilityScore[]>({
-    queryKey: ["/api/profitability"],
+    queryKey: ["/api/profitability", position.lat, position.lng],
+    queryFn: () => apiRequest("GET", `/api/profitability?lat=${position.lat}&lng=${position.lng}`).then(r => r.json()),
     refetchInterval: 3_000,
   });
   const distQ = useQuery<GmapsDistances>({

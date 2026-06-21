@@ -460,8 +460,19 @@ async function fetchGoogleBatch(
 }
 
 // ── Fallback calibré (toujours disponible) ────────────────────────────────────
+// IMPORTANT : si une origine GPS réelle est fournie, recalcule la distance et
+// l'ETA depuis cette position (pas depuis Bd Ney).
+// Formule :
+//   roadKm_gps = haversine(originGps, zone) × ROAD_FACTOR[zoneId]
+//   etaMin_gps = etaMin_bdNey × (roadKm_gps / roadKm_bdNey)
+//   — garantit que quelqu'un à 60km de CDG voit ~60min, pas 23min
 
-function getCalibratedEntry(zoneId: string, h: number): RouteEntry {
+function getCalibratedEntry(
+  zoneId:     string,
+  h:          number,
+  originLat?: number,
+  originLng?: number,
+): RouteEntry {
   const cal = CALIBRATED_DATA[zoneId];
   if (!cal) {
     return {
@@ -469,11 +480,30 @@ function getCalibratedEntry(zoneId: string, h: number): RouteEntry {
       source: "calibrated", cachedAt: Date.now(), expiresAt: Date.now() + TTL_MS,
     };
   }
-  const etaMin   = getDisplayETA(zoneId, h);
-  const speedKmH = Math.round(cal.road_km / (etaMin / 60) * 100) / 100;
+
+  const dest = ZONE_COORDS[zoneId];
+
+  // Calculer roadKm depuis la vraie position GPS si fournie et différente de Bd Ney
+  let roadKm = cal.road_km; // distance calibrée Bd Ney → zone
+  if (
+    originLat !== undefined && originLng !== undefined && dest &&
+    (Math.abs(originLat - DEFAULT_ORIGIN.lat) > 0.005 ||
+     Math.abs(originLng - DEFAULT_ORIGIN.lng) > 0.005)
+  ) {
+    const straightGps = haversineKm(originLat, originLng, dest.lat, dest.lng);
+    const factor      = ROAD_FACTOR[zoneId] ?? 1.35;
+    roadKm = Math.round(straightGps * factor * 10) / 10;
+  }
+
+  // ETA calibré Bd Ney (référence mesurée)
+  const etaMinBdNey = getDisplayETA(zoneId, h, cal.road_km);
+  // Scale l'ETA proportionnellement à la distance réelle
+  const etaMin   = Math.max(1, Math.round(etaMinBdNey * (roadKm / cal.road_km)));
+  const speedKmH = Math.round(roadKm / (etaMin / 60) * 100) / 100;
+
   return {
     zoneId,
-    roadKm:    cal.road_km,
+    roadKm,
     durationS: Math.round(etaMin * 60),
     etaMin,
     speedKmH,
@@ -546,10 +576,16 @@ export async function getRouteForZone(
       // Si pas de calibration disponible, fallback sur vitesse OSRM corrigée /2.5
       const speedPM    = cal ? cal.speed_pm : (o.roadKm / (o.durationS / 3600)) / 2.5;
       const speedKmH   = Math.round(speedPM * ratio * 100) / 100;
-      // Distance : préférer OSRM (réelle) si cohérente avec calibré (±30%)
-      const calKm      = cal ? cal.road_km : o.roadKm;
-      const roadKm     = Math.abs(o.roadKm - calKm) / calKm < 0.30 ? o.roadKm : calKm;
-      const etaMin     = getDisplayETA(zoneId, h, roadKm);
+      // Distance OSRM = distance routière réelle depuis la vraie position GPS.
+      // Aucun filtre vs cal.road_km (Bd Ney) — accepter OSRM tel quel.
+      const roadKm = o.roadKm > 0 ? o.roadKm : (() => {
+        const straightGps = haversineKm(originLat, originLng, dest.lat, dest.lng);
+        return Math.round(straightGps * (ROAD_FACTOR[zoneId] ?? 1.35) * 10) / 10;
+      })();
+      // ETA depuis OSRM (durrée sans trafic) × ETA_HOUR_FACTOR[h] × anti-sur-estimation 0.93
+      // C'est la même formule que Google Maps (temps réel) — OSRM est la base, le ratio corrige le trafic
+      const factor   = ETA_HOUR_FACTOR[h] ?? 0.97;
+      const etaMin   = Math.max(1, Math.round((o.durationS / 60) * factor * 0.93));
       const entry: RouteEntry = {
         zoneId, roadKm, durationS: o.durationS, etaMin, speedKmH,
         source: "osrm", cachedAt: now, expiresAt: now + TTL_MS,
@@ -562,8 +598,8 @@ export async function getRouteForZone(
     }
   }
 
-  // 4. Fallback calibré
-  const entry = getCalibratedEntry(zoneId, h);
+  // 4. Fallback calibré depuis la VRAIE position GPS
+  const entry = getCalibratedEntry(zoneId, h, originLat, originLng);
   memoryCache.set(key, entry);
   statsCalibrated++;
   return entry;
@@ -629,12 +665,16 @@ export async function refreshAllZones(
     if (o) {
       const ratio    = getHourlyRatio(h);
       const cal      = CALIBRATED_DATA[zoneId];
-      // Même logique que getRouteForZone : vitesse rush PM calibrée × ratio horaire
       const speedPM  = cal ? cal.speed_pm : (o.roadKm / (o.durationS / 3600)) / 2.5;
       const speedKmH = Math.round(speedPM * ratio * 100) / 100;
-      const calKm    = cal ? cal.road_km : o.roadKm;
-      const roadKm   = Math.abs(o.roadKm - calKm) / calKm < 0.30 ? o.roadKm : calKm;
-      const etaMin   = getDisplayETA(zoneId, h, roadKm);
+      // Distance OSRM : réelle depuis la vraie origine, sans filtrage Bd Ney
+      const roadKm = o.roadKm > 0 ? o.roadKm : (() => {
+        const straightGps = haversineKm(originLat, originLng, dest.lat, dest.lng);
+        return Math.round(straightGps * (ROAD_FACTOR[zoneId] ?? 1.35) * 10) / 10;
+      })();
+      // ETA : OSRM durée sans trafic × ratio horaire × 0.93 anti-sur-estimation
+      const factor = ETA_HOUR_FACTOR[h] ?? 0.97;
+      const etaMin = Math.max(1, Math.round((o.durationS / 60) * factor * 0.93));
       const entry: RouteEntry = {
         zoneId, roadKm, durationS: o.durationS, etaMin, speedKmH,
         source: "osrm", cachedAt: Date.now(), expiresAt: Date.now() + TTL_MS,
@@ -645,8 +685,8 @@ export async function refreshAllZones(
       osrmAvailable = true;
       source = "osrm";
     } else {
-      // Fallback calibré pour cette zone
-      const entry = getCalibratedEntry(zoneId, h);
+      // Fallback calibré depuis la VRAIE position GPS
+      const entry = getCalibratedEntry(zoneId, h, originLat, originLng);
       memoryCache.set(cacheKey(zoneId, originLat, originLng), entry);
       statsCalibrated++;
     }
@@ -676,8 +716,8 @@ export function getCachedRoute(
 
   if (cached && now < cached.expiresAt) return cached;
 
-  // Retourne calibré si expiré ou absent (ne bloque pas)
-  return getCalibratedEntry(zoneId, getCestHour());
+  // Retourne calibré DEPUIS LA VRAIE POSITION GPS (pas Bd Ney)
+  return getCalibratedEntry(zoneId, getCestHour(), originLat, originLng);
 }
 
 /**
@@ -695,9 +735,10 @@ export function getAllCachedRoutes(
   for (const zoneId of Object.keys(CALIBRATED_DATA)) {
     const key    = cacheKey(zoneId, originLat, originLng);
     const cached = memoryCache.get(key);
+    // Fallback calibré depuis la VRAIE position GPS
     result[zoneId] = (cached && now < cached.expiresAt)
       ? cached
-      : getCalibratedEntry(zoneId, h);
+      : getCalibratedEntry(zoneId, h, originLat, originLng);
   }
   return result;
 }
