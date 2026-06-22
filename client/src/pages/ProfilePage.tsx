@@ -135,7 +135,22 @@ export default function ProfilePage() {
         <CardContent className="space-y-3 px-4 pb-4">
           <div>
             <Label className="text-xs">Type de véhicule</Label>
-            <Select value={form.vehicleType} onValueChange={v => setForm((f: any) => ({ ...f, vehicleType: v }))}>
+            <Select value={form.vehicleType} onValueChange={v => {
+              // Valeurs par défaut selon le type de véhicule
+              const VEHICLE_DEFAULTS: Record<string, { fuel: number; wear: number }> = {
+                citadine:  { fuel: 5.0, wear: 0.06 },
+                berline:   { fuel: 7.0, wear: 0.08 },
+                suv:       { fuel: 9.0, wear: 0.10 },
+                electrique:{ fuel: 0.0, wear: 0.04 },
+                hybride:   { fuel: 5.0, wear: 0.06 },
+              };
+              const def = VEHICLE_DEFAULTS[v];
+              setForm((f: any) => ({
+                ...f,
+                vehicleType: v,
+                ...(def ? { fuelConsumptionPer100km: def.fuel, wearCostPerKm: def.wear } : {}),
+              }));
+            }}>
               <SelectTrigger className="mt-1 h-9 text-sm" data-testid="select-vehicle"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="citadine">Citadine (5L/100)</SelectItem>
