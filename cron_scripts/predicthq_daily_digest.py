@@ -4,17 +4,19 @@ predicthq_daily_digest.py — Cron VTC Intelligence
 Digest quotidien des événements PredictHQ pour les 7 prochains jours.
 Schedule: 0 4 * * *   (04h00 UTC = 06h00 CEST)
 
-Flux :
-  1. Appel DIRECT à l'API PredictHQ (pas via le serveur VTC).
-  2. Calcule le demand_boost de chaque event (rank + attendance).
-  3. Mappe chaque event vers la zone VTC la plus proche.
-  4. Sauvegarde cron_tracking/predicthq/digest_{date}.json.
-  5. Si un event de rank >= 70 démarre dans les prochaines 24h →
-     écrit pending_notif_{date}_urgent.json.
+Flux (PROXY via serveur VTC — pas d'appel direct à api.predicthq.com) :
+  1. Auth POST /api/auth/login avec retry cold-start.
+  2. POST /api/predicthq/refresh  — force le chargement des events dans la DB.
+  3. GET  /api/predicthq/events   — récupère tous les events actifs en DB.
+  4. GET  /api/predicthq/status   — total, max_boost, last_fetch.
+  5. Calcule les events urgents (rank >= 70, démarrent dans < 24h).
+  6. Sauvegarde digest_{date}.json.
+  7. Si events urgents → pending_notif_{date}_urgent.json.
+  8. Termine silencieusement sinon.
 """
 import json
-import math
 import sys
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -24,45 +26,15 @@ WORKSPACE = Path("/home/user/workspace")
 TRACKING = WORKSPACE / "cron_tracking" / "predicthq"
 TRACKING.mkdir(parents=True, exist_ok=True)
 
-PHQ_KEY = "H6vO4zDmjgTpPlXZUrewsFE-NLPD1wTHeowBiRHo"
-PHQ_BASE = "https://api.predicthq.com/v1"
+BASE_URL = "https://vtc-one.pplx.app/port/5000"
 
-CATEGORIES = "concerts,sports,festivals,performing-arts,community,conferences,expos"
-CENTER = "48.9200,2.3900"  # centre 93 (z_93_centre)
 URGENT_RANK = 70
 URGENT_WINDOW_H = 24
 
-# ─── Zones VTC (14) ───────────────────────────────────────────────────────────
-ZONES = {
-    'z_cdg': (49.0097, 2.5479), 'z_orly': (48.7262, 2.3652),
-    'z_saint_denis_gare': (48.9362, 2.3560), 'z_bobigny_gare': (48.9011, 2.4400),
-    'z_aubervilliers': (48.9144, 2.3831), 'z_plaine_commune': (48.9221, 2.3427),
-    'z_le_bourget': (48.9411, 2.4256), 'z_villepinte': (48.9668, 2.5311),
-    'z_tremblay': (48.9578, 2.5756), 'z_epinay_gennevilliers': (48.9510, 2.3120),
-    'z_montreuil': (48.8636, 2.4432), 'z_aulnay': (48.9395, 2.4978),
-    'z_93_centre': (48.9200, 2.3900), 'z_stade_france': (48.9244, 2.3600),
-}
-
-
-def nearest_zone(lat, lng):
-    """Distance euclidienne simple → retourne le zone_id le plus proche."""
-    best_id, best_d = None, float("inf")
-    for zid, (zlat, zlng) in ZONES.items():
-        d = math.hypot(lat - zlat, lng - zlng)
-        if d < best_d:
-            best_d, best_id = d, zid
-    return best_id
-
-
-def calc_boost(rank, attendance):
-    if rank >= 80:
-        return min(2.5, 2.0 + attendance / 50000)
-    elif rank >= 60:
-        return min(2.0, 1.5 + attendance / 100000)
-    elif rank >= 40:
-        return 1.3
-    else:
-        return 1.1
+# Retries cold-start (sandbox E2B peut être suspendu)
+COLD_START_DELAYS = [10, 20, 30, 40, 40, 40]
+AUTH_TIMEOUT = 40
+API_TIMEOUT = 90
 
 
 def _now_utc():
@@ -73,72 +45,88 @@ def _today_cest():
     return (_now_utc() + timedelta(hours=2)).strftime("%Y-%m-%d")
 
 
-def fetch_events():
-    """GET /v1/events sur 7 jours, rank_level 3-5, catégories ciblées."""
-    today = _now_utc().strftime("%Y-%m-%d")
-    end = (_now_utc() + timedelta(days=7)).strftime("%Y-%m-%d")
-    params = {
-        "within": f"40km@{CENTER}",
-        "category": CATEGORIES,
-        "active.gte": today,
-        "active.lte": end,
-        "rank_level": "3,4,5",
-        "limit": "50",
-    }
-    headers = {
-        "Authorization": f"Bearer {PHQ_KEY}",
-        "Accept": "application/json",
-    }
-    r = requests.get(f"{PHQ_BASE}/events/", params=params, headers=headers, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    return data.get("results", []), data.get("count", 0)
+def login(session, username="root", password="12345678"):
+    """Auth avec retry sur cold-start (ConnectionError / timeout / 5xx)."""
+    url = f"{BASE_URL}/api/auth/login"
+    body = {"username": username, "password": password}
+    for i, delay in enumerate(COLD_START_DELAYS):
+        try:
+            r = session.post(url, json=body, timeout=AUTH_TIMEOUT)
+            if r.status_code == 200:
+                token = r.json().get("token")
+                if token:
+                    return token
+                raise ValueError(f"Pas de token: {r.text[:200]}")
+            if r.status_code >= 500 and i < len(COLD_START_DELAYS) - 1:
+                print(f"  [auth] HTTP {r.status_code} — cold-start, retry dans {delay}s...")
+                time.sleep(delay)
+                continue
+            raise RuntimeError(f"Auth HTTP {r.status_code}: {r.text[:200]}")
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.ReadTimeout,
+                requests.exceptions.Timeout) as e:
+            if i < len(COLD_START_DELAYS) - 1:
+                print(f"  [auth] {type(e).__name__} — retry dans {delay}s ({i+1}/{len(COLD_START_DELAYS)})...")
+                time.sleep(delay)
+            else:
+                raise RuntimeError(f"Auth échouée: {e}")
+    raise RuntimeError("Auth échouée (boucle épuisée)")
 
 
-def map_event(raw):
-    """Mappe un event brut → dict enrichi (zone, boost)."""
-    coords = raw.get("geo", {}).get("geometry", {}).get("coordinates")
-    lat, lng = CENTER.split(",")
-    lat, lng = float(lat), float(lng)
-    if isinstance(coords, list) and len(coords) >= 2:
-        lng, lat = float(coords[0]), float(coords[1])
-    elif isinstance(raw.get("location"), list) and len(raw["location"]) >= 2:
-        lng, lat = float(raw["location"][0]), float(raw["location"][1])
+def call_refresh(session, token):
+    """Force le refresh PredictHQ sur le serveur (mise à jour DB)."""
+    url = f"{BASE_URL}/api/predicthq/refresh"
+    headers = {"Authorization": f"Bearer {token}"}
+    for attempt in range(3):
+        try:
+            r = session.post(url, headers=headers, json={}, timeout=API_TIMEOUT)
+            if r.status_code == 200:
+                data = r.json()
+                print(f"  Refresh OK — count={data.get('count', '?')}")
+                return data
+            print(f"  [refresh] HTTP {r.status_code} (attempt {attempt+1})")
+        except (requests.exceptions.ReadTimeout, requests.exceptions.Timeout) as e:
+            print(f"  [refresh] timeout attempt {attempt+1}: {e}")
+        except requests.exceptions.RequestException as e:
+            print(f"  [refresh] erreur attempt {attempt+1}: {e}")
+        if attempt < 2:
+            time.sleep(15)
+    return {}
 
-    rank = int(raw.get("rank") or 0)
-    attendance = int(raw.get("phq_attendance") or 0)
-    start = raw.get("start") or raw.get("start_local") or _now_utc().isoformat()
-    end = raw.get("end") or raw.get("end_local") or start
-    spend = 0.0
-    pesi = raw.get("predicted_event_spend_industries")
-    if isinstance(pesi, dict):
-        spend = float(pesi.get("transportation") or 0)
-    elif raw.get("predicted_event_spend"):
-        spend = float(raw["predicted_event_spend"])
 
-    zone_id = nearest_zone(lat, lng)
-    boost = round(calc_boost(rank, attendance), 2)
+def fetch_all_events(session, token):
+    """GET /api/predicthq/events (sans zone_id = tous les events en DB)."""
+    url = f"{BASE_URL}/api/predicthq/events"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        r = session.get(url, headers=headers, timeout=30)
+        if r.status_code == 200:
+            data = r.json()
+            return data.get("events", []), data.get("total", 0)
+    except Exception as e:
+        print(f"  [fetch_events] {e}")
+    return [], 0
 
-    return {
-        "id": str(raw.get("id")),
-        "title": raw.get("title", "(sans titre)"),
-        "category": raw.get("category", "unknown"),
-        "zone_id": zone_id,
-        "start_time": start,
-        "end_time": end,
-        "rank": rank,
-        "local_rank": int(raw.get("local_rank") or 0),
-        "phq_attendance": attendance,
-        "transport_spend": round(spend, 2),
-        "demand_boost": boost,
-        "lat": round(lat, 6),
-        "lng": round(lng, 6),
-    }
+
+def fetch_status(session, token):
+    """GET /api/predicthq/status."""
+    url = f"{BASE_URL}/api/predicthq/status"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        r = session.get(url, headers=headers, timeout=20)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        print(f"  [status] {e}")
+    return {}
 
 
 def hours_until(start_str):
+    """Calcule les heures avant le début d'un event."""
     try:
-        s = start_str.replace("Z", "+00:00")
+        s = str(start_str).replace("Z", "+00:00")
+        if "T" not in s:
+            s = s + "T00:00:00+00:00"
         start = datetime.fromisoformat(s)
         if start.tzinfo is None:
             start = start.replace(tzinfo=timezone.utc)
@@ -149,9 +137,9 @@ def hours_until(start_str):
 
 def write_urgent_notif(today, urgent):
     rows = "\n".join(
-        f"- **{e['title']}** ({e['category']}) — rank {e['rank']}, "
-        f"zone `{e['zone_id']}`, boost ×{e['demand_boost']}, "
-        f"début {e['start_time']}"
+        f"- **{e.get('title', '?')}** ({e.get('category', '?')}) "
+        f"— rank {e.get('rank', '?')}, zone `{e.get('zone_id', '?')}`, "
+        f"boost ×{e.get('demand_boost', 1.0)}, début {str(e.get('start', e.get('start_time', '')))[:10]}"
         for e in urgent
     )
     title = f"🚨 PredictHQ — {len(urgent)} événement(s) majeur(s) dans les 24h ({today})"
@@ -161,7 +149,8 @@ def write_urgent_notif(today, urgent):
         f"dans les prochaines {URGENT_WINDOW_H}h :\n\n"
         f"{rows}\n\n"
         f"### Recommandation\n"
-        f"Anticiper la hausse de demande sur les zones concernées."
+        f"Anticiper la hausse de demande sur les zones concernées — "
+        f"voir le dashboard https://vtc-one.pplx.app"
     )
     path = TRACKING / f"pending_notif_{today}_urgent.json"
     path.write_text(
@@ -171,7 +160,7 @@ def write_urgent_notif(today, urgent):
             ensure_ascii=False,
         )
     )
-    print(f"  Notif URGENTE écrite: {path}")
+    print(f"  Notif URGENTE écrite: {path.name}")
 
 
 def run():
@@ -179,43 +168,63 @@ def run():
     ts = _now_utc().isoformat()
     print(f"[{ts}] CRON predicthq_daily_digest — digest 7j {today}")
 
-    raw_events, total = fetch_events()
-    print(f"  API PredictHQ → {len(raw_events)} events (count total: {total})")
+    session = requests.Session()
+    session.headers.update({"Content-Type": "application/json"})
 
-    events = []
-    for raw in raw_events:
-        try:
-            events.append(map_event(raw))
-        except Exception as e:
-            print(f"  [map] skip event: {e}")
+    token = login(session)
+    print("  Auth OK")
 
-    # Agrégation par zone
+    # 1) Forcer un refresh pour avoir les données fraîches
+    call_refresh(session, token)
+
+    # 2) Récupérer tous les events depuis la DB via le serveur VTC
+    events, total_api = fetch_all_events(session, token)
+    print(f"  Events récupérés: {len(events)} (total API: {total_api})")
+
+    # 3) Status global
+    status = fetch_status(session, token)
+    active_events = status.get("active_events", len(events))
+    max_boost = status.get("max_boost", 1.0)
+    last_fetch = status.get("last_fetch", ts)
+
+    # 4) Agrégation par zone
     by_zone = {}
     for e in events:
-        by_zone.setdefault(e["zone_id"], 0)
-        by_zone[e["zone_id"]] += 1
+        zid = e.get("zone_id", "unknown")
+        by_zone.setdefault(zid, 0)
+        by_zone[zid] += 1
 
+    # 5) Events urgents (rank >= 70, dans les 24 prochaines heures)
+    urgent = [
+        e for e in events
+        if (e.get("rank", 0) >= URGENT_RANK
+            and 0 <= hours_until(e.get("start") or e.get("start_time", "")) <= URGENT_WINDOW_H)
+    ]
+
+    # 6) Sauvegarder le digest
     digest = {
         "date": today,
         "generated_at": ts,
-        "total_count": total,
+        "source": "vtc-one.pplx.app (proxy DB)",
+        "status": status,
+        "active_events": active_events,
+        "max_boost": max_boost,
+        "last_phq_fetch": last_fetch,
         "events_returned": len(events),
         "events_by_zone": by_zone,
+        "urgent_count": len(urgent),
+        "urgent_events": urgent,
         "events": events,
     }
     out_path = TRACKING / f"digest_{today}.json"
     out_path.write_text(json.dumps(digest, indent=2, ensure_ascii=False))
-    print(f"  Digest sauvegardé: {out_path} ({len(events)} events, {len(by_zone)} zones)")
+    print(f"  Digest sauvegardé: {out_path.name} ({len(events)} events, {len(by_zone)} zones)")
 
-    # Événements majeurs imminents
-    urgent = [
-        e for e in events
-        if e["rank"] >= URGENT_RANK and 0 <= hours_until(e["start_time"]) <= URGENT_WINDOW_H
-    ]
+    # 7) Notification si events urgents
     if urgent:
         write_urgent_notif(today, urgent)
     else:
-        print("  RAS — aucun event majeur (rank ≥ 70) dans les prochaines 24h")
+        print(f"  RAS — aucun event de rank >= {URGENT_RANK} dans les {URGENT_WINDOW_H}h")
 
     return len(events), len(urgent)
 
