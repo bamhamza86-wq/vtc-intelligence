@@ -986,8 +986,9 @@ function updateLivePatterns(): void {
   });
   tx();
 
-  // ── H4 : recalibrer offre dynamique (EMA) + tendance 3h + z-score anomalie ─
-  recalibrateSupplyDynamics();
+  // ── H4 : la recalibration offre dynamique (EMA + tendance 3h + z-score) est
+  //        déclenchée dans le cycle setInterval 3 min APRÈS le reseed (score_history
+  //        frais) — voir recalibrateSupplyDynamics() appelé plus bas dans le cron.
 
   // ── 5. Mise à jour métadonnées ───────────────────────────────────────────
   const mae_before = maesBefore.length ? maesBefore.reduce((a,b)=>a+b,0)/maesBefore.length : 0;
@@ -2687,6 +2688,7 @@ export interface IStorage {
   getPredictions(hoursAhead?: number, zoneId?: string): any;
   updatePredictionConfidence(): void;
   getPredictionConfidence(zoneId: string, hours?: number): any;
+  getConfidenceForZoneHour(zoneId: string, hour: number): { variance: number | null; n_samples: number; reliability: number | null; zone_reliability: number };
   getMaintenance(): any[];
   markMaintenanceDone(component: string): any;
   updateMaintenanceKm(addedKm: number): void;
@@ -3349,6 +3351,19 @@ export const storage: IStorage = {
 
   // ── H3 : recalcul manuel de la fiabilité historique par zone/heure ──
   updatePredictionConfidence: () => updatePredictionConfidence(),
+
+  // ── H3 : ligne de fiabilité (variance, n_samples, reliability) pour une zone/heure ──
+  getConfidenceForZoneHour: (zoneId: string, hour: number) => {
+    const row = sqlite.prepare(
+      "SELECT variance, n_samples, reliability FROM prediction_confidence WHERE zone_id=? AND hour=?"
+    ).get(zoneId, hour) as any;
+    return {
+      variance: row?.variance ?? null,
+      n_samples: row?.n_samples ?? 0,
+      reliability: row?.reliability ?? null,
+      zone_reliability: getZoneReliability(zoneId),
+    };
+  },
 
   // ── H3 : prédictions enrichies (intervalles de confiance) pour une zone ──
   // Retourne les N prochaines heures avec confidence_score, lower/upper bound,

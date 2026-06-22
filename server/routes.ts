@@ -377,6 +377,45 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           seedScore, tomtomContrib, effPhqBoost, effFlightBoost, sigWeights,
         );
 
+        // ─── H3 : confiance + intervalle de confiance sur le score affiché ───────
+        // confidence dérivée de la fiabilité historique (variance/reliability) de la
+        // zone à cette heure, atténuée hors-peak et le weekend. Bounds plafonnés.
+        let h3Confidence = 0.78;
+        let h3ScoreLower = adaptiveScoreVal;
+        let h3ScoreUpper = adaptiveScoreVal;
+        const h3Factors: string[] = ['horizon_h0'];
+        try {
+          const cf = storage.getConfidenceForZoneHour(s.zone_id, hour);
+          // reliability table si dispo, sinon fiabilité agrégée zone, sinon 0.7.
+          const rel = (cf.reliability != null ? cf.reliability : (cf.zone_reliability ?? 0.7));
+          const variance = cf.variance != null ? cf.variance : 0.04;
+          const sigma = Math.sqrt(Math.max(0, variance));
+          let conf = Math.max(0.2, Math.min(1, rel * (1 - Math.min(0.30, sigma))));
+          // Hors-peak (nuit/soir) : moins de données → -0.10
+          const isOffPeak = hour < 6 || hour >= 22;
+          if (isOffPeak) { conf -= 0.10; h3Factors.push('off_peak'); }
+          // Weekend : -0.05
+          if (dayType === 'weekend') { conf -= 0.05; h3Factors.push('weekend'); }
+          // Event PHQ connu dans la zone : +0.10
+          if (effPhqBoost > 1.0) { conf += 0.10; h3Factors.push('phq_event_known'); }
+          // Fiabilité zone faible → ×0.80
+          if ((cf.zone_reliability ?? 1) < 0.6) { conf *= 0.80; h3Factors.push('low_zone_reliability'); }
+          if (cf.n_samples < 3) { h3Factors.push('cold_start'); }
+          conf = Math.max(0, Math.min(1, conf));
+          h3Confidence = Math.round(conf * 100) / 100;
+          const spread = (1 - conf) * 0.30;
+          // RÈGLE ANTI-SURESTIMATION ABSOLUE : score_upper ≤ score × 1.20
+          h3ScoreUpper = Math.min(
+            Math.round(adaptiveScoreVal * 1.20 * 10) / 10,
+            Math.round(adaptiveScoreVal * (1 + spread) * 10) / 10
+          );
+          // score_lower ne dépasse jamais le score (sous-estimation OK)
+          h3ScoreLower = Math.min(
+            adaptiveScoreVal,
+            Math.round(adaptiveScoreVal * (1 - spread) * 10) / 10
+          );
+        } catch { /* table absente → valeurs par défaut conservées */ }
+
         return {
           ...s,
           profitability_index: boostedIndex,
@@ -430,6 +469,11 @@ export function registerRoutes(httpServer: Server, app: Express): void {
             phq:     Math.round(effPhqBoost * 100) / 100,
             flights: Math.round(effFlightBoost * 100) / 100,
           },
+          // ── H3 : score d'incertitude + intervalle de confiance ──
+          confidence:          h3Confidence,
+          score_lower:         h3ScoreLower,
+          score_upper:         h3ScoreUpper,
+          uncertainty_factors: h3Factors,
         };
       }));
       res.json(enriched);
@@ -2539,6 +2583,25 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   // ═══════════════════════════════════════════════════════════════════════════
 
   // THÈME 1 : prédictions de demande (6 prochaines heures)
+  // ─── H3 : prédictions enrichies avec intervalles de confiance ──────────────
+  // GET /api/predictions/confidence?zone_id=z_stade_france&hours=12
+  // Retourne les prédictions des N prochaines heures (12 par défaut) avec
+  // confidence_score, lower_bound, upper_bound et facteurs d'incertitude.
+  app.get("/api/predictions/confidence", (req, res) => {
+    try {
+      const zoneId = (typeof req.query.zone_id === "string" ? req.query.zone_id : "").trim();
+      if (!zoneId) {
+        return res.status(400).json({ error: "zone_id requis", zone_id: null, hours: 0, predictions: [] });
+      }
+      const _hoursRaw = parseInt(req.query.hours as string);
+      const hours = isNaN(_hoursRaw) || _hoursRaw <= 0 ? 12 : Math.min(24, _hoursRaw);
+      res.json(storage.getPredictionConfidence(zoneId, hours));
+    } catch (err) {
+      console.error("[predictions/confidence] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   app.get("/api/predictions", (req, res) => {
     try {
       const zoneId = typeof req.query.zone_id === "string" ? req.query.zone_id : undefined;
