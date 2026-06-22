@@ -1,6 +1,21 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+// ← H2 : fusion adaptative multi-sources (TomTom + PHQ + vols + seeds)
+import {
+  fusionSignals,
+  detectRegime,
+  computeTomTomContrib,
+  computeAdaptiveWeights,
+  computeAdaptiveScore,
+  setTomTomDemandSnapshot,
+  getTomTomDemandSignal,
+  isZonePeakHour,
+  getTrend,
+  getSupplyDynamics,
+  type SignalWeights,
+  type Regime,
+} from "./storage";
 import { getFlightData, getFlightBoostForZone } from "./flightService";
 import {
   testTomTomConnection,
@@ -54,6 +69,40 @@ async function getFlightDataCached(): Promise<any> {
     throw err;
   });
   return _flightFetchPromise;
+}
+
+// ← H2 : Cache mémoire du signal TomTom (demande temps réel) par zone.
+// TTL 3 min (aligné sur le refresh trafic). Mutex concurrent-safe. Non bloquant :
+// si TomTom indisponible (pas de clé, erreur réseau) → snapshot vide, la fusion
+// fonctionne sans TomTom (poids redistribués).
+const TOMTOM_DEMAND_TTL_MS = 3 * 60 * 1000; // 3 minutes
+let _tomtomDemandTs = 0;
+let _tomtomDemandPromise: Promise<void> | null = null;
+
+async function refreshTomTomDemandCache(): Promise<void> {
+  const now = Date.now();
+  if ((now - _tomtomDemandTs) < TOMTOM_DEMAND_TTL_MS) return;   // cache chaud
+  if (_tomtomDemandPromise) return _tomtomDemandPromise;        // fetch en cours
+  _tomtomDemandPromise = (async () => {
+    try {
+      const cred = storage.getPlatformCredential("tomtom");
+      const key = cred?.api_key && cred.status === "connected" ? cred.api_key : null;
+      if (!key) { setTomTomDemandSnapshot({}); _tomtomDemandTs = Date.now(); return; }
+      const zones = await fetchAllPlatformDemand(key, null);
+      const snapshot: Record<string, number | null> = {};
+      for (const z of zones) {
+        snapshot[z.zone_id] = z.tomtom_status === "ok" ? z.tomtom_demand_signal : null;
+      }
+      setTomTomDemandSnapshot(snapshot);
+      _tomtomDemandTs = Date.now();
+    } catch {
+      // Réseau/clé KO → on n'écrase pas un snapshot récent valide, sinon vide.
+      if (_tomtomDemandTs === 0) setTomTomDemandSnapshot({});
+    } finally {
+      _tomtomDemandPromise = null;
+    }
+  })();
+  return _tomtomDemandPromise;
 }
 import {
   getAllCachedRoutes,
@@ -230,6 +279,10 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     // Enrichissement avec boost dynamique vols
     try {
       const flightData = await getFlightDataCached();
+      // ← H2 : rafraîchit le snapshot TomTom (demande temps réel) avant la fusion.
+      //   Non bloquant si TomTom indisponible → la fusion fonctionne sans.
+      try { await refreshTomTomDemandCache(); } catch { /* TomTom optionnel */ }
+      const flightsSource: string = flightData?.source ?? "heuristic";
       const enriched = await Promise.all(scores.map(async (s: any) => {
         const flightBoost = getFlightBoostForZone(s.zone_id, flightData);
         // ← PredictHQ : boost events (1.0 si aucun event). Combiné avec flight,
@@ -296,6 +349,34 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           : boostedIndex >= 50 ? 'moderate'
           : 'low';
 
+        // ─── H2 : FUSION ADAPTATIVE MULTI-SOURCES ────────────────────────────
+        // Combine seeds (baseIdx) + TomTom (temps réel) + PHQ + vols avec une
+        // pondération adaptative selon le régime détecté. Non bloquant : si un
+        // signal manque, son poids est mis à 0 et redistribué.
+        const seedScore = baseIdx;
+        const tomtomSignal = getTomTomDemandSignal(s.zone_id);   // null si indispo
+        const tomtomAvailable = tomtomSignal !== null;
+        const tomtomContrib = computeTomTomContrib(tomtomSignal);
+        const effFlightBoost = isCurfew ? 1.0 : flightBoost;
+        const flightsFromOpenSky = !isCurfew && flightsSource === "opensky" && effFlightBoost > 1.0;
+        // Régime : event (PHQ>1.5 ou surge>1.3) / disruption (alerte ou trafic≥80) / normal
+        let regime: Regime;
+        try { regime = detectRegime(s.zone_id, hour); } catch { regime = "normal"; }
+        const effPhqRank = isCurfew ? 0 : phqTopRank;
+        const sigWeights: SignalWeights = computeAdaptiveWeights({
+          regime,
+          zoneId: s.zone_id,
+          hour,
+          tomtomAvailable,
+          phqBoost: effPhqBoost,
+          phqEventRank: effPhqRank,
+          flightsFromOpenSky,
+        });
+        // Score adaptatif : clamp [5,100] + anti-surestimation (≤ +20% du seed)
+        const adaptiveScoreVal = computeAdaptiveScore(
+          seedScore, tomtomContrib, effPhqBoost, effFlightBoost, sigWeights,
+        );
+
         return {
           ...s,
           profitability_index: boostedIndex,
@@ -320,11 +401,75 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           min_per_km:         breakEvenRT.minPerKm,
           break_even_ok:      breakEvenRT.breakEvenOk,
           congestion_penalty: breakEvenRT.penalty,
+          // ── H4 : tendance glissante 3h + anomalie z-score + EMA offre ──────
+          ...(() => {
+            try {
+              const dyn = getSupplyDynamics(s.zone_id, hour);
+              return {
+                trend:           dyn.trend,            // "up" | "down" | "flat"
+                trend_magnitude: dyn.trend_magnitude,  // pts sur 3h
+                trend_hours:     3,
+                anomaly:         dyn.anomaly,
+                z_score:         dyn.z_score,
+                ema_supply:      dyn.ema_supply,
+              };
+            } catch {
+              return { trend: "flat", trend_magnitude: 0, trend_hours: 3, anomaly: false, z_score: 0, ema_supply: 0 };
+            }
+          })(),
+          // ← H2 : fusion adaptative multi-sources (rétrocompatible : champs existants conservés)
+          adaptive_score:       true,
+          regime,
+          tomtom_demand_signal: tomtomSignal,
+          tomtom_available:     tomtomAvailable,
+          score:                adaptiveScoreVal,
+          signal_weights:       sigWeights,
+          signal_values: {
+            seeds:   Math.round(seedScore * 10) / 10,
+            tomtom:  Math.round(tomtomContrib * 100) / 100,
+            phq:     Math.round(effPhqBoost * 100) / 100,
+            flights: Math.round(effFlightBoost * 100) / 100,
+          },
         };
       }));
       res.json(enriched);
     } catch {
       res.json(scores);
+    }
+  });
+
+  // ← H2 : régime de fusion + score fusionné + poids adaptatifs par zone.
+  // GET /api/profitability/regime?zone_id=z_stade_france[&hour=18]
+  //   → détail d'une zone (fusionSignals)
+  // GET /api/profitability/regime           → toutes les zones
+  app.get("/api/profitability/regime", async (req, res) => {
+    try {
+      const _hourRaw = parseInt(req.query.hour as string);
+      const hour = isNaN(_hourRaw) ? (new Date().getUTCHours() + 2) % 24 : _hourRaw;
+      // Rafraîchit le snapshot TomTom (non bloquant) + vols pour la source.
+      try { await refreshTomTomDemandCache(); } catch { /* TomTom optionnel */ }
+      let flightsSource = "heuristic";
+      let flightData: any = null;
+      try { flightData = await getFlightDataCached(); flightsSource = flightData?.source ?? "heuristic"; } catch { /* vols optionnels */ }
+
+      const buildFor = (zoneId: string) => {
+        let flightBoost = 1.0;
+        try { if (flightData) flightBoost = getFlightBoostForZone(zoneId, flightData); } catch { flightBoost = 1.0; }
+        return fusionSignals(zoneId, hour, { flightBoost, flightsSource });
+      };
+
+      const zoneId = (req.query.zone_id as string || "").trim();
+      if (zoneId) {
+        return res.json(buildFor(zoneId));
+      }
+      // Toutes les zones
+      const zones = storage.getAllZones() as any[];
+      const results = zones.map((z: any) => buildFor(z.id ?? z.zone_id)).sort(
+        (a, b) => b.fused_score - a.fused_score,
+      );
+      return res.json({ hour, count: results.length, zones: results });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message ?? "regime computation failed" });
     }
   });
 
@@ -356,6 +501,28 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       res.json({ zone_id: zoneId, days, count: points.length, points });
     } catch (err: any) {
       res.status(500).json({ error: err?.message ?? 'history error', zone_id: null, days: 0, points: [], count: 0 });
+    }
+  });
+
+  // ── H4 : dynamique de l'offre — EMA supply + tendance 3h + z-score anomalie ──
+  // GET /api/profitability/supply?zone_id=z_stade_france[&hour=14]
+  // Retourne ema_supply, trend, trend_magnitude, z_score, anomaly pour la zone.
+  // Sans zone_id : renvoie l'ensemble des zones pour l'heure courante (ou ?hour).
+  app.get("/api/profitability/supply", (req, res) => {
+    try {
+      const zoneId = (req.query.zone_id as string || '').trim();
+      const _hRaw = parseInt(req.query.hour as string);
+      const hour = isNaN(_hRaw) ? (new Date().getUTCHours() + 2) % 24 : _hRaw;
+      if (zoneId) {
+        const dyn = getSupplyDynamics(zoneId, hour);
+        return res.json(dyn);
+      }
+      // Toutes les zones pour l'heure demandée
+      const zones = storage.getAllZones();
+      const all = zones.map((z: any) => getSupplyDynamics(z.id, hour));
+      return res.json({ hour, count: all.length, supply: all });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message ?? 'supply dynamics error' });
     }
   });
 
@@ -949,6 +1116,29 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           run_count:      meta.run_count,
           refresh_interval_min: 3,
         },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ─── GET /api/debug/hourly-overrides?zone_id=X — H1 diagnostic granulaire ──
+  // Retourne les overrides/biais horaires actifs (h0..h23) pour une zone.
+  // Chaque entrée : { hour, demand (résidu EMA α=0.30), supply, confidence, bias, n_samples }.
+  app.get("/api/debug/hourly-overrides", (req, res) => {
+    try {
+      const zoneId = String(req.query.zone_id ?? "").trim();
+      if (!zoneId) {
+        return res.status(400).json({ error: "zone_id query param required" });
+      }
+      const overrides = storage.getHourlyOverrides(zoneId);
+      res.json({
+        zone_id: zoneId,
+        ema_alpha_hourly: 0.30,
+        safety_pct: 0.95,
+        count: overrides.length,
+        overrides,
         timestamp: new Date().toISOString(),
       });
     } catch (err) {

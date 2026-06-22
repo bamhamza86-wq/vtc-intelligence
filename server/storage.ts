@@ -23,7 +23,10 @@ sqlite.exec(`
   CREATE TABLE IF NOT EXISTS alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, title TEXT NOT NULL, message TEXT NOT NULL, zone_id TEXT, priority TEXT NOT NULL, estimated_revenue REAL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, is_read INTEGER NOT NULL DEFAULT 0);
   CREATE TABLE IF NOT EXISTS driver_profile (id INTEGER PRIMARY KEY AUTOINCREMENT, fuel_consumption_per100km REAL NOT NULL DEFAULT 7.5, fuel_price_per_liter REAL NOT NULL DEFAULT 1.92, platform_commission_pct REAL NOT NULL DEFAULT 25.0, hourly_target_income REAL NOT NULL DEFAULT 35.0, wear_cost_per_km REAL NOT NULL DEFAULT 0.08, min_profitable_km_per_min REAL NOT NULL DEFAULT 1.0, vehicle_type TEXT NOT NULL DEFAULT 'berline', prefer_long_rides INTEGER NOT NULL DEFAULT 1);
   CREATE TABLE IF NOT EXISTS seed_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  -- H1 : biais horaire granulaire (résidu EMA par heure individuelle h0..h23)
+  CREATE TABLE IF NOT EXISTS hourly_bias (zone_id TEXT NOT NULL, hour INTEGER NOT NULL, bias REAL NOT NULL DEFAULT 0, n_samples INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY (zone_id, hour));
   CREATE TABLE IF NOT EXISTS score_history (id INTEGER PRIMARY KEY AUTOINCREMENT, zone_id TEXT NOT NULL, hour INTEGER NOT NULL, day_type TEXT NOT NULL, profitability_index REAL NOT NULL, surge_multiplier REAL NOT NULL, demand_score REAL NOT NULL, supply_score REAL NOT NULL, seed_date TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS supply_ema (zone_id TEXT NOT NULL, hour INTEGER NOT NULL, ema_supply REAL NOT NULL DEFAULT 0, trend TEXT NOT NULL DEFAULT 'flat', trend_magnitude REAL NOT NULL DEFAULT 0, z_score REAL NOT NULL DEFAULT 0, anomaly INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT '', PRIMARY KEY (zone_id, hour));
 `);
 
 // ─── Tables IA 2026 (prédictions, maintenance, performance) ─────────────
@@ -187,6 +190,36 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_predictions_zone_date ON demand_predictions(zone_id, target_date, target_hour);
 `);
 
+// ─── H3 : Intervalles de confiance & score d'incertitude ───────────────────
+// Migration douce des colonnes d'incertitude sur demand_predictions.
+// SQLite ne supporte pas ADD COLUMN IF NOT EXISTS → try/catch par colonne (idempotent).
+const demandPredictionConfidenceMigrations: string[] = [
+  "ALTER TABLE demand_predictions ADD COLUMN confidence_score REAL DEFAULT 0.5",
+  "ALTER TABLE demand_predictions ADD COLUMN lower_bound REAL",
+  "ALTER TABLE demand_predictions ADD COLUMN upper_bound REAL",
+  "ALTER TABLE demand_predictions ADD COLUMN uncertainty_source TEXT DEFAULT 'horizon'",
+  "ALTER TABLE demand_predictions ADD COLUMN uncertainty_factors TEXT DEFAULT '[]'",
+];
+for (const mig of demandPredictionConfidenceMigrations) {
+  try { sqlite.exec(mig); } catch { /* colonne déjà présente */ }
+}
+
+// Table de fiabilité historique par zone/heure (H3).
+// variance = variance des erreurs relatives pred vs hist sur 7j ;
+// n_samples = nombre d'observations utilisées ; reliability = score 0..1.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS prediction_confidence (
+    zone_id TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    variance REAL NOT NULL DEFAULT 0,
+    n_samples INTEGER NOT NULL DEFAULT 0,
+    reliability REAL NOT NULL DEFAULT 0.5,
+    updated_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (zone_id, hour)
+  );
+  CREATE INDEX IF NOT EXISTS idx_pred_confidence_zone ON prediction_confidence(zone_id);
+`);
+
 // ─── Prepared statements globaux — compilés une seule fois à l'init ───────────────────
 // Bench: alerts/events étaient recompilés à chaque requête HTTP (−64-197% latence sous 50 req. simult.)
 // Pré-compiler élimine l'overhead parser SQLite sur les chemins chauds.
@@ -250,10 +283,11 @@ const stmtGetCurrentScores = sqlite.prepare(
 // ─── Prepared statements IA 2026 ────────────────────────────────────────
 const stmtInsertPrediction = sqlite.prepare(
   `INSERT OR REPLACE INTO demand_predictions
-     (id, zone_id, target_hour, target_date, predicted_index, confidence, model_version, factors, created_at)
+     (id, zone_id, target_hour, target_date, predicted_index, confidence, model_version, factors, created_at,
+      confidence_score, lower_bound, upper_bound, uncertainty_source, uncertainty_factors)
    VALUES (
      (SELECT id FROM demand_predictions WHERE zone_id=? AND target_hour=? AND target_date=?),
-     ?, ?, ?, ?, ?, ?, ?, ?)`
+     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 );
 
 const stmtGetPredictions = sqlite.prepare(
@@ -516,6 +550,291 @@ let livePatMeta: {
  * Les boosts recalibrés sont écrits dans livePat[zone_id] (en mémoire)
  * et aussi dans seed_meta (persistance redémarrage).
  */
+// ─── H1 : EMA horaire granulaire 24h (résolution par heure individuelle) ────
+// Constante module : EMA plus lent (0.30) que les plages (0.40) → plus stable.
+const EMA_ALPHA_HOURLY = 0.30;
+
+interface HourlyOverride { demand: number; supply: number; confidence: number; }
+
+/**
+ * H1 — Lit l'override horaire individuel persisté dans seed_meta.
+ * Clé : live_seed_{zoneId}_h{HH}  →  { demand_override, supply_override, confidence }
+ * Retourne {demand:0, supply:0, confidence:0} si absent ou en cas d'erreur.
+ */
+function getHourlyOverride(zoneId: string, h: number): HourlyOverride {
+  try {
+    const hh = String(h).padStart(2, "0");
+    const row = sqlite
+      .prepare("SELECT value FROM seed_meta WHERE key = ?")
+      .get(`live_seed_${zoneId}_h${hh}`) as { value: string } | undefined;
+    if (!row) return { demand: 0, supply: 0, confidence: 0 };
+    const v = JSON.parse(row.value);
+    return {
+      demand:     Number(v.demand_override)  || 0,
+      supply:     Number(v.supply_override)  || 0,
+      confidence: Number(v.confidence)       || 0,
+    };
+  } catch {
+    return { demand: 0, supply: 0, confidence: 0 };
+  }
+}
+
+/**
+ * H1 — Écrit/maj l'override horaire individuel dans seed_meta.
+ * Conserve la valeur supply existante si non fournie (correction demande seule).
+ */
+function setHourlyOverride(
+  zoneId: string,
+  h: number,
+  o: { demand?: number; supply?: number; confidence: number },
+): void {
+  try {
+    const hh = String(h).padStart(2, "0");
+    const prev = getHourlyOverride(zoneId, h);
+    const payload = {
+      demand_override: o.demand !== undefined ? Math.round(o.demand) : prev.demand,
+      supply_override: o.supply !== undefined ? Math.round(o.supply) : prev.supply,
+      confidence:      Math.max(0, Math.min(1, o.confidence)),
+    };
+    sqlite
+      .prepare("INSERT OR REPLACE INTO seed_meta (key, value) VALUES (?, ?)")
+      .run(`live_seed_${zoneId}_h${hh}`, JSON.stringify(payload));
+    // H1 : miroir dans la table dédiée hourly_bias (zone_id, hour, bias, n_samples)
+    // n_samples reconstitué à partir de la confiance (confidence = min(1, n/5) → n = round(conf*5))
+    sqlite
+      .prepare("INSERT OR REPLACE INTO hourly_bias (zone_id, hour, bias, n_samples, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run(zoneId, h, payload.demand_override, Math.round(payload.confidence * 5), new Date().toISOString());
+  } catch (e) {
+    console.warn(`[seeds] setHourlyOverride ${zoneId} h${h}:`, e);
+  }
+}
+
+/**
+ * H1 — getHourlyBias : lit le biais résiduel horaire depuis la table dédiée hourly_bias.
+ * Retourne {bias, n_samples, confidence}. Fallback {0,0,0} si absent ou erreur.
+ * La prédiction finale exploitée par computeScore = base + bias_h (pondéré confiance).
+ */
+function getHourlyBias(zoneId: string, h: number): { bias: number; n_samples: number; confidence: number } {
+  try {
+    const row = sqlite
+      .prepare("SELECT bias, n_samples FROM hourly_bias WHERE zone_id = ? AND hour = ?")
+      .get(zoneId, h) as { bias: number; n_samples: number } | undefined;
+    if (!row) return { bias: 0, n_samples: 0, confidence: 0 };
+    return {
+      bias:       Number(row.bias) || 0,
+      n_samples:  Number(row.n_samples) || 0,
+      confidence: Math.min(1, (Number(row.n_samples) || 0) / 5),
+    };
+  } catch {
+    return { bias: 0, n_samples: 0, confidence: 0 };
+  }
+}
+
+// ─── H4 : Supply dynamique (EMA) + tendance glissante 3h + Z-score anomalie ──
+// Mécanisme indépendant de la demande (H1) : on suit l'offre chauffeur réelle
+// (supply_score archivé dans score_history) via une EMA lissée, on détecte la
+// tendance sur 3 heures glissantes, et on flague les anomalies via z-score 7j.
+// Persistance : table supply_ema (zone_id, hour, ema_supply, trend, z_score, anomaly).
+// Toutes les requêtes SQLite sont protégées par try/catch (TypeScript strict).
+const EMA_ALPHA_SUPPLY = 0.35;   // poids mesure récente offre (vs EMA historique)
+const TREND_THRESHOLD  = 5;      // pts sur 3h pour basculer up/down (sinon flat)
+const ZSCORE_THRESHOLD = 2.0;    // |z| > 2.0 → anomalie offre/demande
+
+interface TrendInfo { direction: "up" | "down" | "flat"; magnitude: number; }
+
+/**
+ * H4 — getTrend(zoneId)
+ * Lit la dernière tendance persistée pour la zone (sur l'heure courante CEST)
+ * depuis la table supply_ema. Retourne {direction:"flat", magnitude:0} si absent
+ * ou en cas d'erreur SQLite.
+ */
+export function getTrend(zoneId: string): TrendInfo {
+  try {
+    const now = new Date();
+    const hNow = (now.getUTCHours() + 2) % 24;
+    const row = sqlite
+      .prepare("SELECT trend, trend_magnitude FROM supply_ema WHERE zone_id = ? AND hour = ?")
+      .get(zoneId, hNow) as { trend: string; trend_magnitude: number } | undefined;
+    if (!row) return { direction: "flat", magnitude: 0 };
+    const dir = (row.trend === "up" || row.trend === "down") ? row.trend : "flat";
+    return { direction: dir as "up" | "down" | "flat", magnitude: Number(row.trend_magnitude) || 0 };
+  } catch {
+    return { direction: "flat", magnitude: 0 };
+  }
+}
+
+/**
+ * H4 — getSupplyDynamics(zoneId, hour?)
+ * Lit la ligne supply_ema complète (ema_supply, trend, z_score, anomaly) pour
+ * l'API /api/profitability/supply. hour par défaut = heure courante CEST.
+ */
+export function getSupplyDynamics(zoneId: string, hour?: number): {
+  zone_id: string; hour: number; ema_supply: number; trend: string;
+  trend_magnitude: number; z_score: number; anomaly: boolean; updated_at: string;
+} {
+  const now = new Date();
+  const h = hour !== undefined ? hour : (now.getUTCHours() + 2) % 24;
+  try {
+    const row = sqlite
+      .prepare("SELECT * FROM supply_ema WHERE zone_id = ? AND hour = ?")
+      .get(zoneId, h) as any;
+    if (!row) {
+      return { zone_id: zoneId, hour: h, ema_supply: 0, trend: "flat", trend_magnitude: 0, z_score: 0, anomaly: false, updated_at: "" };
+    }
+    return {
+      zone_id: zoneId, hour: h,
+      ema_supply: Math.round((Number(row.ema_supply) || 0) * 10) / 10,
+      trend: row.trend || "flat",
+      trend_magnitude: Math.round((Number(row.trend_magnitude) || 0) * 10) / 10,
+      z_score: Math.round((Number(row.z_score) || 0) * 100) / 100,
+      anomaly: !!row.anomaly,
+      updated_at: row.updated_at || "",
+    };
+  } catch {
+    return { zone_id: zoneId, hour: h, ema_supply: 0, trend: "flat", trend_magnitude: 0, z_score: 0, anomaly: false, updated_at: "" };
+  }
+}
+
+/**
+ * H4 — recalibrateSupplyDynamics()
+ * Appelé à chaque cycle 3 min (depuis updateLivePatterns).
+ * Pour chaque zone × heure écoulée aujourd'hui :
+ *   1. EMA supply : ema = α·supply_real + (1-α)·ema_prev
+ *   2. Tendance 3h glissante : trend = moy(score[h],score[h-1],score[h-2]) − score[h-3]
+ *      > +5 → "up", < −5 → "down", sinon "flat"
+ *   3. Z-score : z = (score_courant − μ_7j) / max(σ_7j, 1)
+ *      |z| > 2.0 → anomalie → alerte demand_anomaly (si pas déjà active pour la zone)
+ * Persiste dans supply_ema. Tout est en try/catch global.
+ */
+function recalibrateSupplyDynamics(): void {
+  try {
+    const now = new Date();
+    const today = now.toISOString().split("T")[0];
+    const hNow = (now.getUTCHours() + 2) % 24;
+
+    // ── Offre réelle accumulée aujourd'hui (moyenne multi-cycles par heure) ──
+    const supplyRows = sqlite.prepare(`
+      SELECT zone_id, hour, AVG(supply_score) AS supply_real, AVG(profitability_index) AS score_real
+      FROM score_history
+      WHERE seed_date = ? AND day_type = 'weekday'
+      GROUP BY zone_id, hour
+    `).all(today) as { zone_id: string; hour: number; supply_real: number; score_real: number }[];
+    if (supplyRows.length === 0) return; // cold start
+
+    // Indexer offre + score courant par zone|hour
+    const supplyByZone = new Map<string, Map<number, number>>();
+    const scoreByZone  = new Map<string, Map<number, number>>();
+    for (const r of supplyRows) {
+      if (!supplyByZone.has(r.zone_id)) supplyByZone.set(r.zone_id, new Map());
+      if (!scoreByZone.has(r.zone_id))  scoreByZone.set(r.zone_id, new Map());
+      supplyByZone.get(r.zone_id)!.set(r.hour, r.supply_real);
+      scoreByZone.get(r.zone_id)!.set(r.hour, r.score_real);
+    }
+
+    // ── Stats 7 derniers jours (hors aujourd'hui) pour le z-score par zone ──
+    const last7 = new Date(now.getTime() - 7 * 86400000).toISOString().split("T")[0];
+    const statsRows = sqlite.prepare(`
+      SELECT zone_id, AVG(profitability_index) AS mu, AVG(profitability_index*profitability_index) AS musq, COUNT(*) AS n
+      FROM score_history
+      WHERE seed_date >= ? AND seed_date < ? AND day_type = 'weekday'
+      GROUP BY zone_id
+    `).all(last7, today) as { zone_id: string; mu: number; musq: number; n: number }[];
+    const statsByZone = new Map<string, { mu: number; sigma: number }>();
+    for (const s of statsRows) {
+      const variance = Math.max(0, s.musq - s.mu * s.mu);
+      statsByZone.set(s.zone_id, { mu: s.mu, sigma: Math.sqrt(variance) });
+    }
+
+    // ── EMA supply existante ──────────────────────────────────────────────
+    const prevRows = sqlite.prepare("SELECT zone_id, hour, ema_supply FROM supply_ema").all() as
+      { zone_id: string; hour: number; ema_supply: number }[];
+    const prevEma = new Map<string, number>();
+    for (const r of prevRows) prevEma.set(`${r.zone_id}|${r.hour}`, r.ema_supply);
+
+    const ins = sqlite.prepare(`
+      INSERT INTO supply_ema (zone_id, hour, ema_supply, trend, trend_magnitude, z_score, anomaly, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(zone_id, hour) DO UPDATE SET
+        ema_supply=excluded.ema_supply, trend=excluded.trend, trend_magnitude=excluded.trend_magnitude,
+        z_score=excluded.z_score, anomaly=excluded.anomaly, updated_at=excluded.updated_at
+    `);
+    const insAlert = sqlite.prepare(
+      "INSERT INTO alerts (type,title,message,zone_id,priority,estimated_revenue,expires_at,created_at,is_read) VALUES (?,?,?,?,?,?,?,?,0)"
+    );
+    const activeAnomaly = sqlite.prepare(
+      "SELECT 1 FROM alerts WHERE type='demand_anomaly' AND zone_id=? AND is_read=0 AND expires_at > ? LIMIT 1"
+    );
+
+    const tsIso = now.toISOString();
+    const expIso = new Date(now.getTime() + 3 * 3600000).toISOString();
+    let anomalies = 0;
+
+    const tx = sqlite.transaction(() => {
+      for (const [zoneId, hourMap] of supplyByZone) {
+        const scoreMap = scoreByZone.get(zoneId)!;
+        for (const [h, supplyReal] of hourMap) {
+          if (h > hNow) continue;          // heure future → ignorer
+          if (supplyReal < 1) continue;    // bruit → ignorer
+
+          // 1. EMA supply
+          const emaPrev = prevEma.get(`${zoneId}|${h}`) ?? supplyReal;
+          const emaSupply = EMA_ALPHA_SUPPLY * supplyReal + (1 - EMA_ALPHA_SUPPLY) * emaPrev;
+
+          // 2. Tendance 3h glissante (nécessite h-3 disponible)
+          let direction: "up" | "down" | "flat" = "flat";
+          let magnitude = 0;
+          const sH  = scoreMap.get(h);
+          const sH1 = scoreMap.get(h - 1);
+          const sH2 = scoreMap.get(h - 2);
+          const sH3 = scoreMap.get(h - 3);
+          if (sH !== undefined && sH1 !== undefined && sH2 !== undefined && sH3 !== undefined) {
+            const avg3 = (sH + sH1 + sH2) / 3;
+            const trendVal = avg3 - sH3;
+            magnitude = Math.abs(trendVal);
+            if (trendVal > TREND_THRESHOLD) direction = "up";
+            else if (trendVal < -TREND_THRESHOLD) direction = "down";
+          }
+
+          // 3. Z-score vs 7 derniers jours
+          const stats = statsByZone.get(zoneId);
+          const scoreNow = scoreMap.get(h) ?? 0;
+          let zScore = 0;
+          if (stats) zScore = (scoreNow - stats.mu) / Math.max(stats.sigma, 1);
+          const isAnomaly = Math.abs(zScore) > ZSCORE_THRESHOLD;
+
+          ins.run(zoneId, h, Math.round(emaSupply * 10) / 10, direction,
+            Math.round(magnitude * 10) / 10, Math.round(zScore * 100) / 100,
+            isAnomaly ? 1 : 0, tsIso);
+
+          // Alerte anomalie : seulement sur l'heure courante + si pas déjà active
+          if (isAnomaly && h === hNow) {
+            try {
+              const exists = activeAnomaly.get(zoneId, tsIso);
+              if (!exists) {
+                const dir = zScore > 0 ? "supérieure" : "inférieure";
+                insAlert.run(
+                  "demand_anomaly",
+                  `Anomalie de demande — ${zoneId}`,
+                  `Score ${scoreNow.toFixed(0)} ${dir} à la normale (z=${zScore.toFixed(1)}, μ7j=${(stats?.mu ?? 0).toFixed(0)}).`,
+                  zoneId, "high", null, expIso, tsIso
+                );
+                anomalies++;
+              }
+            } catch (e) {
+              console.warn(`[supply] anomaly alert ${zoneId} h${h}:`, e);
+            }
+          }
+        }
+      }
+    });
+    tx();
+
+    if (anomalies > 0) console.log(`[supply] H4 recal — ${anomalies} anomalie(s) détectée(s)`);
+  } catch (e) {
+    console.warn("[supply] recalibrateSupplyDynamics:", e);
+  }
+}
+
 function updateLivePatterns(): void {
   const t0 = Date.now();
   const now = new Date();
@@ -551,7 +870,10 @@ function updateLivePatterns(): void {
     "SELECT key, value FROM seed_meta WHERE key LIKE 'live_seed_%'"
   ).all() as { key: string; value: string }[];
   const overrideMap = new Map<string, any>();
+  // H1 : exclure les clés horaires individuelles (live_seed_{zone}_h{HH}) du map par-zone
+  const HOURLY_KEY_RE = /_h\d{2}$/;
   for (const r of overrideRows) {
+    if (HOURLY_KEY_RE.test(r.key)) continue;
     try { overrideMap.set(r.key.replace('live_seed_', ''), JSON.parse(r.value)); } catch {}
   }
 
@@ -565,9 +887,13 @@ function updateLivePatterns(): void {
 
   // Grouper l'historique par zone
   const histByZone = new Map<string, Map<number, number>>();
+  // H1 : nombre d'échantillons (cycles) par zone|heure — sert au calcul de confiance
+  const sampleByZone = new Map<string, Map<number, number>>();
   for (const r of histRows) {
     if (!histByZone.has(r.zone_id)) histByZone.set(r.zone_id, new Map());
     histByZone.get(r.zone_id)!.set(r.hour, r.demand_real);
+    if (!sampleByZone.has(r.zone_id)) sampleByZone.set(r.zone_id, new Map());
+    sampleByZone.get(r.zone_id)!.set(r.hour, r.n);
   }
 
   const insOverride = sqlite.prepare(
@@ -621,6 +947,29 @@ function updateLivePatterns(): void {
           changed = true;
         }
 
+        // ── H1 : correction par HEURE INDIVIDUELLE (EN PLUS des plages) ────────
+        // Résolution h0..h23 — un pic à h=8 ne déforme plus h=5..9.
+        // EMA α=0.30 (plus lent/stable que les plages α=0.40) sur le BIAIS résiduel.
+        //   target      = hist × SAFETY_PCT  (jamais de surestimation)
+        //   currentPred = pred  (= computeScore(zone,h,dow).demand actuel)
+        //   residual    = target - currentPred  (biais résiduel à corriger)
+        try {
+          const hourlyTarget   = hist * SAFETY_PCT;
+          const currentPred    = pred; // prédiction actuelle (profitability_scores)
+          const residual       = hourlyTarget - currentPred;
+          const prevResidual   = getHourlyOverride(zoneId, h).demand;
+          const emaResidual    = Math.round(
+            EMA_ALPHA_HOURLY * residual + (1 - EMA_ALPHA_HOURLY) * prevResidual
+          );
+          const sampleCount    = sampleByZone.get(zoneId)?.get(h) ?? 1;
+          setHourlyOverride(zoneId, h, {
+            demand:     emaResidual,
+            confidence: Math.min(1, sampleCount / 5),
+          });
+        } catch (e) {
+          console.warn(`[seeds] H1 hourly EMA ${zoneId} h${h}:`, e);
+        }
+
         // MAE après correction
         const predCorrected = (base + smoothedBoost) * dayCo.demand;
         maesAfter.push(Math.abs((predCorrected - hist) / hist) * 100);
@@ -636,6 +985,9 @@ function updateLivePatterns(): void {
     }
   });
   tx();
+
+  // ── H4 : recalibrer offre dynamique (EMA) + tendance 3h + z-score anomalie ─
+  recalibrateSupplyDynamics();
 
   // ── 5. Mise à jour métadonnées ───────────────────────────────────────────
   const mae_before = maesBefore.length ? maesBefore.reduce((a,b)=>a+b,0)/maesBefore.length : 0;
@@ -658,6 +1010,113 @@ function updateLivePatterns(): void {
       `zones: \${zonesUpdated.length} | run #\${livePatMeta.run_count} | \${durationMs}ms`
     );
   }
+}
+
+/**
+ * H3 : Heuristique de fiabilité historique par zone/heure (7 derniers jours).
+ *
+ * Pour chaque (zone, heure), on compare les prédictions (feedback pred/actual si dispo,
+ * sinon écart prédiction courante vs réel) aux valeurs réelles accumulées. On calcule :
+ *   - erreurs relatives e_i = |pred_i - hist_i| / hist_i
+ *   - reliability = 1 - mean(e_i)  (qualité, borné [0..1])
+ *   - variance     = var(e_i)
+ *   - n_samples    = nombre d'observations (maturité = min(1, n/20))
+ * Persiste par (zone,hour) dans prediction_confidence et un reliability agrégé par zone
+ * dans seed_meta["zone_reliability_{zone_id}"].
+ * Règle métier : reliability_zone < 0.6 → confiance × 0.80 (via computePredictionConfidence).
+ */
+function updatePredictionConfidence(): void {
+  const t0 = Date.now();
+  const now = new Date();
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000).toISOString().split("T")[0];
+  const nowIso = now.toISOString();
+
+  // 1) Réel : historique score_history (demand_score réel accumulé) sur 7j.
+  const histRows = sqlite.prepare(`
+    SELECT zone_id, hour, AVG(demand_score) AS hist, COUNT(*) AS n
+    FROM score_history
+    WHERE seed_date >= ?
+    GROUP BY zone_id, hour
+  `).all(sevenDaysAgo) as { zone_id: string; hour: number; hist: number; n: number }[];
+  if (histRows.length === 0) return; // cold start global
+
+  const mkKey = (z: string, h: number) => `${z}|${h}`;
+  const histMap = new Map<string, { hist: number; n: number }>();
+  for (const r of histRows) histMap.set(mkKey(r.zone_id, r.hour), { hist: r.hist, n: r.n });
+
+  // 2) Prédictions réalisées sur 7j avec actual_index renseigné (boucle de feedback).
+  const predRows = sqlite.prepare(`
+    SELECT zone_id, target_hour AS hour, predicted_index AS pred, actual_index AS actual
+    FROM demand_predictions
+    WHERE target_date >= ? AND actual_index IS NOT NULL AND actual_index > 0
+  `).all(sevenDaysAgo) as { zone_id: string; hour: number; pred: number; actual: number }[];
+  const errByKey = new Map<string, number[]>();
+  for (const r of predRows) {
+    if (!r.actual || r.actual <= 0) continue;
+    const e = Math.abs(r.pred - r.actual) / r.actual;
+    const k = mkKey(r.zone_id, r.hour);
+    if (!errByKey.has(k)) errByKey.set(k, []);
+    errByKey.get(k)!.push(e);
+  }
+
+  // 3) Prédiction courante (profitability_scores) pour comparer au réel si pas de feedback.
+  const curRows = sqlite.prepare(
+    "SELECT zone_id, hour, demand_score AS pred FROM profitability_scores WHERE day_type='weekday'"
+  ).all() as { zone_id: string; hour: number; pred: number }[];
+  const curMap = new Map<string, number>();
+  for (const r of curRows) curMap.set(mkKey(r.zone_id, r.hour), r.pred);
+
+  const ins = sqlite.prepare(`
+    INSERT OR REPLACE INTO prediction_confidence (zone_id, hour, variance, n_samples, reliability, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const insMeta = sqlite.prepare("INSERT OR REPLACE INTO seed_meta (key, value) VALUES (?, ?)");
+  const zoneRel = new Map<string, { sum: number; count: number }>();
+
+  const tx = sqlite.transaction(() => {
+    for (const [k, meta] of histMap) {
+      const [zoneId, hourStr] = k.split("|");
+      const hour = parseInt(hourStr, 10);
+      const hist = meta.hist;
+      if (hist < 5) continue; // bruit
+
+      let errs = errByKey.get(k);
+      if (!errs || errs.length === 0) {
+        const pred = curMap.get(k);
+        errs = (pred !== undefined && pred > 0) ? [Math.abs(pred - hist) / hist] : [];
+      }
+      const nSamples = Math.max(meta.n, errs.length);
+      const meanErr = errs.length ? errs.reduce((a, b) => a + b, 0) / errs.length : 0.5;
+      const reliabilityQuality = Math.max(0, Math.min(1, 1 - meanErr));
+      const variance = errs.length > 1
+        ? errs.reduce((a, b) => a + Math.pow(b - meanErr, 2), 0) / errs.length
+        : (errs.length === 1 ? Math.pow(meanErr, 2) : 0.04);
+      // Maturité des données : min(1, n/20) (spec H3).
+      const reliabilitySamples = Math.min(1, nSamples / 20);
+      const reliability = Math.round(reliabilityQuality * reliabilitySamples * 1000) / 1000;
+
+      ins.run(zoneId, hour, Math.round(variance * 10000) / 10000, nSamples, reliability, nowIso);
+
+      if (!zoneRel.has(zoneId)) zoneRel.set(zoneId, { sum: 0, count: 0 });
+      const zr = zoneRel.get(zoneId)!;
+      zr.sum += reliability;
+      zr.count += 1;
+    }
+
+    let lowZones = 0;
+    for (const [zoneId, zr] of zoneRel) {
+      const zoneReliability = zr.count > 0 ? Math.round((zr.sum / zr.count) * 1000) / 1000 : 0.5;
+      insMeta.run(`zone_reliability_${zoneId}`, String(zoneReliability));
+      if (zoneReliability < 0.6) lowZones++;
+    }
+    insMeta.run('prediction_confidence_last_run', JSON.stringify({
+      ts: nowIso, zones: zoneRel.size, low_reliability_zones: lowZones, keys_updated: histMap.size,
+    }));
+  });
+  tx();
+
+  const durationMs = Date.now() - t0;
+  console.log(`[confidence] reliability recalculée — ${zoneRel.size} zones, ${histMap.size} (zone,h) en ${durationMs}ms`);
 }
 
 /** Retourne la valeur de boost statique actuelle pour une heure donnée */
@@ -709,7 +1168,10 @@ function loadLiveSeedsFromDb(): void {
       "SELECT key, value FROM seed_meta WHERE key LIKE 'live_seed_%'"
     ).all() as { key: string; value: string }[];
     let loaded = 0;
+    // H1 : ignorer les clés horaires individuelles (live_seed_{zone}_h{HH})
+    const HOURLY_KEY_RE = /_h\d{2}$/;
     for (const r of rows) {
+      if (HOURLY_KEY_RE.test(r.key)) continue;
       const zoneId = r.key.replace('live_seed_', '');
       try {
         const override = JSON.parse(r.value);
@@ -866,6 +1328,20 @@ function computeScore(
     if (disruption) {
       demandBase = Math.min(demandBase * 1.40, 98); // +40% demande zones impactées grève RER D
     }
+  }
+
+  // ── H1 : override horaire individuel (EMA α=0.30, résolution h0..h23) ───────
+  // Appliqué APRÈS demandBase mais AVANT ×dayCo. Pondéré par la confiance.
+  // N'agit que si confidence > 0.3 (au moins ~2 cycles de données). Plafond ±pts strict.
+  try {
+    const hourlyOverride = getHourlyOverride(zone.id, h);
+    if (hourlyOverride.confidence > 0.3) {
+      demandBase += hourlyOverride.demand * hourlyOverride.confidence;
+      // Plafonner pour éviter les instabilités (bornes cohérentes avec le modèle)
+      demandBase = Math.max(1, Math.min(120, demandBase));
+    }
+  } catch (e) {
+    console.warn(`[seeds] H1 applyHourlyOverride ${zone.id} h${h}:`, e);
   }
 
   demandBase *= dayCo.demand;
@@ -1209,6 +1685,128 @@ function reseedScores(today: string, dayOfWeek: number) {
   }
 }
 
+// ─── H3 : Helpers incertitude / intervalles de confiance ─────────────────────
+// Jours fériés France 2026 (métropole) — utilisés pour pénaliser la confiance.
+const FRENCH_HOLIDAYS_2026 = new Set<string>([
+  "2026-01-01", // Jour de l'An
+  "2026-04-06", // Lundi de Pâques
+  "2026-05-01", // Fête du Travail
+  "2026-05-08", // Victoire 1945
+  "2026-05-14", // Ascension
+  "2026-05-25", // Lundi de Pentecôte
+  "2026-07-14", // Fête nationale
+  "2026-08-15", // Assomption
+  "2026-11-01", // Toussaint
+  "2026-11-11", // Armistice
+  "2026-12-25", // Noël
+]);
+
+/** Indique s'il existe un event PredictHQ dans la zone dans les 24h (signal fort connu). */
+function hasPredictHQEventWithin24h(zoneId: string, fromMs: number): boolean {
+  try {
+    const horizonMs = fromMs + 24 * 60 * 60 * 1000;
+    const fromIso = new Date(fromMs).toISOString();
+    const rows = sqlite.prepare(
+      "SELECT start_time, end_time FROM predicthq_events WHERE zone_id=? AND end_time >= ?"
+    ).all(zoneId, fromIso) as any[];
+    for (const r of rows) {
+      const s = new Date(r.start_time).getTime();
+      const e = new Date(r.end_time).getTime();
+      // event en cours OU démarrant dans les 24h
+      if ((s <= horizonMs && e >= fromMs)) return true;
+    }
+  } catch { /* PredictHQ indisponible → pas de bonus */ }
+  return false;
+}
+
+/** Lit le reliability_score persisté d'une zone (seed_meta), défaut 1.0 si inconnu. */
+function getZoneReliability(zoneId: string): number {
+  try {
+    const row = sqlite.prepare(
+      "SELECT value FROM seed_meta WHERE key=?"
+    ).get(`zone_reliability_${zoneId}`) as any;
+    if (row?.value !== undefined) {
+      const v = parseFloat(row.value);
+      if (!isNaN(v)) return v;
+    }
+  } catch { /* défaut */ }
+  return 1.0;
+}
+
+/**
+ * Calcule le confidence_score [0..1] d'une prédiction et les intervalles de confiance.
+ * Sources d'incertitude (cf. spec H3) :
+ *   A) Horizon : confidence = max(0.3, 1.0 - ahead * 0.07)  [chute 7%/h]
+ *   B) Heure hors-peak : -0.10
+ *   C) Première prédiction de cette heure (peu de seeds) : -0.15
+ *   D) Event PredictHQ dans la zone <24h : +0.10
+ *   E) Weekend / jour férié : -0.05
+ *   + Fiabilité historique zone (reliability) : si < 0.6 → confidence *= 0.80
+ * Intervalles :
+ *   upper = predicted * (1 + (1 - confidence) * 0.30), plafonné à predicted * 1.20 (anti-surestimation)
+ *   lower = predicted * (1 - (1 - confidence) * 0.30), mais lower ne peut PAS dépasser predicted
+ */
+function computePredictionConfidence(params: {
+  predicted: number;
+  ahead: number;
+  isOffPeak: boolean;
+  isFirstTime: boolean;
+  hasPhqEvent: boolean;
+  isWeekendOrHoliday: boolean;
+  zoneReliability: number;
+}): {
+  confidence: number;
+  lower: number;
+  upper: number;
+  source: string;
+  factors: string[];
+} {
+  const { predicted, ahead, isOffPeak, isFirstTime, hasPhqEvent, isWeekendOrHoliday, zoneReliability } = params;
+  const factors: string[] = [];
+
+  // A) Horizon (source dominante)
+  let confidence = Math.max(0.3, 1.0 - ahead * 0.07);
+  factors.push(`horizon_h${ahead}`);
+
+  // B) Hors-peak
+  if (isOffPeak) { confidence -= 0.10; factors.push("off_peak"); }
+  // C) Première fois qu'on prédit cette heure
+  if (isFirstTime) { confidence -= 0.15; factors.push("cold_start"); }
+  // D) Event PredictHQ connu <24h (signal fort)
+  if (hasPhqEvent) { confidence += 0.10; factors.push("phq_event_known"); }
+  // E) Weekend / jour férié
+  if (isWeekendOrHoliday) { confidence -= 0.05; factors.push("weekend_holiday"); }
+
+  // Fiabilité historique de la zone
+  let source = "horizon";
+  if (zoneReliability < 0.6) {
+    confidence *= 0.80;
+    factors.push("low_zone_reliability");
+    source = "zone_reliability";
+  }
+
+  // Clamp final [0..1]
+  confidence = Math.max(0, Math.min(1, confidence));
+  const round2 = (x: number) => Math.round(x * 100) / 100;
+  confidence = round2(confidence);
+
+  const spread = (1 - confidence) * 0.30;
+  // Anti-surestimation ABSOLUE : upper ≤ predicted × 1.20
+  let upper = predicted * (1 + spread);
+  upper = Math.min(upper, predicted * 1.20);
+  // lower ne peut PAS dépasser predicted (sous-estimation OK)
+  let lower = predicted * (1 - spread);
+  if (lower > predicted) lower = predicted;
+
+  return {
+    confidence,
+    lower: Math.round(lower * 10) / 10,
+    upper: Math.round(upper * 10) / 10,
+    source,
+    factors,
+  };
+}
+
 // ─── THÈME 1 : Prédiction de demande (ML scoring) ────────────────────────────
 // Génère les prédictions H+1 à H+12 pour chaque zone via le moteur computeScore.
 function generateDemandPredictions(): void {
@@ -1273,6 +1871,13 @@ function generateDemandPredictions(): void {
       const zone = zones93[zi];
       const seedVar = zi * 1.37;
       const zoneEvents = eventsByZone.get(zone.id) ?? [];
+      // H3 : fiabilité historique persistée de la zone (lue une fois par zone).
+      const zoneReliability = getZoneReliability(zone.id);
+      // H3 : event PredictHQ connu dans les 24h (lue une fois par zone).
+      const phqEventSoon = hasPredictHQEventWithin24h(zone.id, now.getTime());
+      // H3 : heures de pointe de la zone (pour détecter le hors-peak).
+      const zonePat: any = { ...(patterns[zone.id] || {}), ...(livePat[zone.id] || {}) };
+      const peakHours: number[] = Array.isArray(zonePat.peakHours) ? zonePat.peakHours : [];
       for (let ahead = 1; ahead <= 12; ahead++) {
         const target = new Date(now.getTime() + ahead * 3600000);
         const targetHour = target.getHours();
@@ -1309,14 +1914,73 @@ function generateDemandPredictions(): void {
           ));
         }
 
+        // ── H4 : modulation par tendance glissante 3h (horizon futur uniquement) ─
+        // ahead >= 1 → toujours futur, pas d'effet sur l'heure courante (corrigée EMA).
+        // up   → boost dégressif +max10% × exp(-ahead·0.3)
+        // down → réduction dégressive -max10% × exp(-ahead·0.3)
+        try {
+          const trend = getTrend(zone.id);
+          if (trend.direction === "up") {
+            predictedIdx = Math.min(95, predictedIdx * (1 + Math.min(0.10, trend.magnitude / 100) * Math.exp(-ahead * 0.3)));
+          } else if (trend.direction === "down") {
+            predictedIdx = Math.max(5, predictedIdx * (1 - Math.min(0.10, trend.magnitude / 100) * Math.exp(-ahead * 0.3)));
+          }
+          predictedIdx = Math.round(predictedIdx * 10) / 10;
+        } catch { /* tendance indisponible → prédiction inchangée */ }
+
+        // ── H3 : Score de confiance + intervalles de confiance ────────────────
+        // Deux signaux combinés :
+        //   1) Variance historique zone/heure (table prediction_confidence) → reliability
+        //   2) Heuristique additive (horizon, hors-peak, cold-start, PHQ, weekend)
+        const confRow = sqlite.prepare(
+          "SELECT variance, n_samples, reliability FROM prediction_confidence WHERE zone_id=? AND hour=?"
+        ).get(zone.id, targetHour) as { variance: number; n_samples: number; reliability: number } | undefined;
+
+        // reliability historique : table si dispo, sinon fiabilité zone persistée (seed_meta)
+        const histReliability = confRow ? Math.min(1, confRow.reliability) : zoneReliability;
+        const nSamples        = confRow?.n_samples ?? 0;
+
+        // Hors-peak : heure absente des peakHours de la zone (fallback : nuit/soir).
+        const isOffPeak = peakHours.length > 0
+          ? !peakHours.includes(targetHour)
+          : (targetHour < 6 || targetHour >= 22);
+        // Cold start : pas de baseline historique J-7/J-14 ET peu de samples.
+        const isFirstTime = histBaseline === undefined && nSamples < 3;
+        const isWeekendOrHoliday = [0, 6].includes(dayOfWeek) || FRENCH_HOLIDAYS_2026.has(targetDate);
+
+        const conf = computePredictionConfidence({
+          predicted: predictedIdx,
+          ahead,
+          isOffPeak,
+          isFirstTime,
+          hasPhqEvent: phqEventSoon,
+          isWeekendOrHoliday,
+          zoneReliability: histReliability,
+        });
+
+        // Combine heuristique additive et fiabilité historique (variance) :
+        // confidence finale = min(confiance heuristique, fiabilité historique).
+        // La fiabilité historique agit comme plafond — une zone peu fiable plafonne la confiance.
+        const confidenceScore = Math.max(0.2, Math.min(conf.confidence, histReliability));
+        // RÈGLE ANTI-SURESTIMATION ABSOLUE : upper_bound ≤ predictedIdx × 1.20
+        const lowerBound = Math.min(predictedIdx, conf.lower);
+        const upperBound = Math.min(Math.round(predictedIdx * 1.20 * 10) / 10, conf.upper);
+        const uncertaintySource = confRow && nSamples >= 3 ? 'historical' : conf.source;
+        const uncertaintyFactors = JSON.stringify(conf.factors);
+
         stmtInsertPrediction.run(
           zone.id, targetHour, targetDate,
           zone.id, targetHour, targetDate,
           predictedIdx,
           Math.round(confidence * 100) / 100,
-          "v3_j7_trend",
+          "v4_heuristic_dynamic",
           factors,
-          createdAt
+          createdAt,
+          Math.round(confidenceScore * 100) / 100,
+          lowerBound,
+          upperBound,
+          uncertaintySource,
+          uncertaintyFactors
         );
       }
     }
@@ -1633,6 +2297,13 @@ function seedData() {
   seedMaintenance();
 
   // ── THÈME 1 : génération initiale des prédictions de demande ──
+  // H3 : calculer la fiabilité historique AVANT la génération pour que les
+  // intervalles de confiance initiaux soient déjà calibrés (no-op si cold start).
+  try {
+    updatePredictionConfidence();
+  } catch (err) {
+    console.error("[storage] Erreur updatePredictionConfidence (seed):", err);
+  }
   try {
     generateDemandPredictions();
   } catch (err) {
@@ -1933,9 +2604,22 @@ setInterval(() => {
       reseedScores(today, dayOfWeek);
     });
     reseedTx3min();
+    // H3 : recalculer la fiabilité historique par zone/heure (variance, n_samples,
+    // reliability) APRÈS le reseed (scores frais), puis régénérer les prédictions
+    // pour que les nouveaux intervalles de confiance utilisent ces fiabilités.
+    try {
+      updatePredictionConfidence();
+      generateDemandPredictions();
+    } catch (e) {
+      console.warn("[confidence] updatePredictionConfidence/generateDemandPredictions:", e);
+    }
     const durationMs = Date.now() - t0;
     // Régénérer les alertes dynamiques après recalcul des scores
     generateDynamicAlerts();
+    // ── H4 : recalibrer supply EMA + tendance 3h + z-score anomalie ──────
+    try { recalibrateSupplyDynamics(); } catch(e) { console.warn('[H4] cycle:', e); }
+    // ── H3 : mettre à jour variance historique / intervalles de confiance ─
+    try { updatePredictionConfidence(); } catch(e) { console.warn('[H3] cycle:', e); }
     // ← F2: WAL checkpoint adaptatif
     // PASSIVE si WAL < seuil (pas de blocage lectures), TRUNCATE si WAL > 1000 pages (~ 4MB)
     // Objectif: prévenir le WAL file growth sans pénaliser la disponibilité
@@ -1998,8 +2682,11 @@ export interface IStorage {
   updateSeeds(seeds: Record<string, Record<string, number>>, meta?: {trigger?: string; mae_before?: number; mae_after?: number}): {zones_updated: number; zones: string[]};
   getLiveSeeds(): Record<string, any>;
   getLiveSeedsMeta(): typeof livePatMeta;
+  getHourlyOverrides(zoneId: string): { hour: number; demand: number; supply: number; confidence: number; bias: number; n_samples: number }[];
   generateDemandPredictions(): void;
   getPredictions(hoursAhead?: number, zoneId?: string): any;
+  updatePredictionConfidence(): void;
+  getPredictionConfidence(zoneId: string, hours?: number): any;
   getMaintenance(): any[];
   markMaintenanceDone(component: string): any;
   updateMaintenanceKm(addedKm: number): void;
@@ -2034,6 +2721,289 @@ export interface PredictHQEventRow {
   is_active: boolean;
   hours_until_start: number;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// H2 — FUSION ADAPTATIVE MULTI-SOURCES (TomTom + PredictHQ + Vols + Seeds)
+// ───────────────────────────────────────────────────────────────────────────────
+// Combine 4 signaux par zone avec une pondération ADAPTATIVE selon le régime
+// détecté (normal / event / disruption). Remplace la combinaison additive fixe.
+// Tout est non bloquant : si TomTom indisponible → poids redistribués, jamais
+// d'exception remontée à l'appelant HTTP.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export type Regime = "normal" | "event" | "disruption";
+
+export interface SignalWeights {
+  seeds: number;    // poids seeds historiques EMA (0..1)
+  tomtom: number;   // poids signal TomTom temps réel
+  phq: number;      // poids boost PredictHQ events
+  flights: number;  // poids données de vols (CDG/Orly)
+}
+
+export interface FusionResult {
+  zone_id: string;
+  hour: number;
+  regime: Regime;
+  weights: SignalWeights;
+  signal_values: { seeds: number; tomtom: number; phq: number; flights: number };
+  base_score: number;       // score seeds existant (avant fusion)
+  fused_score: number;      // score fusionné final, clamp [5,100] + anti-surestimation
+  adaptive_score: true;
+  tomtom_available: boolean;
+  flights_source: string;
+  phq_boost: number;
+  phq_event_rank: number;
+  surge_multiplier: number;
+}
+
+// ── peakHours d'une zone (depuis les patterns calibrés) ──────────────────────
+// Fallback générique si la zone est inconnue.
+export function getZonePeakHours(zoneId: string): number[] {
+  const live = (livePat as any)[zoneId];
+  if (live?.peakHours) return live.peakHours as number[];
+  const pat = (patterns as any)[zoneId];
+  return (pat?.peakHours as number[]) ?? [7, 8, 9, 12, 17, 18, 19];
+}
+
+export function isZonePeakHour(zoneId: string, hour: number): boolean {
+  return getZonePeakHours(zoneId).includes(hour);
+}
+
+// ── Détection d'une perturbation transport active (grève / incident) ─────────
+export function hasActiveDisruption(): boolean {
+  try {
+    const row = sqlite
+      .prepare("SELECT 1 FROM alerts WHERE type='transport_disruption' AND is_read=0 AND expires_at > ? LIMIT 1")
+      .get(new Date().toISOString());
+    return !!row;
+  } catch {
+    return false;
+  }
+}
+
+// ── Cache mémoire du signal TomTom par zone (TTL 3 min, aligné refresh trafic) ─
+// Le fetch réseau est délégué à l'appelant (routes.ts) qui injecte les données
+// fraîches via setTomTomDemandSnapshot ; storage lit ce snapshot sans réseau.
+let _tomtomSnapshot: Record<string, number | null> = {};
+let _tomtomSnapshotTs = 0;
+const TOMTOM_SNAPSHOT_TTL_MS = 3 * 60 * 1000;
+
+export function setTomTomDemandSnapshot(snapshot: Record<string, number | null>): void {
+  _tomtomSnapshot = snapshot || {};
+  _tomtomSnapshotTs = Date.now();
+}
+
+export function getTomTomDemandSignal(zoneId: string): number | null {
+  if (Date.now() - _tomtomSnapshotTs > TOMTOM_SNAPSHOT_TTL_MS) return null; // périmé
+  const v = _tomtomSnapshot[zoneId];
+  return (v === undefined || v === null) ? null : v;
+}
+
+// ── Contribution TomTom : signal de congestion → proxy demande temps réel ────
+// Signal 0-100, calibré : 50 = neutre, 80+ = fort. Retour : ajustement ratio.
+export function computeTomTomContrib(tomtomSignal: number | null): number {
+  return tomtomSignal !== null
+    ? Math.max(-0.15, Math.min(0.25, (tomtomSignal - 50) / 200))
+    : 0;
+}
+
+// ── Détection de régime ──────────────────────────────────────────────────────
+// "event"      : PHQ boost > 1.5 OU surge_multiplier > 1.3
+// "disruption" : alerte transport_disruption active OU trafic TomTom anormal (≥80)
+// "normal"     : sinon
+export function detectRegime(zoneId: string, hour: number): Regime {
+  const dayType = [0, 6].includes(new Date().getDay()) ? "weekend" : "weekday";
+  let phqBoost = 1.0;
+  let surge = 1.0;
+  try {
+    const row = sqlite
+      .prepare("SELECT phq_boost, surge_multiplier FROM profitability_scores WHERE zone_id=? AND hour=? AND day_type=? LIMIT 1")
+      .get(zoneId, hour, dayType) as any;
+    if (row) {
+      phqBoost = row.phq_boost ?? 1.0;
+      surge = row.surge_multiplier ?? 1.0;
+    }
+  } catch { /* valeurs neutres */ }
+
+  const tomtomSignal = getTomTomDemandSignal(zoneId);
+  const trafficAbnormal = tomtomSignal !== null && tomtomSignal >= 80;
+
+  if (hasActiveDisruption() || trafficAbnormal) return "disruption";
+  if (phqBoost > 1.5 || surge > 1.3) return "event";
+  return "normal";
+}
+
+// ── Poids de base par régime ──────────────────────────────────────────────────
+// normal     : seeds 0.30, tomtom 0.50, phq 0.15, flights 0.05
+// event      : seeds 0.15, tomtom 0.25, phq 0.50, flights 0.10
+// disruption : seeds 0.20, tomtom 0.70, phq 0.08, flights 0.02
+function baseWeightsForRegime(regime: Regime): SignalWeights {
+  switch (regime) {
+    case "event":      return { seeds: 0.15, tomtom: 0.25, phq: 0.50, flights: 0.10 };
+    case "disruption": return { seeds: 0.20, tomtom: 0.70, phq: 0.08, flights: 0.02 };
+    case "normal":
+    default:           return { seeds: 0.30, tomtom: 0.50, phq: 0.15, flights: 0.05 };
+  }
+}
+
+// ── Pondération adaptative fine selon disponibilité des signaux ───────────────
+// Applique les règles métier H2 puis renormalise (somme ≤ 1.0).
+export function computeAdaptiveWeights(opts: {
+  regime: Regime;
+  zoneId: string;
+  hour: number;
+  tomtomAvailable: boolean;
+  phqBoost: number;
+  phqEventRank: number;
+  flightsFromOpenSky: boolean;
+}): SignalWeights {
+  const w = baseWeightsForRegime(opts.regime);
+
+  // TomTom indisponible → poids TomTom à 0 (sera redistribué via complément)
+  if (!opts.tomtomAvailable) w.tomtom = 0;
+
+  // PHQ boost fort + event majeur → confiance PHQ accrue
+  if (opts.phqBoost > 1.2 && opts.phqEventRank > 60) w.phq += 0.15;
+
+  // Confiance seeds selon peakHour de la zone (haute en pic, réduite hors pic)
+  const peak = isZonePeakHour(opts.zoneId, opts.hour);
+  w.seeds = peak ? 0.70 : 0.50;
+
+  // Vols fiables seulement si source OpenSky (pas heuristique)
+  if (opts.flightsFromOpenSky) {
+    if (w.flights < 0.10) w.flights = 0.10;
+  } else {
+    w.flights = 0;
+  }
+
+  // Modulation régime : event → phq ×1.5 ; disruption → tomtom ×1.8
+  if (opts.regime === "event") w.phq *= 1.5;
+  if (opts.regime === "disruption") w.tomtom *= 1.8;
+
+  // Garde-fous : poids ≥ 0
+  w.seeds = Math.max(0, w.seeds);
+  w.tomtom = Math.max(0, w.tomtom);
+  w.phq = Math.max(0, w.phq);
+  w.flights = Math.max(0, w.flights);
+
+  // Somme doit être ≤ 1.0 (complément = variance non expliquée).
+  // Si dépassement, renormalisation proportionnelle vers 1.0.
+  const sum = w.seeds + w.tomtom + w.phq + w.flights;
+  if (sum > 1.0 && sum > 0) {
+    w.seeds = w.seeds / sum;
+    w.tomtom = w.tomtom / sum;
+    w.phq = w.phq / sum;
+    w.flights = w.flights / sum;
+  }
+
+  // Arrondi 2 décimales pour exposition API
+  const r = (x: number) => Math.round(x * 100) / 100;
+  return { seeds: r(w.seeds), tomtom: r(w.tomtom), phq: r(w.phq), flights: r(w.flights) };
+}
+
+// ── Score final pondéré ───────────────────────────────────────────────────────
+// score = seedScore × w.seeds
+//       + (seedScore × (1 + tomtomContrib)) × w.tomtom   (correction TomTom)
+//       + (seedScore × phqBoost)            × w.phq       (signal PHQ)
+//       + (seedScore × flightBoost)         × w.flights   (signal vols)
+// Puis clamp [5,100] + anti-surestimation (≤ score actuel + 20%).
+export function computeAdaptiveScore(
+  seedScore: number,
+  tomtomContrib: number,
+  phqBoost: number,
+  flightBoost: number,
+  w: SignalWeights,
+): number {
+  const base = seedScore;
+  const tomtomComponent  = base * (1 + tomtomContrib);
+  const phqComponent     = base * (phqBoost || 1.0);
+  const flightComponent  = base * (flightBoost || 1.0);
+
+  let score =
+      base * w.seeds
+    + tomtomComponent * w.tomtom
+    + phqComponent * w.phq
+    + flightComponent * w.flights;
+
+  // Si la somme des poids < 1, le complément reste sur la base (variance non
+  // expliquée → on retombe sur le score seeds pour cette fraction).
+  const wSum = w.seeds + w.tomtom + w.phq + w.flights;
+  if (wSum < 1.0) score += base * (1.0 - wSum);
+
+  // Anti-surestimation : jamais plus de +20% au-dessus du score actuel (seeds).
+  const cap = base * 1.20;
+  score = Math.min(score, cap);
+
+  // Clamp métier [5,100]
+  score = Math.max(5, Math.min(100, score));
+  return Math.round(score * 10) / 10;
+}
+
+// ── Fusion complète pour une zone/heure ───────────────────────────────────────
+// Lit le score seeds + boosts persistés en DB, applique régime + poids + score.
+// flightBoost / flightsSource sont injectés par l'appelant (routes) si dispo,
+// sinon valeurs neutres (fonctionne sans réseau).
+export function fusionSignals(
+  zoneId: string,
+  hour: number,
+  injected?: { flightBoost?: number; flightsSource?: string; phqBoostOverride?: number },
+): FusionResult {
+  const dayType = [0, 6].includes(new Date().getDay()) ? "weekend" : "weekday";
+  let seedScore = 5;
+  let phqBoost = 1.0;
+  let phqEventRank = 0;
+  let surge = 1.0;
+  try {
+    const row = sqlite
+      .prepare("SELECT profitability_index, phq_boost, phq_event_rank, surge_multiplier FROM profitability_scores WHERE zone_id=? AND hour=? AND day_type=? LIMIT 1")
+      .get(zoneId, hour, dayType) as any;
+    if (row) {
+      seedScore = row.profitability_index ?? 5;
+      phqBoost = row.phq_boost ?? 1.0;
+      phqEventRank = Math.round(row.phq_event_rank ?? 0);
+      surge = row.surge_multiplier ?? 1.0;
+    }
+  } catch { /* valeurs neutres */ }
+
+  if (injected?.phqBoostOverride !== undefined) phqBoost = injected.phqBoostOverride;
+  const flightBoost = injected?.flightBoost ?? 1.0;
+  const flightsSource = injected?.flightsSource ?? "heuristic";
+  const flightsFromOpenSky = flightsSource === "opensky";
+
+  const tomtomSignal = getTomTomDemandSignal(zoneId);
+  const tomtomAvailable = tomtomSignal !== null;
+  const tomtomContrib = computeTomTomContrib(tomtomSignal);
+
+  const regime = detectRegime(zoneId, hour);
+  const weights = computeAdaptiveWeights({
+    regime, zoneId, hour, tomtomAvailable,
+    phqBoost, phqEventRank, flightsFromOpenSky,
+  });
+
+  const fusedScore = computeAdaptiveScore(seedScore, tomtomContrib, phqBoost, flightBoost, weights);
+
+  return {
+    zone_id: zoneId,
+    hour,
+    regime,
+    weights,
+    signal_values: {
+      seeds: Math.round(seedScore * 10) / 10,
+      tomtom: Math.round(tomtomContrib * 100) / 100,
+      phq: Math.round(phqBoost * 100) / 100,
+      flights: Math.round(flightBoost * 100) / 100,
+    },
+    base_score: Math.round(seedScore * 10) / 10,
+    fused_score: fusedScore,
+    adaptive_score: true,
+    tomtom_available: tomtomAvailable,
+    flights_source: flightsSource,
+    phq_boost: Math.round(phqBoost * 100) / 100,
+    phq_event_rank: phqEventRank,
+    surge_multiplier: Math.round(surge * 100) / 100,
+  };
+}
+
 
 export const storage: IStorage = {
   getAllZones: () => stmtGetAllZones.all(),  // ← F1: prepared statement global
@@ -2303,6 +3273,31 @@ export const storage: IStorage = {
 
   getLiveSeeds: () => livePat,
   getLiveSeedsMeta: () => livePatMeta,
+
+  // H1 : overrides horaires actifs (h0..h23) pour une zone — diagnostic granulaire
+  getHourlyOverrides: (zoneId: string) => {
+    const out: { hour: number; demand: number; supply: number; confidence: number; bias: number; n_samples: number }[] = [];
+    try {
+      for (let h = 0; h < 24; h++) {
+        const ov = getHourlyOverride(zoneId, h);
+        const hb = getHourlyBias(zoneId, h);
+        // N'inclure que les heures ayant un override/biais persisté
+        if (ov.confidence > 0 || ov.demand !== 0 || hb.n_samples > 0) {
+          out.push({
+            hour: h,
+            demand: ov.demand,
+            supply: ov.supply,
+            confidence: ov.confidence,
+            bias: hb.bias,
+            n_samples: hb.n_samples,
+          });
+        }
+      }
+    } catch (e) {
+      console.warn(`[seeds] getHourlyOverrides ${zoneId}:`, e);
+    }
+    return out;
+  },
   generateDemandPredictions: () => generateDemandPredictions(),
 
   // THÈME 1 : prédictions des N prochaines heures, toutes zones (ou filtrées)
@@ -2332,15 +3327,73 @@ export const storage: IStorage = {
         }
         let factors: any = {};
         try { factors = JSON.parse(r.factors); } catch { factors = {}; }
+        // H3 : facteurs d'incertitude (liste) stockés en JSON.
+        let uncertaintyFactors: string[] = [];
+        try { uncertaintyFactors = JSON.parse(r.uncertainty_factors ?? '[]'); } catch { uncertaintyFactors = []; }
         byZone.get(r.zone_id).hours.push({
           hour: r.target_hour,
           predicted_index: r.predicted_index,
           confidence: r.confidence,
           factors,
+          // H3 : score d'incertitude + intervalles de confiance
+          confidence_score: r.confidence_score ?? null,
+          lower_bound: r.lower_bound ?? null,
+          upper_bound: r.upper_bound ?? null,
+          uncertainty_source: r.uncertainty_source ?? 'horizon',
+          uncertainty_factors: uncertaintyFactors,
         });
       }
     }
     return { predictions: order.map(z => byZone.get(z)) };
+  },
+
+  // ── H3 : recalcul manuel de la fiabilité historique par zone/heure ──
+  updatePredictionConfidence: () => updatePredictionConfidence(),
+
+  // ── H3 : prédictions enrichies (intervalles de confiance) pour une zone ──
+  // Retourne les N prochaines heures avec confidence_score, lower/upper bound,
+  // facteurs d'incertitude et la fiabilité historique courante de la zone.
+  getPredictionConfidence: (zoneId: string, hours = 12) => {
+    const now = new Date();
+    const h = Math.max(1, Math.min(24, hours));
+    const targets: { date: string; hour: number; ahead: number }[] = [];
+    for (let ahead = 1; ahead <= h; ahead++) {
+      const t = new Date(now.getTime() + ahead * 3600000);
+      targets.push({ date: t.toISOString().split("T")[0], hour: t.getHours(), ahead });
+    }
+    const zoneReliability = getZoneReliability(zoneId);
+    const out: any[] = [];
+    for (const { date, hour, ahead } of targets) {
+      const r = sqlite.prepare(
+        "SELECT dp.*, z.name as zone_name FROM demand_predictions dp LEFT JOIN zones z ON z.id=dp.zone_id WHERE dp.target_date=? AND dp.target_hour=? AND dp.zone_id=?"
+      ).get(date, hour, zoneId) as any;
+      if (!r) continue;
+      let uf: string[] = [];
+      try { uf = JSON.parse(r.uncertainty_factors ?? '[]'); } catch { uf = []; }
+      const conf = sqlite.prepare(
+        "SELECT variance, n_samples, reliability FROM prediction_confidence WHERE zone_id=? AND hour=?"
+      ).get(zoneId, hour) as any;
+      out.push({
+        ahead_hours: ahead,
+        target_date: date,
+        target_hour: hour,
+        predicted_index: r.predicted_index,
+        confidence_score: r.confidence_score ?? null,
+        lower_bound: r.lower_bound ?? null,
+        upper_bound: r.upper_bound ?? null,
+        uncertainty_source: r.uncertainty_source ?? 'horizon',
+        uncertainty_factors: uf,
+        n_samples: conf?.n_samples ?? 0,
+        variance: conf?.variance ?? null,
+      });
+    }
+    return {
+      zone_id: zoneId,
+      zone_reliability: zoneReliability,
+      hours: h,
+      generated_at: now.toISOString(),
+      predictions: out,
+    };
   },
 
   // THÈME 2
