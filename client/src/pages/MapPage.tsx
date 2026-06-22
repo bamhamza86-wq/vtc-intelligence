@@ -7,11 +7,12 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { TrendingUp, Clock, Zap, Plane, ChevronDown, ChevronUp, Navigation } from "lucide-react";
+import { TrendingUp, Clock, Zap, Plane, ChevronDown, ChevronUp, Navigation, Radio, MapPin } from "lucide-react";
 import { UpdateWidget } from "@/components/UpdateWidget";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 import { PredictHQBadge } from "@/components/PredictHQBadge";
 import { usePredictHQ } from "@/hooks/usePredictHQ";
+import { useZonesSummary } from "@/hooks/useZonesSummary";
 
 const COLORS = { ultraHigh: "#22c55e", high: "#86efac", medium: "#fbbf24", low: "#f97316", veryLow: "#ef4444" };
 
@@ -38,6 +39,29 @@ function getPeakLabel(level: string) {
 function fmtTime(iso: string | undefined) {
   if (!iso) return "—";
   return new Date(iso).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+}
+function fmtDate(iso: string | undefined) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+}
+
+// ─── Events PredictHQ — style marker selon le rank ────────────────────────────
+function getEventRankStyle(rank: number): { color: string; size: number; pulsing: boolean; dot: string } {
+  if (rank >= 80) return { color: "#ef4444", size: 40, pulsing: true, dot: "🔴" };
+  if (rank >= 60) return { color: "#f97316", size: 30, pulsing: false, dot: "🟠" };
+  return { color: "#eab308", size: 20, pulsing: false, dot: "🟡" };
+}
+
+// ─── Heatmap boost PredictHQ — teinte de l'overlay zone selon le phq_boost ─────
+function getBoostHeatStyle(boost: number): { color: string; opacity: number; pulsing: boolean } | null {
+  if (boost < 1.1) return null;                                  // 1.0 → transparent (inchangé)
+  if (boost < 1.3) return { color: "#fde047", opacity: 0.15, pulsing: false };   // jaune léger
+  if (boost < 1.5) return { color: "#f97316", opacity: 0.25, pulsing: false };   // orange
+  if (boost < 2.0) return { color: "#fb5607", opacity: 0.35, pulsing: false };   // rouge-orange
+  return { color: "#ef4444", opacity: 0.5, pulsing: true };                       // rouge vif pulsant
+}
+function getEventDot(rank: number): string {
+  return getEventRankStyle(rank).dot;
 }
 
 function MapLoader() {
@@ -188,12 +212,39 @@ export default function MapPage() {
   const markersRef = useRef<any[]>([]);
   const eventMarkersRef = useRef<any[]>([]);
   const flightMarkersRef = useRef<any[]>([]);
+  const phqEventMarkersRef = useRef<any[]>([]);   // markers PredictHQ (rank-based)
+  const heatLayersRef = useRef<any[]>([]);        // overlays heatmap de boost
   const driverMarkerRef = useRef<any>(null);
   const now = new Date();
   const [selectedHour, setSelectedHour] = useState(now.getHours());
   const [dayType, setDayType] = useState([0,6].includes(now.getDay()) ? "weekend" : "weekday");
   const [selectedZone, setSelectedZone] = useState<any>(null);
+  const [eventsPanelOpen, setEventsPanelOpen] = useState(true);
   const { boostByZone: phqBoostByZone } = usePredictHQ();
+  // Résumé PredictHQ par zone (refetch 30s) — heatmap, panel événements, anticipation.
+  const {
+    boostByZone: phqSummaryBoostByZone,
+    events: phqEvents,
+    activeCount: phqActiveCount,
+    maxBoost: phqMaxBoost,
+    nextEvent: phqNextEvent,
+  } = useZonesSummary();
+  // Boost effectif par zone : on prend le max entre les events temps réel (3s) et le résumé (30s).
+  const effectiveBoostByZone: Record<string, number> = { ...phqBoostByZone };
+  for (const [zid, b] of Object.entries(phqSummaryBoostByZone)) {
+    effectiveBoostByZone[zid] = Math.max(effectiveBoostByZone[zid] ?? 1.0, b);
+  }
+
+  /** Centre la carte sur une zone (depuis le panel événements). */
+  function focusZone(zoneId: string | undefined) {
+    if (!zoneId || !mapInstance.current) return;
+    const z = (zones as any[]).find((zz: any) => zz.id === zoneId);
+    if (z) {
+      mapInstance.current.setView([z.lat, z.lng], 13, { animate: true });
+      const prof = (profitability as any[]).find((p: any) => p.zone_id === zoneId);
+      if (prof) setSelectedZone({ zone: z, prof });
+    }
+  }
 
   const { data: zones = [] } = useQuery({ queryKey: ["/api/zones"], queryFn: () => apiRequest("GET", "/api/zones").then(r => r.json()), refetchInterval: STATIC_INTERVAL, staleTime: 30_000 });
   // ETA des zones calculé depuis la VRAIE position GPS du chauffeur (lat/lng frais).
@@ -281,6 +332,8 @@ export default function MapPage() {
       if (!L || !mapInstance.current) { setTimeout(render, 400); return; }
       markersRef.current.forEach(m => m.remove());
       markersRef.current = [];
+      heatLayersRef.current.forEach(m => m.remove());
+      heatLayersRef.current = [];
       const profMap: any = Object.fromEntries((profitability as any[]).map((p: any) => [p.zone_id, p]));
       (zones as any[]).forEach((zone: any) => {
         const prof = profMap[zone.id];
@@ -290,6 +343,23 @@ export default function MapPage() {
         const radius = 20 + (idx / 100) * 30;
         const isAirport = zone.type === "airport";
         const flightBoost = prof.flight_boost ?? prof.flightBoost ?? 1.0;
+
+        // ── Heatmap boost PredictHQ : overlay coloré sous le cercle de la zone ──
+        const phqBoost = effectiveBoostByZone[zone.id] ?? prof.phq_boost ?? prof.phqBoost ?? 1.0;
+        const heat = getBoostHeatStyle(phqBoost);
+        if (heat) {
+          const heatCircle = L.circleMarker([zone.lat, zone.lng], {
+            radius: (isAirport ? radius + 4 : radius) + 22,
+            fillColor: heat.color,
+            fillOpacity: heat.opacity,
+            color: heat.color,
+            weight: heat.pulsing ? 2 : 1,
+            opacity: heat.pulsing ? 0.7 : 0.35,
+            interactive: false,
+            className: heat.pulsing ? "phq-heat-pulse" : "",
+          }).addTo(mapInstance.current);
+          heatLayersRef.current.push(heatCircle);
+        }
 
         const circle = L.circleMarker([zone.lat, zone.lng], {
           radius: isAirport ? radius + 4 : radius,
@@ -318,7 +388,55 @@ export default function MapPage() {
       });
     };
     render();
-  }, [zones, profitability]);
+    // JSON.stringify du boost effectif → re-render heatmap quand le boost PredictHQ change
+  }, [zones, profitability, JSON.stringify(effectiveBoostByZone)]);
+
+  // ── Markers événements PredictHQ actifs (rank-based, pulsant) ───────────────
+  // Place un marker à la position lat/lng de chaque event actif. Si l'event n'a
+  // pas de coordonnées propres, on retombe sur la position de sa zone.
+  useEffect(() => {
+    const render = () => {
+      const L = (window as any).L;
+      if (!L || !mapInstance.current) { setTimeout(render, 400); return; }
+      phqEventMarkersRef.current.forEach(m => m.remove());
+      phqEventMarkersRef.current = [];
+      const zoneById: Record<string, any> = Object.fromEntries((zones as any[]).map((z: any) => [z.id, z]));
+      phqEvents.forEach((ev) => {
+        let lat = ev.lat;
+        let lng = ev.lng;
+        if ((lat == null || lng == null) && ev.zone_id && zoneById[ev.zone_id]) {
+          lat = zoneById[ev.zone_id].lat;
+          lng = zoneById[ev.zone_id].lng;
+        }
+        if (lat == null || lng == null) return;
+        const rank = ev.rank ?? 0;
+        const { color, size, pulsing } = getEventRankStyle(rank);
+        const half = size / 2;
+        const icon = L.divIcon({
+          className: "",
+          html: `<div style="position:relative;width:${size}px;height:${size}px;">
+            ${pulsing ? `<span style="position:absolute;top:50%;left:50%;width:${size}px;height:${size}px;margin:-${half}px 0 0 -${half}px;border-radius:50%;background:${color}59;animation:phqEventPulse 1.6s ease-out infinite;"></span>` : ""}
+            <span style="position:absolute;top:50%;left:50%;width:${size}px;height:${size}px;margin:-${half}px 0 0 -${half}px;border-radius:50%;background:${color}cc;border:2px solid #fff;box-shadow:0 0 ${pulsing ? 10 : 6}px ${color};"></span>
+          </div>
+          <style>@keyframes phqEventPulse{0%{transform:scale(0.6);opacity:0.85;}100%{transform:scale(2.4);opacity:0;}}</style>`,
+          iconSize: [size, size],
+          iconAnchor: [half, half],
+        });
+        const m = L.marker([lat, lng], { icon, zIndexOffset: 1500, interactive: true }).addTo(mapInstance.current);
+        m.bindTooltip(
+          `<div style="font-size:11px;line-height:1.45;">
+            <strong>${getEventDot(rank)} ${ev.title}</strong><br>
+            ${ev.start ? `📅 ${fmtDate(ev.start)}` : ""}<br>
+            <span style="color:#f59e0b;">boost ×${ev.boost.toFixed(2)}</span> · <span style="color:#9ca3af;">rank ${rank}</span>
+          </div>`,
+          { direction: "top", offset: [0, -half], opacity: 0.96, className: "phq-event-tooltip" }
+        );
+        m.on("click", () => focusZone(ev.zone_id));
+        phqEventMarkersRef.current.push(m);
+      });
+    };
+    render();
+  }, [JSON.stringify(phqEvents.map(e => [e.id, e.rank, e.boost, e.lat, e.lng, e.zone_id])), zones]);
 
   // Markers événements (incluant vols injectés)
   useEffect(() => {
@@ -411,6 +529,8 @@ export default function MapPage() {
   return (
     <div className="flex flex-col" style={{ height: "calc(100vh - 8.5rem)" }}>
       <MapLoader />
+      {/* Animation pulsante pour la heatmap de boost PredictHQ (boost ≥ 2.0) */}
+      <style>{`@keyframes phqHeatPulse{0%,100%{opacity:0.35;}50%{opacity:0.7;}} .phq-heat-pulse{animation:phqHeatPulse 1.8s ease-in-out infinite;}`}</style>
 
       {/* Barre de contrôle heure/jour */}
       <div className="bg-card border-b border-border px-3 py-2 flex items-center gap-3 flex-wrap">
@@ -426,6 +546,28 @@ export default function MapPage() {
             <SelectItem value="weekend">Weekend</SelectItem>
           </SelectContent>
         </Select>
+        {/* Indicateur Anticipation PredictHQ : X events actifs · boost max · prochain event */}
+        {(phqActiveCount > 0 || phqNextEvent) && (
+          <div
+            className="flex items-center gap-1.5 rounded-md bg-amber-500/10 border border-amber-500/30 px-2 py-1 text-[11px]"
+            data-testid="phq-anticipation-indicator"
+            title="Anticipation événementielle PredictHQ"
+          >
+            <Radio size={12} className="text-amber-400 shrink-0" />
+            <span className="text-amber-300 font-semibold">{phqActiveCount} évén. actifs</span>
+            {phqMaxBoost > 1.0 && (
+              <span className="text-muted-foreground">· boost max <span className="text-amber-400 font-bold">×{phqMaxBoost.toFixed(1)}</span></span>
+            )}
+            {phqNextEvent && (
+              <span className="text-muted-foreground hidden lg:inline">
+                · prochain: <span className="text-foreground">{phqNextEvent.title.length > 22 ? phqNextEvent.title.slice(0, 22) + "…" : phqNextEvent.title}</span>
+                {typeof phqNextEvent.hours_until_start === "number" && phqNextEvent.hours_until_start >= 0 && (
+                  <> dans <span className="text-amber-400 font-bold">{Math.round(phqNextEvent.hours_until_start)}h</span></>
+                )}
+              </span>
+            )}
+          </div>
+        )}
         <div className="ml-auto flex items-center gap-3">
           <GpsFreshness lastUpdatedAt={lastUpdatedAt} isFallback={isFallback} />
           <UpdateWidget compact={true} />
@@ -451,6 +593,9 @@ export default function MapPage() {
         ))}
         <div className="flex items-center gap-1"><span className="w-3 h-3 rounded inline-block bg-amber-400" /><span className="text-muted-foreground">Événement</span></div>
         <div className="flex items-center gap-1"><span className="text-sky-400">✈</span><span className="text-muted-foreground">Vols CDG/Orly</span></div>
+        {/* Légende heatmap de boost PredictHQ */}
+        <div className="flex items-center gap-1"><span className="w-3 h-3 rounded-full inline-block" style={{ background: "#fb5607", opacity: 0.6 }} /><span className="text-muted-foreground">Boost PredictHQ</span></div>
+        <div className="flex items-center gap-1"><span>🔴🟠🟡</span><span className="text-muted-foreground">Events (rank)</span></div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -584,6 +729,52 @@ export default function MapPage() {
 
         {/* Sidebar droite */}
         <div className="w-56 border-l border-border bg-card overflow-y-auto hidden md:block">
+          {/* ── Panel collapsible « Événements actifs » (PredictHQ, trié par boost) ── */}
+          {phqEvents.length > 0 && (
+            <div className="border-b border-border" data-testid="phq-events-panel">
+              <button
+                onClick={() => setEventsPanelOpen(v => !v)}
+                className="w-full p-3 flex items-center justify-between hover:bg-muted/40 transition-colors"
+                data-testid="button-toggle-phq-events"
+              >
+                <span className="text-xs font-semibold flex items-center gap-1.5">
+                  <Radio size={13} className="text-amber-400" />
+                  Événements actifs
+                  <span className="text-[10px] text-muted-foreground font-normal">({phqEvents.length})</span>
+                </span>
+                {eventsPanelOpen ? <ChevronUp size={14} className="text-muted-foreground" /> : <ChevronDown size={14} className="text-muted-foreground" />}
+              </button>
+              {eventsPanelOpen && (
+                <div className="divide-y divide-border">
+                  {phqEvents.map((ev, i) => {
+                    const rank = ev.rank ?? 0;
+                    const { color } = getEventRankStyle(rank);
+                    return (
+                      <div key={ev.id || i} className="p-3" data-testid={`phq-event-${i}`}>
+                        <p className="text-xs font-medium flex items-start gap-1.5 leading-tight">
+                          <span className="shrink-0">{getEventDot(rank)}</span>
+                          <span className="truncate">{ev.title}{ev.zone_name ? <span className="text-muted-foreground font-normal"> — {ev.zone_name}</span> : null}</span>
+                        </p>
+                        <p className="text-[10px] text-muted-foreground mt-1">
+                          rank {rank} · <span className="text-amber-400 font-semibold">boost ×{ev.boost.toFixed(2)}</span>{ev.start ? <> · {fmtDate(ev.start)}</> : null}
+                        </p>
+                        {ev.zone_id && (
+                          <button
+                            onClick={() => focusZone(ev.zone_id)}
+                            className="mt-1 text-[10px] flex items-center gap-1 hover:underline"
+                            style={{ color }}
+                            data-testid={`button-focus-zone-${i}`}
+                          >
+                            <MapPin size={10} /> Voir sur la carte
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
           <div className="p-3 border-b border-border"><p className="text-xs font-semibold flex items-center gap-1.5"><TrendingUp size={13} className="text-primary" />Top zones — {fmtH(selectedHour)}</p></div>
           <div className="divide-y divide-border">
             {(topZones as any[]).map((item: any, i: number) => {

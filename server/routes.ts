@@ -257,6 +257,45 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         const congestedRT = getCongestedETA(s.zone_id, roadKm, hour);
         const breakEvenRT = computeBreakEvenPenalty(s.zone_id, roadKm, congestedRT.etaMin, congestedRT.congestionFactor);
         const effPhqBoost = isCurfew ? 1.0 : phqBoost;
+        const roundedPhqBoost = Math.round(effPhqBoost * 100) / 100;
+
+        // ← Agent B : récupère l'event PredictHQ top de la zone (rank max) pour
+        //    persistance + enrichissement réponse. Non bloquant.
+        let phqTopTitle = '';
+        let phqTopRank = 0;
+        let phqActiveEvents = 0;
+        try {
+          const zoneEvents = storage.getActivePredictHQEvents(s.zone_id)
+            .filter((e: any) => e.is_active);
+          phqActiveEvents = zoneEvents.length;
+          if (zoneEvents.length > 0) {
+            const top = zoneEvents.reduce((a: any, b: any) => (b.rank ?? 0) > (a.rank ?? 0) ? b : a);
+            phqTopTitle = top.title ?? '';
+            phqTopRank = Math.round(top.rank ?? 0);
+          }
+        } catch { /* PredictHQ indisponible — valeurs neutres */ }
+
+        // Persiste le boost PredictHQ + l'event top dans profitability_scores
+        // (+ snapshot historique). Couvre-feu → boost neutralisé (1.0).
+        try {
+          storage.upsertProfitabilityScore({
+            zone_id: s.zone_id,
+            hour,
+            day_type: dayType,
+            phq_boost: roundedPhqBoost,
+            phq_event_title: isCurfew ? '' : phqTopTitle,
+            phq_event_rank: isCurfew ? 0 : phqTopRank,
+            phq_active_events: isCurfew ? 0 : phqActiveEvents,
+          });
+        } catch { /* persistance non bloquante */ }
+
+        // demand_level dérivé de l'index boosté (rendu dashboard)
+        const demandLevel =
+          boostedIndex >= 85 ? 'extreme'
+          : boostedIndex >= 70 ? 'high'
+          : boostedIndex >= 50 ? 'moderate'
+          : 'low';
+
         return {
           ...s,
           profitability_index: boostedIndex,
@@ -266,8 +305,12 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           flight_boost: isCurfew ? 1.0 : flightBoost,
           flightBoost: isCurfew ? 1.0 : flightBoost,
           // ← Champs PredictHQ
-          phq_boost:            Math.round(effPhqBoost * 100) / 100,
+          phq_boost:            roundedPhqBoost,
           phq_boost_active:     effPhqBoost > 1.0,
+          phq_event_title:      isCurfew ? '' : phqTopTitle,
+          phq_event_rank:       isCurfew ? 0 : phqTopRank,
+          phq_active_events:    isCurfew ? 0 : phqActiveEvents,
+          demand_level:         demandLevel,
           combined_event_boost: Math.round(combinedBoost * 100) / 100,
           // Champs trafic historique
           congestion_factor:  congestedRT.congestionFactor,
@@ -282,6 +325,37 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       res.json(enriched);
     } catch {
       res.json(scores);
+    }
+  });
+
+  // ← Agent B : historique des scores + boost PredictHQ pour une zone (dashboard analytics).
+  // GET /api/profitability/history?zone_id=z_stade_france&days=7
+  // Retourne la série temporelle des snapshots (profitability_phq_history).
+  app.get("/api/profitability/history", (req, res) => {
+    try {
+      const zoneId = (req.query.zone_id as string || '').trim();
+      if (!zoneId) {
+        return res.status(400).json({ error: "zone_id requis", zone_id: null, days: 0, points: [], count: 0 });
+      }
+      const _daysRaw = parseInt(req.query.days as string);
+      const days = isNaN(_daysRaw) || _daysRaw <= 0 ? 7 : Math.min(90, _daysRaw);
+      const rows = storage.getProfitabilityHistory(zoneId, days);
+      const points = rows.map((r: any) => ({
+        zone_id:           r.zone_id,
+        hour:              r.hour,
+        day_type:          r.day_type,
+        profitability_index: Math.round((r.profitability_index ?? 0) * 100) / 100,
+        score:             Math.round((r.profitability_index ?? 0) * 100) / 100,
+        phq_boost:         Math.round((r.phq_boost ?? 1.0) * 100) / 100,
+        phq_boost_active:  (r.phq_boost ?? 1.0) > 1.0,
+        phq_event_title:   r.phq_event_title ?? '',
+        phq_event_rank:    r.phq_event_rank ?? 0,
+        phq_active_events: r.phq_active_events ?? 0,
+        recorded_at:       r.recorded_at,
+      }));
+      res.json({ zone_id: zoneId, days, count: points.length, points });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message ?? 'history error', zone_id: null, days: 0, points: [], count: 0 });
     }
   });
 
@@ -586,6 +660,65 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     } catch (e: any) {
       res.status(200).json({ success: false, count: 0, error: e?.message ?? "Erreur lors du refresh" });
     }
+  });
+
+  // ─── Synthèse PredictHQ par zone VTC ────────────────────────────────────────
+  // GET /api/predicthq/zones-summary
+  // Pour chaque zone VTC : nb d'events actifs, boost max, top event (rank le plus
+  // élevé) et niveau de demande qualitatif dérivé du boost max.
+  //   demand_level : boost < 1.2 → low, < 1.5 → medium, < 2.0 → high, >= 2.0 → extreme.
+  app.get("/api/predicthq/zones-summary", async (_req, res) => {
+    const demandLevel = (boost: number): "low" | "medium" | "high" | "extreme" => {
+      if (boost >= 2.0) return "extreme";
+      if (boost >= 1.5) return "high";
+      if (boost >= 1.2) return "medium";
+      return "low";
+    };
+
+    // Events PredictHQ actifs indexés par zone (non bloquant : fallback SQLite).
+    const eventsByZone: Record<string, any[]> = {};
+    try {
+      const phqEvents = await getActivePredictHQEvents();
+      for (const ev of phqEvents) {
+        (eventsByZone[ev.zone_id] ||= []).push(ev);
+      }
+    } catch {
+      try {
+        const fromDb = storage.getActivePredictHQEvents();
+        for (const ev of fromDb) {
+          if (!ev.is_active) continue;
+          (eventsByZone[ev.zone_id] ||= []).push(ev);
+        }
+      } catch { /* aucun event */ }
+    }
+
+    // Une zone n'apparaît dans la synthèse que si elle a au moins un event actif.
+    const zones = Object.entries(eventsByZone).map(([zoneId, evts]) => {
+      let maxBoost = 1.0;
+      let topEvent: any = null;
+      for (const ev of evts) {
+        const b = Number(ev.demand_boost) || 1.0;
+        if (b > maxBoost) maxBoost = b;
+        if (!topEvent || Number(ev.rank ?? 0) > Number(topEvent.rank ?? 0)) {
+          topEvent = ev;
+        }
+      }
+      maxBoost = Math.min(2.5, Math.round(maxBoost * 100) / 100);
+      return {
+        zone_id: zoneId,
+        active_events: evts.length,
+        max_boost: maxBoost,
+        top_event: topEvent?.title ?? null,
+        top_event_rank: topEvent ? Number(topEvent.rank ?? 0) : 0,
+        top_event_start: topEvent?.start ?? null,
+        demand_level: demandLevel(maxBoost),
+      };
+    });
+
+    // Tri par boost décroissant (zones les plus sous tension en tête).
+    zones.sort((a, b) => b.max_boost - a.max_boost);
+
+    res.json({ zones, count: zones.length, fetched_at: new Date().toISOString() });
   });
 
   // ─── Analytics : refresh quotidien + diff historique ──────────────────────────

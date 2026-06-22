@@ -144,6 +144,38 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_phq_start ON predicthq_events(start_time);
 `);
 
+// ─── Migration colonnes PredictHQ sur profitability_scores (Agent B) ───────
+// SQLite ne supporte pas ADD COLUMN IF NOT EXISTS → try/catch par colonne.
+// Persiste le boost PredictHQ + l'event top de la zone dans la table de scores.
+const profitabilityPhqMigrations: string[] = [
+  "ALTER TABLE profitability_scores ADD COLUMN phq_boost REAL DEFAULT 1.0",
+  "ALTER TABLE profitability_scores ADD COLUMN phq_event_title TEXT DEFAULT ''",
+  "ALTER TABLE profitability_scores ADD COLUMN phq_event_rank INTEGER DEFAULT 0",
+  "ALTER TABLE profitability_scores ADD COLUMN phq_active_events INTEGER DEFAULT 0",
+  "ALTER TABLE profitability_scores ADD COLUMN phq_updated_at TEXT DEFAULT ''",
+];
+for (const mig of profitabilityPhqMigrations) {
+  try { sqlite.exec(mig); } catch { /* colonne déjà présente */ }
+}
+
+// Table d'historique des snapshots PredictHQ (séries temporelles dashboard analytics).
+// Une ligne par upsert (toutes les ~3 min). Conserve plusieurs jours de boost.
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS profitability_phq_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    zone_id TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    day_type TEXT NOT NULL,
+    profitability_index REAL NOT NULL DEFAULT 0,
+    phq_boost REAL NOT NULL DEFAULT 1.0,
+    phq_event_title TEXT NOT NULL DEFAULT '',
+    phq_event_rank INTEGER NOT NULL DEFAULT 0,
+    phq_active_events INTEGER NOT NULL DEFAULT 0,
+    recorded_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_phq_hist_zone_time ON profitability_phq_history(zone_id, recorded_at DESC);
+`);
+
 // ─── Index pour accélération hot-path ──────────────────────────────────
 sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_prof_hour_daytype ON profitability_scores(hour, day_type);
@@ -1935,6 +1967,16 @@ export interface IStorage {
   getCurrentScores(): any[];
   getProfitabilityByHour(hour: number, dayType: string): any[];
   getTopZones(hour: number, dayType: string, limit?: number): any[];
+  upsertProfitabilityScore(args: {
+    zone_id: string;
+    hour: number;
+    day_type: string;
+    phq_boost?: number;
+    phq_event_title?: string;
+    phq_event_rank?: number;
+    phq_active_events?: number;
+  }): void;
+  getProfitabilityHistory(zone_id: string, days?: number): any[];
   getActiveEvents(): any[];
   getActiveAlerts(): any[];
   clearExpiredAlerts(): void;
@@ -2020,6 +2062,63 @@ export const storage: IStorage = {
       zone_id: r.zone_id || r.zone_id_z,
       zone: { id: r.zone_id || r.zone_id_z, name: r.name, type: r.type, lat: r.lat, lng: r.lng },
     }));
+  },
+
+  // ─── Persistance boost PredictHQ sur profitability_scores (Agent B) ──────
+  // Met à jour les lignes (zone_id, hour, day_type) avec le boost + l'event top,
+  // puis enregistre un snapshot dans profitability_phq_history (série temporelle).
+  // Rétro-compatible : si les colonnes n'existent pas (migration non jouée), no-op silencieux.
+  upsertProfitabilityScore(args): void {
+    const {
+      zone_id,
+      hour,
+      day_type,
+      phq_boost = 1.0,
+      phq_event_title = '',
+      phq_event_rank = 0,
+      phq_active_events = 0,
+    } = args;
+    if (!zone_id || hour == null || !day_type) return;
+    const nowIso = new Date().toISOString();
+    const boost = Number.isFinite(phq_boost) ? phq_boost : 1.0;
+    const title = phq_event_title ?? '';
+    const rank = Math.round(Number(phq_event_rank) || 0);
+    const activeEvents = Math.round(Number(phq_active_events) || 0);
+    try {
+      sqlite.prepare(`
+        UPDATE profitability_scores
+           SET phq_boost = ?, phq_event_title = ?, phq_event_rank = ?, phq_active_events = ?, phq_updated_at = ?
+         WHERE zone_id = ? AND hour = ? AND day_type = ?
+      `).run(boost, title, rank, activeEvents, nowIso, zone_id, hour, day_type);
+    } catch { /* colonnes PredictHQ absentes — migration non encore appliquée */ }
+    try {
+      const cur = sqlite.prepare(
+        "SELECT profitability_index FROM profitability_scores WHERE zone_id=? AND hour=? AND day_type=? LIMIT 1"
+      ).get(zone_id, hour, day_type) as any;
+      sqlite.prepare(`
+        INSERT INTO profitability_phq_history
+          (zone_id, hour, day_type, profitability_index, phq_boost, phq_event_title, phq_event_rank, phq_active_events, recorded_at)
+        VALUES (?,?,?,?,?,?,?,?,?)
+      `).run(zone_id, hour, day_type, cur?.profitability_index ?? 0, boost, title, rank, activeEvents, nowIso);
+    } catch { /* table history absente — ignoré */ }
+  },
+
+  // Historique des scores + boost PredictHQ pour une zone sur N derniers jours.
+  // Utilisé par le dashboard analytics (GET /api/profitability/history).
+  getProfitabilityHistory(zone_id: string, days: number = 7): any[] {
+    const d = Number.isFinite(days) && days > 0 ? Math.min(90, Math.round(days)) : 7;
+    const cutoff = new Date(Date.now() - d * 24 * 60 * 60 * 1000).toISOString();
+    try {
+      return sqlite.prepare(`
+        SELECT zone_id, hour, day_type, profitability_index, phq_boost,
+               phq_event_title, phq_event_rank, phq_active_events, recorded_at
+          FROM profitability_phq_history
+         WHERE zone_id = ? AND recorded_at >= ?
+         ORDER BY recorded_at ASC
+      `).all(zone_id, cutoff) as any[];
+    } catch {
+      return [];
+    }
   },
 
   getActiveEvents: () => stmtGetActiveEvents.all(),  // ← F1: prepared statement global

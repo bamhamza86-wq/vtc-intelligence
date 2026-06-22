@@ -90,6 +90,13 @@ const EVENT_CATEGORIES = "concerts,sports,festivals,performing-arts,community,co
 const RANK_LEVELS = "3,4,5"; // Important → Major
 const MAX_DEMAND_BOOST = 2.5;
 
+// Points d'intérêt aviation/salons pour les fetches additionnels dédiés.
+const CDG = { lat: 49.0097, lng: 2.5479 };       // Aéroport Paris-Charles de Gaulle
+const ORLY = { lat: 48.7262, lng: 2.3652 };      // Aéroport Paris-Orly
+const VILLEPINTE = { lat: 48.9668, lng: 2.5311 }; // Parc des expositions Paris-Nord Villepinte
+const AVIATION_CATEGORIES = "airport,community,transport";
+const EXPO_CATEGORIES = "expos,conferences,community";
+
 // ─── Caches mémoire ─────────────────────────────────────────────────────────
 const EVENTS_CACHE_TTL_MS = 15 * 60 * 1000;   // 15 minutes
 const SURGES_CACHE_TTL_MS = 60 * 60 * 1000;   // 60 minutes
@@ -155,7 +162,19 @@ export function findNearestZone(lat: number, lng: number): string {
 // rank 60-79 (Significant)  → boost = 1.5 + (phq_attendance/100000), capé 2.0
 // rank 40-59 (Important)    → boost = 1.3
 // rank < 40                 → boost = 1.1
-export function computeDemandBoost(rank: number, phqAttendance: number): number {
+//
+// Règle venue spéciale (param optionnel `labels`, rétro-compatible) :
+//  - Stade de France (z_stade_france) : capacité 80k → boost major.
+//    Détecté via le label PredictHQ `sport-stadium`.
+//  - Villepinte (z_villepinte) : salons jusqu'à 200k visiteurs.
+//    Détecté via le label PredictHQ `convention-center`.
+//  Ces venues à très forte capacité reçoivent un boost plancher relevé afin
+//  d'anticiper les pics de demande VTC massifs.
+export function computeDemandBoost(
+  rank: number,
+  phqAttendance: number,
+  labels?: string[]
+): number {
   let boost: number;
   if (rank >= 80) {
     boost = Math.min(2.5, 2.0 + phqAttendance / 50000);
@@ -166,6 +185,21 @@ export function computeDemandBoost(rank: number, phqAttendance: number): number 
   } else {
     boost = 1.1;
   }
+
+  // Venue type : grosses capacités (Stade de France, parc des expositions Villepinte)
+  if (Array.isArray(labels) && labels.length > 0) {
+    const hasStadium = labels.includes("sport-stadium");
+    const hasConvention = labels.includes("convention-center");
+    if (hasStadium) {
+      // Stade de France 80k places : plancher à 2.0, puis amplifié par l'attendance.
+      boost = Math.max(boost, Math.min(2.5, 2.0 + phqAttendance / 80000));
+    }
+    if (hasConvention) {
+      // Salons Villepinte (jusqu'à 200k visiteurs) : plancher relevé selon l'affluence.
+      boost = Math.max(boost, Math.min(2.5, 1.6 + phqAttendance / 150000));
+    }
+  }
+
   // Plafond métier absolu : jamais > 2.5
   boost = Math.min(MAX_DEMAND_BOOST, boost);
   return Math.round(boost * 100) / 100;
@@ -213,7 +247,23 @@ function mapRawEvent(raw: any): PredictHQEvent | null {
   const isActive = isOngoing || startsSoon;
 
   const zoneId = findNearestZone(lat, lng);
-  const demandBoost = computeDemandBoost(rank, phqAttendance);
+
+  // Labels PredictHQ (ex. "sport-stadium", "convention-center", "airport") :
+  // utilisés pour les règles venue (Stade de France / Villepinte).
+  const labels: string[] = Array.isArray(raw.labels)
+    ? raw.labels.filter((l: any): l is string => typeof l === "string")
+    : [];
+
+  let demandBoost = computeDemandBoost(rank, phqAttendance, labels);
+
+  // Aviation rank (CDG/Orly peak flights → boost fort)
+  // PredictHQ expose `aviation_rank` (0-100) sur les events de type "airport" :
+  // un rang élevé = pic de vols → forte demande de transferts aéroport.
+  const aviationRank = Number((raw as any).aviation_rank ?? 0);
+  if (aviationRank >= 70) {
+    demandBoost = Math.min(2.5, demandBoost * 1.3);
+    demandBoost = Math.round(demandBoost * 100) / 100;
+  }
 
   return {
     id: String(raw.id),
@@ -316,57 +366,93 @@ export async function fetchEventsForZones(): Promise<PredictHQEvent[]> {
   const win = activeWindow(7);
   const dedup = new Map<string, PredictHQEvent>();
 
-  // 1) Requête centrale 93 (rayon 30 km depuis le centre 93)
-  const central = await phqGet(
-    "/events/",
+  // Tous les fetches sont lancés EN PARALLÈLE via Promise.allSettled.
+  // Chaque fetch tolère indépendamment ses erreurs (phqGet renvoie null en cas
+  // d'échec ; allSettled garantit qu'un rejet n'interrompt pas les autres).
+  //
+  //  1) Requête centrale 93 (rayon 30 km depuis le centre 93)
+  //  2) Aéroport CDG — events aviation (vols peak) near CDG (within=5km)
+  //  3) Aéroport Orly — events aviation near Orly (within=5km)
+  //  4) Villepinte — salons/expos near le parc des expositions (within=3km)
+  const fetchTasks: { label: string; promise: Promise<any | null> }[] = [
     {
-      within: `30km@${CENTRE_93.lat},${CENTRE_93.lng}`,
-      category: EVENT_CATEGORIES,
-      "impact.industry": "transportation",
-      "active.gte": win.gte,
-      "active.lte": win.lte,
-      rank_level: RANK_LEVELS,
-      limit: "50",
+      label: "central-93",
+      promise: phqGet(
+        "/events/",
+        {
+          within: `30km@${CENTRE_93.lat},${CENTRE_93.lng}`,
+          category: EVENT_CATEGORIES,
+          "impact.industry": "transportation",
+          "active.gte": win.gte,
+          "active.lte": win.lte,
+          rank_level: RANK_LEVELS,
+          limit: "50",
+        },
+        key
+      ),
     },
-    key
-  );
-
-  // 2) Aéroport CDG (place.scope=CDG)
-  const cdg = await phqGet(
-    "/events/",
     {
-      "place.scope": "CDG",
-      category: EVENT_CATEGORIES,
-      "active.gte": win.gte,
-      "active.lte": win.lte,
-      rank_level: RANK_LEVELS,
-      limit: "50",
+      label: "cdg-aviation",
+      promise: phqGet(
+        "/events/",
+        {
+          within: `5km@${CDG.lat},${CDG.lng}`,
+          category: AVIATION_CATEGORIES,
+          "active.gte": win.gte,
+          "active.lte": win.lte,
+          limit: "50",
+        },
+        key
+      ),
     },
-    key
-  );
-
-  // 3) Aéroport Orly (place.scope=ORY)
-  const ory = await phqGet(
-    "/events/",
     {
-      "place.scope": "ORY",
-      category: EVENT_CATEGORIES,
-      "active.gte": win.gte,
-      "active.lte": win.lte,
-      rank_level: RANK_LEVELS,
-      limit: "50",
+      label: "orly-aviation",
+      promise: phqGet(
+        "/events/",
+        {
+          within: `5km@${ORLY.lat},${ORLY.lng}`,
+          category: AVIATION_CATEGORIES,
+          "active.gte": win.gte,
+          "active.lte": win.lte,
+          limit: "50",
+        },
+        key
+      ),
     },
-    key
-  );
+    {
+      label: "villepinte-expos",
+      promise: phqGet(
+        "/events/",
+        {
+          within: `3km@${VILLEPINTE.lat},${VILLEPINTE.lng}`,
+          category: EXPO_CATEGORIES,
+          "active.gte": win.gte,
+          "active.lte": win.lte,
+          limit: "50",
+        },
+        key
+      ),
+    },
+  ];
 
-  const networkFailed = central === null && cdg === null && ory === null;
+  const settled = await Promise.allSettled(fetchTasks.map((t) => t.promise));
+
+  // Extraire les payloads ; null si rejet OU si phqGet a renvoyé null (erreur HTTP).
+  const payloads: (any | null)[] = settled.map((res, i) => {
+    if (res.status === "fulfilled") return res.value;
+    // Rejet inattendu : on log un warning et on continue (tolérance aux erreurs).
+    console.warn(`[PredictHQ] fetch "${fetchTasks[i].label}" rejected:`, res.reason?.message ?? res.reason);
+    return null;
+  });
+
+  const networkFailed = payloads.every((p) => p === null);
   if (networkFailed) {
     // Fallback sur le cache SQLite existant en cas d'échec réseau total
     const fromDb = storage.getActivePredictHQEvents();
     if (fromDb.length > 0) return fromDb;
   }
 
-  for (const payload of [central, cdg, ory]) {
+  for (const payload of payloads) {
     if (payload && Array.isArray(payload.results)) {
       for (const raw of payload.results) {
         const ev = mapRawEvent(raw);
