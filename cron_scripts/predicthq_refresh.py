@@ -5,12 +5,12 @@ Rafraîchit les événements PredictHQ toutes les heures.
 Schedule: 0 * * * *
 
 Flux :
-  1. Auth sur /api/auth/login (root / 12345678) avec retry cold-start.
-  2. POST /api/predicthq/refresh pour forcer le refresh des events côté serveur.
-  3. Lit cron_tracking/predicthq/status_{date}.json (écrit par le serveur) pour
-     connaître le nombre de nouveaux events. À défaut, exploite la réponse HTTP.
-  4. Si > 50 nouveaux events → écrit pending_notif_{date}.json (titre + body).
-  5. Termine silencieusement si tout va bien.
+  1. Auth sur /api/auth/login (root / 12345678) avec retry cold-start (timeout 40s).
+  2. POST /api/predicthq/refresh avec retry (cold-start sandbox E2B).
+  3. Compare le total avec le dernier run (last_count) pour calculer les NOUVEAUX events.
+  4. Si delta >= NEW_EVENTS_THRESHOLD → écrit pending_notif_{date}.json (in-app).
+  5. Sauvegarde le total dans last_count_{date}.json pour le run suivant.
+  6. Termine silencieusement si tout va bien.
 """
 import json
 import sys
@@ -25,10 +25,14 @@ TRACKING = WORKSPACE / "cron_tracking" / "predicthq"
 TRACKING.mkdir(parents=True, exist_ok=True)
 
 BASE_URL = "https://vtc-one.pplx.app/port/5000"
-PHQ_KEY = "H6vO4zDmjgTpPlXZUrewsFE-NLPD1wTHeowBiRHo"
 
-NEW_EVENTS_NOTIF_THRESHOLD = 50
-COLD_START_DELAYS = [5, 10, 15, 20, 25, 30]
+# Seuil : notifier seulement si >= 5 NOUVEAUX events depuis le dernier run
+NEW_EVENTS_THRESHOLD = 5
+
+# Retries cold-start (sandbox E2B peut être suspendu)
+COLD_START_DELAYS = [10, 20, 30, 40, 40, 40]
+AUTH_TIMEOUT = 40     # augmenté pour cold-start sandbox
+REFRESH_TIMEOUT = 90  # augmenté pour appel API PredictHQ
 
 
 def _now_utc():
@@ -36,86 +40,94 @@ def _now_utc():
 
 
 def _today_cest():
-    # CEST = UTC+2
     return (_now_utc() + timedelta(hours=2)).strftime("%Y-%m-%d")
 
 
 def login(session, username="root", password="12345678"):
-    """Authentifie et retourne le token JWT. Retry sur cold-start (403/connexion)."""
+    """Auth avec retry sur cold-start (ConnectionError / timeout / 5xx)."""
     url = f"{BASE_URL}/api/auth/login"
     body = {"username": username, "password": password}
     for i, delay in enumerate(COLD_START_DELAYS):
         try:
-            r = session.post(url, json=body, timeout=20)
+            r = session.post(url, json=body, timeout=AUTH_TIMEOUT)
             if r.status_code == 200:
                 token = r.json().get("token")
                 if token:
                     return token
-                raise ValueError(f"Pas de token dans la réponse: {r.text[:200]}")
+                raise ValueError(f"Pas de token: {r.text[:200]}")
+            # 5xx = serveur pas encore prêt
+            if r.status_code >= 500 and i < len(COLD_START_DELAYS) - 1:
+                print(f"  [auth] HTTP {r.status_code} — cold-start, retry dans {delay}s...")
+                time.sleep(delay)
+                continue
+            raise RuntimeError(f"Auth HTTP {r.status_code}: {r.text[:200]}")
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.ReadTimeout,
+                requests.exceptions.Timeout) as e:
             if i < len(COLD_START_DELAYS) - 1:
-                print(f"  [auth] HTTP {r.status_code} — retry dans {delay}s ({i+1}/{len(COLD_START_DELAYS)})...")
+                print(f"  [auth] {type(e).__name__} — retry dans {delay}s ({i+1}/{len(COLD_START_DELAYS)})...")
                 time.sleep(delay)
             else:
-                raise RuntimeError(f"Auth HTTP {r.status_code}: {r.text[:300]}")
-        except requests.exceptions.ConnectionError as e:
-            if i < len(COLD_START_DELAYS) - 1:
-                print(f"  [auth] ConnectionError — retry dans {delay}s...")
-                time.sleep(delay)
-            else:
-                raise RuntimeError(f"Auth ConnectionError: {e}")
-    raise RuntimeError("Auth échouée après tous les retries")
+                raise RuntimeError(f"Auth échouée après {len(COLD_START_DELAYS)} retries: {e}")
+    raise RuntimeError("Auth échouée (boucle épuisée)")
 
 
 def call_refresh(session, token):
-    """POST /api/predicthq/refresh. Retourne le corps JSON (ou {})."""
+    """POST /api/predicthq/refresh avec retry. Retourne le JSON ou {}."""
     url = f"{BASE_URL}/api/predicthq/refresh"
     headers = {"Authorization": f"Bearer {token}"}
-    try:
-        r = session.post(url, headers=headers, json={}, timeout=60)
-    except requests.exceptions.RequestException as e:
-        print(f"  [refresh] erreur réseau: {e}")
-        return {}
-    if r.status_code == 200:
+    for attempt in range(3):
         try:
-            return r.json()
-        except Exception:
-            return {}
-    print(f"  [refresh] HTTP {r.status_code}: {r.text[:200]}")
+            r = session.post(url, headers=headers, json={}, timeout=REFRESH_TIMEOUT)
+            if r.status_code == 200:
+                try:
+                    return r.json()
+                except Exception:
+                    return {}
+            print(f"  [refresh] HTTP {r.status_code} (attempt {attempt+1})")
+            if attempt < 2:
+                time.sleep(15)
+        except (requests.exceptions.ReadTimeout, requests.exceptions.Timeout) as e:
+            print(f"  [refresh] timeout attempt {attempt+1}: {e}")
+            if attempt < 2:
+                time.sleep(20)
+        except requests.exceptions.RequestException as e:
+            print(f"  [refresh] erreur réseau attempt {attempt+1}: {e}")
+            if attempt < 2:
+                time.sleep(15)
     return {}
 
 
-def read_status_file(today):
-    """Lit cron_tracking/predicthq/status_{date}.json si présent."""
-    path = TRACKING / f"status_{today}.json"
+def load_last_count(today):
+    """Charge le total du dernier run pour calculer le delta."""
+    path = TRACKING / f"last_count_{today}.json"
     if path.exists():
         try:
-            return json.loads(path.read_text())
-        except Exception as e:
-            print(f"  [status] illisible: {e}")
-    return None
-
-
-def extract_new_count(refresh_resp, status):
-    """Détermine le nombre de nouveaux events à partir du status puis de la réponse."""
-    for src in (status, refresh_resp):
-        if not isinstance(src, dict):
+            return json.loads(path.read_text()).get("total", 0)
+        except Exception:
+            pass
+    # Fallback : chercher le fichier le plus récent (autre jour)
+    candidates = sorted(TRACKING.glob("last_count_*.json"), reverse=True)
+    for f in candidates:
+        try:
+            return json.loads(f.read_text()).get("total", 0)
+        except Exception:
             continue
-        for k in ("new_events", "newEvents", "new_count", "added", "new"):
-            if k in src and isinstance(src[k], (int, float)):
-                return int(src[k])
-    # fallback : 'count' total renvoyé par refreshPredictHQEvents
-    if isinstance(refresh_resp, dict) and isinstance(refresh_resp.get("count"), (int, float)):
-        return int(refresh_resp["count"])
     return 0
 
 
+def save_last_count(today, total):
+    path = TRACKING / f"last_count_{today}.json"
+    path.write_text(json.dumps({"total": total, "ts": _now_utc().isoformat()}, indent=2))
+
+
 def write_notif(today, new_count, total_count):
-    title = f"📅 PredictHQ — {new_count} nouveaux événements détectés ({today})"
+    title = f"📅 PredictHQ — {new_count} nouveaux événements ({today})"
     body = (
         f"## PredictHQ — {today}\n\n"
-        f"**{new_count} nouveaux événements** ont été ajoutés lors du refresh horaire.\n\n"
+        f"**{new_count} nouveaux événements** depuis le dernier refresh.\n\n"
         f"- Total events actifs : {total_count}\n"
-        f"- Seuil de notification : > {NEW_EVENTS_NOTIF_THRESHOLD} nouveaux events\n\n"
+        f"- Seuil de notification : +{NEW_EVENTS_THRESHOLD} nouveaux events\n\n"
         f"### Recommandation\n"
         f"Vérifier l'impact sur les coefficients de demande (`demand_boost`) "
         f"des zones VTC concernées via le dashboard."
@@ -128,7 +140,7 @@ def write_notif(today, new_count, total_count):
             ensure_ascii=False,
         )
     )
-    print(f"  Notif écrite: {path}")
+    print(f"  Notif écrite: {path.name}")
 
 
 def run():
@@ -142,23 +154,39 @@ def run():
     token = login(session)
     print("  Auth OK")
 
-    refresh_resp = call_refresh(session, token)
-    status = read_status_file(today)
+    last_count = load_last_count(today)
+    print(f"  Dernier total connu : {last_count}")
 
-    new_count = extract_new_count(refresh_resp, status)
+    refresh_resp = call_refresh(session, token)
+
+    # Extraire le total depuis la réponse
     total_count = 0
-    for src in (status, refresh_resp):
-        if isinstance(src, dict) and isinstance(src.get("count"), (int, float)):
-            total_count = int(src["count"])
+    for k in ("count", "total", "active_events"):
+        if isinstance(refresh_resp.get(k), (int, float)):
+            total_count = int(refresh_resp[k])
             break
 
-    print(f"  Refresh OK — nouveaux events: {new_count}, total: {total_count}")
+    # Fallback : interroger /api/predicthq/status
+    if total_count == 0:
+        try:
+            headers = {"Authorization": f"Bearer {token}"}
+            r = session.get(f"{BASE_URL}/api/predicthq/status", headers=headers, timeout=20)
+            if r.status_code == 200:
+                data = r.json()
+                total_count = int(data.get("active_events", 0))
+        except Exception as e:
+            print(f"  [status fallback] {e}")
 
-    if new_count > NEW_EVENTS_NOTIF_THRESHOLD:
+    new_count = max(0, total_count - last_count)
+    print(f"  Refresh OK — total: {total_count}, nouveaux: {new_count} (delta vs last={last_count})")
+
+    # Sauvegarder pour le prochain run
+    save_last_count(today, total_count)
+
+    if new_count >= NEW_EVENTS_THRESHOLD:
         write_notif(today, new_count, total_count)
     else:
-        # Tout va bien → terminaison silencieuse (juste un log)
-        print("  RAS — pas de notification (seuil non atteint)")
+        print(f"  RAS — delta {new_count} < seuil {NEW_EVENTS_THRESHOLD}, pas de notification")
 
     return new_count, total_count
 
