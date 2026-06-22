@@ -122,6 +122,8 @@ def save_last_count(today, total):
 
 
 def write_notif(today, new_count, total_count):
+    # Nom unique par heure (H_cur CEST) → évite le re-lu au run suivant
+    h_cur = (_now_utc() + timedelta(hours=2)).hour
     title = f"📅 PredictHQ — {new_count} nouveaux événements ({today})"
     body = (
         f"## PredictHQ — {today}\n\n"
@@ -132,7 +134,8 @@ def write_notif(today, new_count, total_count):
         f"Vérifier l'impact sur les coefficients de demande (`demand_boost`) "
         f"des zones VTC concernées via le dashboard."
     )
-    path = TRACKING / f"pending_notif_{today}.json"
+    # Fichier h{HH} — unique par run, lu une seule fois par le cron task
+    path = TRACKING / f"pending_notif_{today}_h{h_cur:02d}.json"
     path.write_text(
         json.dumps(
             {"title": title, "body": body, "channels": ["in_app"]},
