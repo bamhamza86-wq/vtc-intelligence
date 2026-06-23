@@ -3738,6 +3738,19 @@ export const storage: IStorage = {
     const total_net_eur = r2(Number(agg.net));
     const total_duration_h = Number(agg.dur) / 60;
 
+    // Guard : si les rides existent mais n'ont pas de durée exploitable → simuler
+    if (total_duration_h < 0.1 || total_km < 1) {
+      const sim_km = 180; const sim_net = 85; const sim_dur = 5.8;
+      const sim_vide = r1(sim_km * EMPTY_RIDE_RATIO);
+      const sim_eph = r1(sim_net / sim_dur);
+      return { total_km: sim_km, total_km_vide: sim_vide,
+        taux_km_vide: r1((sim_vide / sim_km) * 100), eur_per_km_reel: r2(sim_net / sim_km),
+        eur_per_hour_reel: sim_eph, eur_per_hour_target: r1(target), gap_vs_target: r1(sim_eph - target),
+        rides_per_day: 12, best_hour: 19, worst_hour: 14, total_rides: 12, total_net_eur: sim_net,
+        total_duration_h: sim_dur, km_vide_h_est: r1(sim_dur * EMPTY_RIDE_RATIO), is_simulated: true,
+        best_hour_rate: r1(target + 8), worst_hour_rate: r1(target - 18) };
+    }
+
     // Km à vide estimé (placeholder réaliste : pas de colonne dédiée en DB)
     const total_km_vide = r1(total_km * EMPTY_RIDE_RATIO);
     const km_client = Math.max(0, total_km - total_km_vide);
