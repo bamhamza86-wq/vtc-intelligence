@@ -472,7 +472,13 @@ export default function MapPage() {
       if (!L || !mapInstance.current) { setTimeout(render, 400); return; }
       eventMarkersRef.current.forEach(m => m.remove());
       eventMarkersRef.current = [];
-      (events as any[]).forEach((event: any) => {
+      // Anti-chevauchement : on n'affiche que les 3 événements les plus forts (boost
+      // décroissant). Les labels restants sont décalés verticalement de façon progressive.
+      const sortedEvents = [...(events as any[])]
+        .filter((e: any) => e.zone)
+        .sort((a: any, b: any) => (b.demand_boost ?? 1) - (a.demand_boost ?? 1))
+        .slice(0, 3);
+      sortedEvents.forEach((event: any, index: number) => {
         if (!event.zone) return;
         const isFlightEvent = event.event_type === "flight_wave" || event.event_type === "flight_forecast";
         const isForecast = event.event_type === "flight_forecast";
@@ -480,10 +486,12 @@ export default function MapPage() {
         const textColor = "#000";
         const prefix = isFlightEvent ? "✈" : "⚡";
         const label = event.name.substring(0, 26);
+        // Décalage vertical progressif (en px) pour éviter la superposition des labels.
+        const labelOffset: [number, number] = [0, -30 + (index % 3) * 20];
         const icon = L.divIcon({
           className: "",
           html: `<div style="background:${bgColor};color:${textColor};padding:3px 8px;border-radius:14px;font-size:10px;font-weight:800;white-space:nowrap;box-shadow:0 3px 12px ${bgColor}99;border:2px solid #fff;">${prefix} ${label}</div>`,
-          iconAnchor: [0, 0],
+          iconAnchor: [labelOffset[0], labelOffset[1]],
         });
         const latOffset = isFlightEvent ? 0.010 : 0.006;
         const m = L.marker([event.zone.lat + latOffset, event.zone.lng + 0.005], { icon, zIndexOffset: 1000 }).addTo(mapInstance.current);
@@ -704,16 +712,12 @@ export default function MapPage() {
       {/* Panel vols temps réel */}
       <FlightPanel flightData={flightData} />
 
-      {/* Légende */}
-      <div className="bg-card/80 px-3 py-1.5 flex items-center gap-3 text-xs border-b border-border flex-wrap">
-        {Object.entries({ "Ultra rentable": COLORS.ultraHigh, "Rentable": COLORS.high, "Neutre": COLORS.medium, "Faible": COLORS.low, "Saturé": COLORS.veryLow }).map(([label, color]) => (
-          <div key={label} className="flex items-center gap-1"><span className="w-3 h-3 rounded-full inline-block" style={{ background: color }} /><span className="text-muted-foreground">{label}</span></div>
-        ))}
-        <div className="flex items-center gap-1"><span className="w-3 h-3 rounded inline-block bg-amber-400" /><span className="text-muted-foreground">Événement</span></div>
-        <div className="flex items-center gap-1"><span className="text-sky-400">✈</span><span className="text-muted-foreground">Vols CDG/Orly</span></div>
-        {/* Légende heatmap de boost PredictHQ */}
-        <div className="flex items-center gap-1"><span className="w-3 h-3 rounded-full inline-block" style={{ background: "#fb5607", opacity: 0.6 }} /><span className="text-muted-foreground">Boost PredictHQ</span></div>
-        <div className="flex items-center gap-1"><span>🔴🟠🟡</span><span className="text-muted-foreground">Events (rank)</span></div>
+      {/* Légende simplifiée — 4 items essentiels (les détails sont visibles via les marqueurs) */}
+      <div className="bg-card/80 px-3 py-1.5 flex items-center gap-3 text-xs border-b border-border">
+        <div className="flex items-center gap-1"><span className="inline-block rounded-full" style={{ width: 8, height: 8, background: COLORS.ultraHigh }} /><span className="text-muted-foreground">Ultra rentable</span></div>
+        <div className="flex items-center gap-1"><span className="inline-block rounded-full" style={{ width: 8, height: 8, background: COLORS.high }} /><span className="text-muted-foreground">Rentable</span></div>
+        <div className="flex items-center gap-1"><span className="inline-block rounded-full" style={{ width: 8, height: 8, background: COLORS.medium }} /><span className="text-muted-foreground">Neutre/Faible</span></div>
+        <div className="flex items-center gap-1"><span className="inline-block rounded-full" style={{ width: 8, height: 8, background: "#f59e0b" }} /><span className="text-muted-foreground">Événement actif</span></div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -893,57 +897,44 @@ export default function MapPage() {
               )}
             </div>
           )}
-          <div className="p-3 border-b border-border"><p className="text-xs font-semibold flex items-center gap-1.5"><TrendingUp size={13} className="text-primary" />Top zones — {fmtH(selectedHour)}</p></div>
+          <div className="p-3 border-b border-border"><p className="text-[11px] font-semibold flex items-center gap-1.5"><TrendingUp size={12} className="text-primary" />Top 3 zones · {fmtH(selectedHour)}</p></div>
           <div className="divide-y divide-border">
-            {(topZones as any[]).map((item: any, i: number) => {
+            {/* Panneau condensé : Top 3 zones, une seule ligne compacte par zone */}
+            {(topZones as any[]).slice(0, 3).map((item: any, i: number) => {
               const idx = item.profitability_index ?? item.profitabilityIndex ?? 0;
               const lrp = item.long_ride_probability ?? item.longRideProbability ?? 0;
               const flightBoost = item.flight_boost ?? item.flightBoost ?? 1.0;
               return (
-                <button key={item.zone_id} className="w-full p-3 text-left hover:bg-muted/50 transition-colors" onClick={() => setSelectedZone({ zone: item.zone, prof: item })} data-testid={`button-zone-${item.zone_id}`}>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-xs text-muted-foreground font-mono">#{i+1}</span>
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: getProfitColor(idx) }} />
-                    <span className="text-xs font-medium truncate">{item.zone?.name}</span>
-                    {flightBoost > 1.05 && <Plane size={10} className="text-sky-400 shrink-0" />}
-                  </div>
-                  <div className="flex justify-between text-[10px] text-muted-foreground">
-                    <span>{Math.round(idx)}/100</span>
-                    <span className="text-green-500">{Math.round(lrp * 100)}% longue</span>
-                  </div>
-                  <div className="mt-1 h-1.5 bg-muted rounded-full overflow-hidden"><div className="h-full rounded-full transition-all" style={{ width: `${idx}%`, background: getProfitColor(idx) }} /></div>
-                  {flightBoost > 1.05 && (
-                    <p className="text-[9px] text-sky-400 mt-0.5">✈ ×{flightBoost.toFixed(2)} vols</p>
-                  )}
+                <button key={item.zone_id} className="w-full px-3 py-2 text-left hover:bg-muted/50 transition-colors flex items-center gap-1.5" onClick={() => setSelectedZone({ zone: item.zone, prof: item })} data-testid={`button-zone-${item.zone_id}`}>
+                  <span className="text-[10px] text-muted-foreground font-mono shrink-0">#{i+1}</span>
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: getProfitColor(idx) }} />
+                  <span className="text-[11px] font-medium truncate">{item.zone?.name}</span>
+                  {flightBoost > 1.05 && <Plane size={10} className="text-sky-400 shrink-0" />}
+                  <span className="ml-auto text-[10px] text-muted-foreground shrink-0 whitespace-nowrap">{Math.round(idx)} · <span className="text-green-500">{Math.round(lrp * 100)}% long</span></span>
                 </button>
               );
             })}
           </div>
 
-          {/* Événements sidebar — avec types vols */}
+          {/* Événements sidebar — condensé : max 3, une ligne compacte par événement */}
           {(events as any[]).length > 0 && (
             <>
               <div className="p-3 border-t border-b border-border mt-2">
-                <p className="text-xs font-semibold flex items-center gap-1.5"><Zap size={13} className="text-amber-500" />Événements actifs</p>
+                <p className="text-[11px] font-semibold flex items-center gap-1.5"><Zap size={12} className="text-amber-500" />Événements actifs</p>
               </div>
               <div className="divide-y divide-border">
-                {(events as any[]).map((event: any) => {
+                {(events as any[]).slice(0, 3).map((event: any) => {
                   const isFlightEvt = event.event_type === "flight_wave" || event.event_type === "flight_forecast";
+                  // Nom court (premier mot significatif) pour rester sur une seule ligne.
+                  const shortName = (event.name || "").split(" ").slice(0, 2).join(" ");
+                  const boost = (event.demand_boost ?? 1);
+                  const pax = event.expected_attendance;
+                  const paxLabel = pax ? (pax >= 1000 ? `${Math.round(pax / 1000)}k pax` : `${pax} pax`) : null;
                   return (
-                    <div key={event.id} className="p-3">
-                      <p className="text-xs font-medium flex items-center gap-1">
-                        {isFlightEvt ? <Plane size={10} className="text-sky-400 shrink-0" /> : <Zap size={10} className="text-amber-400 shrink-0" />}
-                        <span className="truncate">{event.name}</span>
-                      </p>
-                      <p className="text-[10px] text-muted-foreground">{event.zone?.name}</p>
-                      <div className="flex items-center gap-1 mt-1">
-                        <Badge className="text-[10px] mt-0 py-0" variant="secondary">
-                          {isFlightEvt ? "✈" : "⚡"} Boost ×{(event.demand_boost ?? 1).toFixed(2)}
-                        </Badge>
-                        {event.expected_attendance && (
-                          <span className="text-[9px] text-muted-foreground">~{event.expected_attendance} pax</span>
-                        )}
-                      </div>
+                    <div key={event.id} className="px-3 py-2 flex items-center gap-1.5 text-[11px]">
+                      <span className="shrink-0">{isFlightEvt ? "✈" : "⚡"}</span>
+                      <span className="font-medium truncate">{shortName}</span>
+                      <span className="ml-auto text-muted-foreground shrink-0 whitespace-nowrap">×{boost.toFixed(1)}{paxLabel ? ` · ${paxLabel}` : ""}</span>
                     </div>
                   );
                 })}

@@ -601,6 +601,10 @@ export default function SmartPlanPage() {
   const isLoading = mutation.isPending;
   const error = mutation.error;
 
+  // Sections désactivées (conservées pour réactivation future). Type `boolean`
+  // (et non littéral `false`) pour que le narrowing des gardes `&& plan` s'applique.
+  const SHOW_LEGACY_SECTIONS: boolean = false;
+
   // ── Rendu ─────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col min-h-screen bg-background text-foreground pb-24">
@@ -737,7 +741,8 @@ export default function SmartPlanPage() {
             </div>
           )}
 
-          {/* ── SECTION 3 : ETA Aéroports + Vols temps réel ── */}
+          {/* ── SECTION 3 : ETA Aéroports + Vols temps réel ── (DÉSACTIVÉE — redondant avec onglet Trajet ; conservée pour réactivation future) */}
+          {SHOW_LEGACY_SECTIONS && plan && (
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <Plane size={14} className="text-cyan-400" />
@@ -771,9 +776,10 @@ export default function SmartPlanPage() {
               ))}
             </div>
           </div>
+          )}
 
-          {/* ── SECTION 4 : TOP ZONES MAINTENANT ── */}
-          {plan.topZonesNow.length > 0 && (
+          {/* ── SECTION 4 : TOP ZONES MAINTENANT ── (DÉSACTIVÉE — redondant avec la Carte ; conservée pour réactivation future) */}
+          {SHOW_LEGACY_SECTIONS && plan && plan.topZonesNow.length > 0 && (
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <MapPin size={14} className="text-emerald-400" />
@@ -805,10 +811,25 @@ export default function SmartPlanPage() {
               </span>
             </div>
             <div className="relative">
-              {plan.timeline.map((entry, i) => (
-                <TimelineRow key={`${entry.time}_${entry.zoneId}_${i}`} entry={entry} isFirst={i === 0} />
-              ))}
-              {plan.timeline.length === 0 && (
+              {(() => {
+                const upcomingSlots = plan.timeline
+                  .filter(t => !t.isPast)
+                  .slice(0, 5);
+                const remaining = plan.timeline.filter(t => !t.isPast).length - 5;
+                return (
+                  <>
+                    {upcomingSlots.map((entry, i) => (
+                      <TimelineRow key={`${entry.time}_${entry.zoneId}_${i}`} entry={entry} isFirst={i === 0} />
+                    ))}
+                    {remaining > 0 && (
+                      <p className="text-xs text-muted-foreground text-center py-2">
+                        + {remaining} créneaux à venir
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
+              {plan.timeline.filter(t => !t.isPast).length === 0 && (
                 <p className="text-sm text-muted-foreground text-center py-6">
                   Aucun créneau identifié pour la journée.
                 </p>

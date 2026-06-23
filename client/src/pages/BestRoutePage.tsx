@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
 import { GpsFreshness } from "@/components/GpsFreshness";
@@ -814,6 +815,12 @@ export default function BestRoutePage() {
         </div>
       )}
       {result && renderResult(result)}
+
+      {/* Liens discrets vers Trajet de retour & Profil (déplacés depuis la nav) */}
+      <div className="flex gap-4 justify-center mt-4 mb-2">
+        <Link href="/return-journey" className="text-xs text-muted-foreground underline" data-testid="link-return-journey">← Trajet de retour</Link>
+        <Link href="/profile" className="text-xs text-muted-foreground underline" data-testid="link-profile">⚙ Profil</Link>
+      </div>
     </div>
   );
 }

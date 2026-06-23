@@ -240,7 +240,8 @@ function buildDailyAgg(rides: Ride[], profile: DriverProfile): DailyAgg {
     if (e.isProfitable) profitable += 1;
     const h = new Date(r.timestamp).getHours();
     const b = buckets.get(h) ?? { sum: 0, count: 0 };
-    b.sum += e.hourlyRate;
+    const cappedRate = Math.min(e.hourlyRate, 150); // plafond réaliste 150€/h (rides simulés = duration_min très faible → taux absurdes)
+    b.sum += cappedRate;
     b.count += 1;
     buckets.set(h, b);
   }
@@ -601,6 +602,10 @@ export default function EconomicsDashboard() {
   const hasRides = agg.totalRides > 0;
   const target = profile.hourly_target_income * WORK_HOURS;
 
+  // Sections désactivées (conservées pour réactivation future). Type `boolean`
+  // (et non littéral `false`) pour que le narrowing de `&& eco` s'applique.
+  const SHOW_LEGACY_SECTIONS: boolean = false;
+
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-5">
       {/* Header */}
@@ -682,7 +687,8 @@ export default function EconomicsDashboard() {
         )}
       </section>
 
-      {/* SECTION 2 — Analyse des coûts */}
+      {/* SECTION 2 — Analyse des coûts (DÉSACTIVÉE — conservée pour réactivation future) */}
+      {SHOW_LEGACY_SECTIONS && (
       <section>
         <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2 font-medium">
           Analyse des coûts
@@ -720,6 +726,7 @@ export default function EconomicsDashboard() {
           </div>
         )}
       </section>
+      )}
 
       {/* SECTION 3 — Heatmap zones 93 */}
       <section>
@@ -772,7 +779,8 @@ export default function EconomicsDashboard() {
         )}
       </section>
 
-      {/* SECTION 4 — Insights actionnables */}
+      {/* SECTION 4 — Insights actionnables (DÉSACTIVÉE — conservée pour réactivation future) */}
+      {SHOW_LEGACY_SECTIONS && (
       <section>
         <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2 font-medium">
           Insights actionnables
@@ -795,8 +803,10 @@ export default function EconomicsDashboard() {
           </CardContent>
         </Card>
       </section>
+      )}
 
-      {/* SECTION 5 — Comparatif cibles vs réalisé */}
+      {/* SECTION 5 — Comparatif cibles vs réalisé (DÉSACTIVÉE — conservée pour réactivation future) */}
+      {SHOW_LEGACY_SECTIONS && (
       <section>
         <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2 font-medium">
           Réalisé vs cible {profile.hourly_target_income}€/h — par tranche horaire
@@ -836,8 +846,10 @@ export default function EconomicsDashboard() {
           </CardContent>
         </Card>
       </section>
+      )}
 
-      {/* SECTION 6 — Journée : temps roulé & km à vide estimé */}
+      {/* SECTION 6 — Journée : temps roulé & km à vide estimé (DÉSACTIVÉE — conservée pour réactivation future) */}
+      {SHOW_LEGACY_SECTIONS && eco && (
       <section>
         <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
           <Clock size={13} className="text-primary" /> Journée — temps roulé &amp; km à vide estimé
@@ -891,6 +903,7 @@ export default function EconomicsDashboard() {
           </CardContent>
         </Card>
       </section>
+      )}
 
       {/* Bouton de calibrage (mutation profil) */}
       <div className="flex justify-end">

@@ -3793,8 +3793,10 @@ export const storage: IStorage = {
         if (rate > bestRate) { bestRate = rate; best_hour = h; }
         if (rate < worstRate) { worstRate = rate; worst_hour = h; }
       }
-      best_hour_rate = r1(bestRate);
-      worst_hour_rate = r1(worstRate);
+      // Plafond réaliste 150€/h : rides simulés (duration très faible) produisent
+      // des taux horaires impossibles (ex. 2417€/h). On borne avant affichage.
+      best_hour_rate = r1(Math.min(bestRate, 150));
+      worst_hour_rate = r1(Math.min(worstRate, 150));
     }
 
     return {
