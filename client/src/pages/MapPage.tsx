@@ -13,6 +13,7 @@ import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 import { PredictHQBadge } from "@/components/PredictHQBadge";
 import { usePredictHQ } from "@/hooks/usePredictHQ";
 import { useZonesSummary } from "@/hooks/useZonesSummary";
+import { useRepositioningAlerts } from "@/hooks/useRepositioningAlerts";
 
 const COLORS = { ultraHigh: "#22c55e", high: "#86efac", medium: "#fbbf24", low: "#f97316", veryLow: "#ef4444" };
 
@@ -212,6 +213,7 @@ export default function MapPage() {
   const markersRef = useRef<any[]>([]);
   const eventMarkersRef = useRef<any[]>([]);
   const flightMarkersRef = useRef<any[]>([]);
+  const sncfMarkersRef = useRef<any[]>([]);
   const phqEventMarkersRef = useRef<any[]>([]);   // markers PredictHQ (rank-based)
   const heatLayersRef = useRef<any[]>([]);        // overlays heatmap de boost
   const driverMarkerRef = useRef<any>(null);
@@ -235,6 +237,10 @@ export default function MapPage() {
     effectiveBoostByZone[zid] = Math.max(effectiveBoostByZone[zid] ?? 1.0, b);
   }
 
+  // ── Alertes de repositionnement GPS (zones chaudes <10 min) ──────────────
+  // nearbyAlerts = alertes 'repositioning' actives dans un rayon 5 km.
+  const { nearbyAlerts } = useRepositioningAlerts();
+
   /** Centre la carte sur une zone (depuis le panel événements). */
   function focusZone(zoneId: string | undefined) {
     if (!zoneId || !mapInstance.current) return;
@@ -251,11 +257,31 @@ export default function MapPage() {
   const { data: profitability = [] } = useQuery({ queryKey: ["/api/profitability", selectedHour, dayType, position.lat, position.lng], queryFn: () => apiRequest("GET", `/api/profitability?hour=${selectedHour}&dayType=${dayType}&lat=${position.lat}&lng=${position.lng}`).then(r => r.json()), refetchInterval: REALTIME_INTERVAL });
   const { data: topZones = [] } = useQuery({ queryKey: ["/api/top-zones", selectedHour, dayType], queryFn: () => apiRequest("GET", `/api/top-zones?hour=${selectedHour}&dayType=${dayType}&limit=5`).then(r => r.json()), refetchInterval: REALTIME_INTERVAL });
   const { data: events = [] } = useQuery({ queryKey: ["/api/events"], queryFn: () => apiRequest("GET", "/api/events").then(r => r.json()), refetchInterval: SLOW_INTERVAL, staleTime: 20_000 });
+  // Météo Open-Meteo — refetch toutes les 15min (aligné sur le cache backend TTL 15min)
+  const { data: weather } = useQuery<{ condition: { code: number; description: string; precipitation_mm: number; windspeed_kmh: number; demand_boost: number; icon: string; updated_at: string }; zones_impacted: string[] }>({
+    queryKey: ["/api/weather/current"],
+    queryFn: () => apiRequest("GET", "/api/weather/current").then(r => r.json()),
+    refetchInterval: 900000, // 15 min
+    staleTime: 600_000,
+  });
   const { data: flightData } = useQuery({
     queryKey: ["/api/flights"],
     queryFn: () => apiRequest("GET", "/api/flights").then(r => r.json()),
     refetchInterval: 3 * 60 * 1000, // 3 min (aligné sur cache backend TTL 3min)
     staleTime: 2 * 60 * 1000,
+  });
+  // Signaux SNCF trains (heuristique) — rafraîchi toutes les 5 min (cache backend TTL 5min)
+  const { data: sncfData } = useQuery<{
+    active_signals: Array<{
+      gare_id: string; gare_name: string; heure: number; departures_count: number;
+      is_peak: boolean; zones_impacted: string[]; demand_boost: number; type: string; updated_at: string;
+    }>;
+    total_boost: number; peak_zones: string[]; next_peak_hour: number; updated_at: string;
+  }>({
+    queryKey: ["/api/sncf/signals"],
+    queryFn: () => apiRequest("GET", "/api/sncf/signals").then(r => r.json()),
+    refetchInterval: 300000, // 5 min
+    staleTime: 4 * 60 * 1000,
   });
   // Statut routing ETA temps réel (TomTom / OSRM / Calibré) — rafraîchi toutes les 3s.
   const { data: routingStatus } = useQuery({
@@ -524,6 +550,51 @@ export default function MapPage() {
     render();
   }, [flightData]);
 
+  // Markers gares SNCF — affichés si boost SNCF > 0.15 (orange 0.15-0.25, rouge >0.25)
+  useEffect(() => {
+    const render = () => {
+      const L = (window as any).L;
+      if (!L || !mapInstance.current) { setTimeout(render, 400); return; }
+      sncfMarkersRef.current.forEach(m => m.remove());
+      sncfMarkersRef.current = [];
+      const signals = sncfData?.active_signals ?? [];
+      if (!signals.length) return;
+
+      // Coordonnées GPS des gares (alignées sur GARE_ZONE_MAPPING côté serveur)
+      const gareCoords: Record<string, [number, number]> = {
+        gare_du_nord: [48.8809, 2.3553],
+        gare_cdg: [49.0044, 2.5703],
+        villepinte_expo: [48.9744, 2.5159],
+        stade_de_france: [48.9245, 2.3601],
+      };
+
+      signals.forEach((sig) => {
+        if (sig.demand_boost <= 0.15) return; // seuil d'affichage
+        const coord = gareCoords[sig.gare_id];
+        if (!coord) return;
+        const color = sig.demand_boost > 0.25 ? "#dc2626" : "#f97316"; // rouge / orange
+        const pct = Math.round(sig.demand_boost * 100);
+        const icon = L.divIcon({
+          className: "",
+          html: `<div title="${sig.gare_name} — +${pct}% demande" style="font-size:18px;cursor:pointer;filter:drop-shadow(0 0 5px ${color});">🚉</div>`,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11],
+        });
+        const m = L.marker(coord, { icon, zIndexOffset: 800 }).addTo(mapInstance.current);
+        m.bindPopup(`
+          <div style="font-size:12px;min-width:200px;">
+            <strong>🚉 ${sig.gare_name}</strong><br>
+            <span style="color:${color};font-weight:700;">+${pct}% demande</span> | ${sig.departures_count} trains/h<br>
+            <span style="color:#94a3b8;">${sig.type.toUpperCase()}${sig.is_peak ? " · heure de pointe" : ""}</span><br>
+            Zones : ${sig.zones_impacted.join(", ")}
+          </div>
+        `);
+        sncfMarkersRef.current.push(m);
+      });
+    };
+    render();
+  }, [sncfData]);
+
   const fmtH = (h: number) => `${h.toString().padStart(2,"0")}:00`;
 
   return (
@@ -531,6 +602,38 @@ export default function MapPage() {
       <MapLoader />
       {/* Animation pulsante pour la heatmap de boost PredictHQ (boost ≥ 2.0) */}
       <style>{`@keyframes phqHeatPulse{0%,100%{opacity:0.35;}50%{opacity:0.7;}} .phq-heat-pulse{animation:phqHeatPulse 1.8s ease-in-out infinite;}`}</style>
+
+      {/* ── Badge alertes de repositionnement GPS (zones chaudes <10 min) ──── */}
+      {/* Affiché si au moins une alerte 'repositioning' active dans 5 km. */}
+      {/* Clic → recentre la carte sur la zone. Disparaît quand l'alerte expire. */}
+      {nearbyAlerts.length > 0 && (
+        <div className="flex flex-col gap-1 px-3 py-2 bg-orange-500/10 border-b border-orange-500/40" data-testid="reposition-alerts">
+          {nearbyAlerts.slice(0, 3).map((a) => {
+            // Extraire le temps (Xmin) depuis le titre pour l'affichage compact.
+            const minMatch = a.title.match(/(\d+)\s*min/);
+            const minLabel = minMatch ? `${minMatch[1]} min` : "";
+            return (
+              <button
+                key={a.id}
+                onClick={() => focusZone(a.zone_id)}
+                className="w-full flex items-center gap-2 rounded-md bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/50 px-2.5 py-1.5 text-left transition-colors"
+                data-testid={`reposition-badge-${a.zone_id ?? a.id}`}
+                title={a.message}
+              >
+                <span className="text-base shrink-0">📍</span>
+                <span className="flex-1 min-w-0">
+                  <span className="block text-[12px] font-bold text-orange-200 truncate">{a.title}</span>
+                  <span className="block text-[10px] text-orange-300/80 truncate">{a.message}</span>
+                </span>
+                {minLabel && (
+                  <span className="shrink-0 text-[11px] font-semibold text-orange-200 whitespace-nowrap">Zone chaude à {minLabel}</span>
+                )}
+                <Navigation size={14} className="text-orange-300 shrink-0" />
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Barre de contrôle heure/jour */}
       <div className="bg-card border-b border-border px-3 py-2 flex items-center gap-3 flex-wrap">
@@ -565,6 +668,21 @@ export default function MapPage() {
                   <> dans <span className="text-amber-400 font-bold">{Math.round(phqNextEvent.hours_until_start)}h</span></>
                 )}
               </span>
+            )}
+          </div>
+        )}
+        {/* Badge météo : visible uniquement par pluie/orage/neige (boost > 0) */}
+        {weather && weather.condition && weather.condition.demand_boost > 0 && (
+          <div
+            className="flex items-center gap-1.5 rounded-md bg-sky-500/10 border border-sky-500/30 px-2 py-1 text-[11px]"
+            data-testid="weather-indicator"
+            title={`Météo Open-Meteo — ${weather.condition.description}`}
+          >
+            <span className="text-sm leading-none">{weather.condition.icon}</span>
+            <span className="text-sky-300 font-semibold">{weather.condition.description}</span>
+            <span className="text-sky-400 font-bold">+{Math.round(weather.condition.demand_boost * 100)}% demande</span>
+            {weather.condition.precipitation_mm > 0 && (
+              <span className="text-muted-foreground hidden lg:inline">· {weather.condition.precipitation_mm.toFixed(1)} mm</span>
             )}
           </div>
         )}

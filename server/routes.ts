@@ -13,10 +13,14 @@ import {
   isZonePeakHour,
   getTrend,
   getSupplyDynamics,
+  generateRepositioningAlerts,
+  setLastDriverGps,
   type SignalWeights,
   type Regime,
 } from "./storage";
 import { getFlightData, getFlightBoostForZone } from "./flightService";
+import { getSncfSignals, getZoneSncfBoost, GARE_ZONE_MAPPING } from "./sncfService";
+import { getCurrentWeather } from "./weatherService";
 import {
   testTomTomConnection,
   testGigDataConnection,
@@ -262,6 +266,57 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       res.json(data);
     } catch (err) {
       res.status(500).json({ error: "Erreur récupération données vols", details: String(err) });
+    }
+  });
+
+  // ── Météo Open-Meteo : condition actuelle + zones impactées ──────────────────
+  // zones_impacted = toutes les zones SAUF les aéroports (CDG/Orly moins
+  // impactés par la pluie) lorsque le boost météo est > 0. Liste vide si temps clair.
+  app.get("/api/weather/current", async (_req, res) => {
+    try {
+      const condition = await getCurrentWeather();
+      let zones_impacted: string[] = [];
+      if (condition.demand_boost > 0) {
+        const allZones = storage.getAllZones() as any[];
+        zones_impacted = allZones
+          .filter((z: any) => z.type !== "airport")
+          .map((z: any) => z.id);
+      }
+      res.json({ condition, zones_impacted });
+    } catch (err) {
+      res.status(500).json({ error: "Erreur récupération météo", details: String(err) });
+    }
+  });
+
+  // ── Signaux SNCF trains (heuristique, sans token) ──────────────────────────
+  // GET /api/sncf/signals → SncfStats actuel (ou ?hour=HH pour une heure précise)
+  app.get("/api/sncf/signals", async (req, res) => {
+    try {
+      const _h = parseInt(req.query.hour as string);
+      const hour = isNaN(_h) ? undefined : ((_h % 24) + 24) % 24;
+      const data = await getSncfSignals(hour);
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: "Erreur calcul signaux SNCF", details: String(err) });
+    }
+  });
+
+  // GET /api/sncf/zones → { zone_id, boost }[] pour l'heure courante (ou ?hour=HH)
+  app.get("/api/sncf/zones", (req, res) => {
+    try {
+      const _h = parseInt(req.query.hour as string);
+      const hour = isNaN(_h) ? (new Date().getUTCHours() + 2) % 24 : ((_h % 24) + 24) % 24;
+      // Ensemble unique des zones référencées par les gares
+      const zoneIds = Array.from(
+        new Set(Object.values(GARE_ZONE_MAPPING).flatMap((g) => g.zones))
+      );
+      const result = zoneIds.map((zone_id) => ({
+        zone_id,
+        boost: getZoneSncfBoost(zone_id, hour),
+      }));
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: "Erreur calcul zones SNCF", details: String(err) });
     }
   });
 
@@ -710,6 +765,27 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     (storage as any).generateDynamicAlerts?.() ?? null;
     const alerts = storage.getActiveAlerts();
     res.json({ success: true, count: alerts.length, alerts });
+  });
+
+  // POST /api/alerts/repositioning — alertes de repositionnement géolocalisées.
+  // Le client envoie sa position GPS ; le backend génère des alertes pour les
+  // zones chaudes atteignables en <10 min, puis renvoie les alertes actives
+  // de type 'repositioning'. Les coords sont aussi mémorisées pour le cycle 3min.
+  app.post("/api/alerts/repositioning", (req, res) => {
+    const lat = Number(req.body?.lat);
+    const lng = Number(req.body?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return res.status(400).json({ error: "lat/lng requis (nombres)" });
+    }
+    // Mémoriser pour que le cycle 3min puisse rafraîchir les alertes.
+    setLastDriverGps(lat, lng);
+    // Purger les alertes expirées avant génération.
+    storage.clearExpiredAlerts();
+    generateRepositioningAlerts(lat, lng);
+    // Renvoyer uniquement les alertes repositionnement actives.
+    const alerts = (storage.getActiveAlerts() as any[])
+      .filter((a) => a.type === "repositioning");
+    res.json({ generated: alerts.length, alerts });
   });
 
   app.get("/api/rides/stats", (_req, res) => { res.json(storage.getRideStats()); });
@@ -2629,6 +2705,16 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       res.json(storage.getDriverPerformance());
     } catch (err) {
       console.error("[driver-performance] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ─── Métriques Éco temps réel : taux km à vide + €/h & €/km réels ──────────
+  app.get("/api/economics/metrics", (_req, res) => {
+    try {
+      res.json(storage.getEcoMetrics());
+    } catch (err) {
+      console.error("[economics/metrics] error:", err);
       res.status(500).json({ error: String(err) });
     }
   });

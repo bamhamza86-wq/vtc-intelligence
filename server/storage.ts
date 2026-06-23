@@ -1,6 +1,8 @@
 import Database from "better-sqlite3";
 import { Zone, ProfitabilityScore, Event, Ride, Alert, DriverProfile, InsertAlert, InsertRide, InsertDriverProfile } from "@shared/schema";
 import { getCongestedETA, computeBreakEvenPenalty, CALIBRATED_DATA as ROUTING_CALIBRATED } from "./routingCache";
+import { getZoneSncfBoost, getSncfSignalsSync } from "./sncfService";
+import { refreshWeather, getWeatherBoost, getCachedWeather } from "./weatherService";
 
 const sqlite = new Database("data.db");
 // ← audit G: pragmas SQLite production (WAL + cache + synchronous NORMAL)
@@ -1345,6 +1347,31 @@ function computeScore(
     console.warn(`[seeds] H1 applyHourlyOverride ${zone.id} h${h}:`, e);
   }
 
+  // ── Météo Open-Meteo : pluie/orage/neige → demande VTC ↑ ──────────────────
+  // Lecture sync depuis le cache (TTL 15min). Boost additionnel pondéré 80%.
+  // Ne s'applique qu'en journée (7h-23h) : la nuit la demande dépend peu de la météo.
+  // Anti-surestimation stricte : résultat ≤ score_avant_météo × 1.20 (+20% max).
+  // isFallback (API indisponible) → getWeatherBoost()=0 → aucun effet silencieux.
+  const weatherBoost = getWeatherBoost();
+  if (weatherBoost > 0 && h >= 7 && h <= 23) {
+    const demandBeforeWeather = demandBase;
+    demandBase += demandBase * weatherBoost * 0.8; // pondéré 80%
+    // Garde-fou anti-surestimation : +20% maximum sur le score pré-météo
+    demandBase = Math.min(demandBase, demandBeforeWeather * 1.20);
+  }
+
+  // ── Signal SNCF trains (heuristique, sans API externe) ──────────────────────
+  // Boost de demande lié aux arrivées/départs trains dans les gares 93/Paris.
+  // Pondéré à 70 % puis plafonné : le résultat ne peut dépasser le score
+  // avant SNCF de +20 % (anti-surestimation, contrainte métier).
+  const demandBeforeSncf = demandBase;
+  const sncfBoost = getZoneSncfBoost(zone.id, h);
+  if (sncfBoost > 0) {
+    demandBase += demandBase * sncfBoost * 0.7; // pondéré 70%
+    // Anti-surestimation : résultat ≤ score_avant_sncf × 1.20
+    demandBase = Math.min(demandBase, demandBeforeSncf * 1.20);
+  }
+
   demandBase *= dayCo.demand;
   const v = Math.sin(seedVariance * 7.3 + h * 0.5) * 0.07;
   const demand = Math.min(100, Math.max(5, demandBase * (1 + v)));
@@ -2523,6 +2550,32 @@ function generateDynamicAlerts(): void {
     }
   }
 
+  // ── RÈGLE 5b : Affluence gare SNCF — signal trains fort (boost > 0.20) ──────
+  // Signal 100% heuristique (sncfService) : si une gare a un boost SNCF fort à
+  // l'heure courante, créer une alerte train_surge sur la zone la plus impactée.
+  if (alertsGenerated.length < 8) {
+    const sncf = getSncfSignalsSync(h);
+    for (const sig of sncf.active_signals) {
+      if (alertsGenerated.length >= 8) break;
+      if (sig.demand_boost <= 0.20) continue; // seuil signal fort
+      // Choisir la première zone impactée non encore couverte par une alerte
+      const targetZone = sig.zones_impacted.find((z) => !alertsGenerated.includes(z))
+        ?? sig.zones_impacted[0];
+      if (!targetZone || alertsGenerated.includes(targetZone)) continue;
+      const pct = Math.round(sig.demand_boost * 100);
+      const expires = new Date(now.getTime() + 2 * 3600000).toISOString();
+      insA.run(
+        "train_surge",
+        `🚉 Affluence gare — ${sig.gare_name} +${pct}%`,
+        `Pic trains ${sig.type.toUpperCase()} à ${sig.gare_name} (~${sig.departures_count} départs/h). ` +
+        `Reports voyageurs vers VTC : ${sig.zones_impacted.join(", ")}. ` +
+        `Boost demande +${pct}%${sig.is_peak ? " (heure de pointe)" : ""}.`,
+        targetZone, "medium", null, expires, now.toISOString()
+      );
+      alertsGenerated.push(targetZone);
+    }
+  }
+
   // ── THÈME 7 : Alertes danger route + météo sévère ──────────────────────────
   // RÈGLE 6 : météo sévère — probabilité simulée 10% en horaires nocturnes
   const isNightHours = h < 6 || h > 22;
@@ -2577,7 +2630,165 @@ function generateDynamicAlerts(): void {
     }
   }
 
+  // ── RÈGLE MÉTÉO : pluie forte / orage (boost > 0.20) → alerte globale ──────────
+  // Demande VTC fortement boostée par temps de pluie soutenue ou d'orage.
+  // Alerte non rattachée à une zone (impact global IDF), TTL 30min.
+  try {
+    const wBoost = getWeatherBoost();
+    if (wBoost > 0.20) {
+      const cond = getCachedWeather();
+      const pct = Math.round(wBoost * 100);
+      const icon = cond?.icon ?? "🌧️";
+      const desc = cond?.description ?? "Pluie forte";
+      const wExpires = new Date(now.getTime() + 30 * 60000).toISOString();
+      const precipStr = cond && cond.precipitation_mm > 0 ? ` Précipitations ${cond.precipitation_mm.toFixed(1)} mm.` : "";
+      const windStr = cond && cond.windspeed_kmh > 0 ? ` Vent ${cond.windspeed_kmh.toFixed(0)} km/h.` : "";
+      insA.run(
+        "weather_alert",
+        `${icon} ${desc} — demande +${pct}%`,
+        `${desc} sur l'Île-de-France : la demande VTC grimpe (+${pct}% estimé).${precipStr}${windStr} ` +
+        `Privilégiez les zones urbaines (gares, centres) — aéroports moins impactés.`,
+        null, "high", null, wExpires, now.toISOString()
+      );
+    }
+  } catch (e) {
+    console.warn("[storage] weather_alert:", e);
+  }
+
   console.log(`[storage] generateDynamicAlerts: ${alertsGenerated.length} alertes générées (h=${h}, dayType=${dayType})`);
+}
+
+
+// ─── Alertes de repositionnement géolocalisées (GPS) ───────────────────────
+// Génère des alertes "repositioning" quand une zone chaude est atteignable
+// en moins de 10 min de conduite (rayon ≤ 5 km à 30 km/h conservateur IDF).
+//
+// Trigger métier : profitability_index > 65 ET phq_boost > 1.15 ET
+//                  distance chauffeur→zone < 5 km ET aucune alerte
+//                  type='repositioning' déjà active pour cette zone.
+// Anti-spam : max 1 alerte repositionnement par zone par heure.
+
+/** Distance haversine (km) entre deux points GPS (lat/lng en degrés). */
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371; // rayon moyen terrestre (km)
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// Vitesse moyenne conservatrice en Île-de-France (km/h)
+const REPOSITION_AVG_SPEED_KMH = 30;
+// Rayon max = 30 km/h × (10/60) h = 5 km (≈ 10 min de conduite)
+const REPOSITION_MAX_KM = REPOSITION_AVG_SPEED_KMH * (10 / 60); // 5 km
+
+const stmtInsertReposAlert = sqlite.prepare(
+  "INSERT INTO alerts (type,title,message,zone_id,priority,estimated_revenue,expires_at,created_at,is_read) VALUES ('repositioning',?,?,?,?,?,?,?,0)"
+);
+// Alerte repositionnement déjà active (expires_at futur) pour cette zone ?
+const stmtActiveReposAlert = sqlite.prepare(
+  "SELECT 1 FROM alerts WHERE type='repositioning' AND zone_id=? AND expires_at > ? LIMIT 1"
+);
+// Anti-spam horaire : alerte repositionnement créée durant l'heure courante ?
+const stmtReposAlertThisHour = sqlite.prepare(
+  "SELECT 1 FROM alerts WHERE type='repositioning' AND zone_id=? AND created_at >= ? LIMIT 1"
+);
+
+/**
+ * Génère des alertes de repositionnement pour les zones chaudes proches du
+ * chauffeur. Idempotent : ne crée pas de doublon si une alerte est déjà active
+ * pour la zone (ou déjà créée durant l'heure courante — anti-spam).
+ */
+export function generateRepositioningAlerts(driverLat: number, driverLng: number): void {
+  if (!Number.isFinite(driverLat) || !Number.isFinite(driverLng)) return;
+
+  const now = new Date();
+  // 1) Heure courante CEST (UTC+2) — cohérent avec le reste de l'app
+  const hNowCEST = (now.getUTCHours() + 2) % 24;
+  const dayType = [0, 6].includes(now.getDay()) ? "weekend" : "weekday";
+  const nowIso = now.toISOString();
+  // Fenêtre anti-spam : début de l'heure courante (heure locale système)
+  const hourStartIso = new Date(
+    now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), 0, 0, 0
+  ).toISOString();
+  // expires_at = maintenant + 15 minutes
+  const expIso = new Date(now.getTime() + 15 * 60 * 1000).toISOString();
+
+  // 2) Charger tous les scores profitability de l'heure courante (avec coords zone)
+  const rows = sqlite.prepare(
+    `SELECT ps.zone_id, ps.profitability_index, ps.phq_boost,
+            z.name AS zone_name, z.lat AS zone_lat, z.lng AS zone_lng
+       FROM profitability_scores ps
+       JOIN zones z ON z.id = ps.zone_id
+      WHERE ps.hour = ? AND ps.day_type = ?
+      ORDER BY ps.profitability_index DESC`
+  ).all(hNowCEST, dayType) as {
+    zone_id: string; profitability_index: number; phq_boost: number | null;
+    zone_name: string; zone_lat: number; zone_lng: number;
+  }[];
+
+  let generated = 0;
+  const tx = sqlite.transaction(() => {
+    for (const r of rows) {
+      const index = r.profitability_index;
+      const boost = r.phq_boost ?? 1.0;
+
+      // 3) Trigger : zone chaude avec event boost significatif
+      if (!(index > 65 && boost > 1.15)) continue;
+
+      // Distance haversine chauffeur → zone
+      const distKm = haversineKm(driverLat, driverLng, r.zone_lat, r.zone_lng);
+      if (distKm >= REPOSITION_MAX_KM) continue; // hors rayon 5 km (~10 min)
+
+      // Temps estimé conservateur (min) = (distance / 30 km/h) × 60
+      const etaMin = (distKm / REPOSITION_AVG_SPEED_KMH) * 60;
+      const etaMinRounded = Math.max(1, Math.round(etaMin));
+
+      // Anti-doublon : alerte repositionnement déjà active pour cette zone ?
+      if (stmtActiveReposAlert.get(r.zone_id, nowIso)) continue;
+      // Anti-spam horaire : déjà créé une alerte cette heure-ci pour cette zone ?
+      if (stmtReposAlertThisHour.get(r.zone_id, hourStartIso)) continue;
+
+      // Priorité + titre selon l'intensité du score
+      const priority = index > 80 ? "high" : "medium";
+      const icon = index > 80 ? "🔥 Zone chaude" : "📍 Zone active";
+      const title = `${icon} à ${etaMinRounded}min — ${r.zone_name}`;
+      const message =
+        `Score: ${index.toFixed(0)} | Boost: ×${boost.toFixed(1)} | ` +
+        `Distance: ${distKm.toFixed(1)} km | ~${etaMinRounded} min à ${REPOSITION_AVG_SPEED_KMH}km/h`;
+      // estimated_revenue : proxy € = index × 0.30
+      const estRevenue = Math.round(index * 0.30 * 100) / 100;
+
+      try {
+        stmtInsertReposAlert.run(title, message, r.zone_id, priority, estRevenue, expIso, nowIso);
+        generated++;
+      } catch (e) {
+        console.warn(`[repositioning] insert alert ${r.zone_id}:`, e);
+      }
+    }
+  });
+  tx();
+
+  if (generated > 0) {
+    console.log(`[repositioning] ${generated} alerte(s) générée(s) — h=${hNowCEST} CEST, pos=(${driverLat.toFixed(4)},${driverLng.toFixed(4)})`);
+  }
+}
+
+// Dernières coordonnées GPS chauffeur connues (envoyées par le client).
+// Utilisées par le cycle 3 min pour rafraîchir les alertes de repositionnement.
+let _lastDriverGps: { lat: number; lng: number } | null = null;
+export function setLastDriverGps(lat: number, lng: number): void {
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    _lastDriverGps = { lat, lng };
+  }
+}
+export function getLastDriverGps(): { lat: number; lng: number } | null {
+  return _lastDriverGps;
 }
 
 seedData();
@@ -2586,6 +2797,15 @@ seedData();
 // Recalcule les scores avec les coefficients du jour courant
 // Garantit que toutes les données sont à jour en production
 const REFRESH_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
+
+// ── Météo : refresh espacé (15min) indépendant du cycle 3min ───────────────
+// On ne rafraîchit Open-Meteo qu'une fois toutes les 15min pour respecter le
+// fair-use (le cache interne du weatherService a déjà un TTL 15min, ce garde-fou
+// évite simplement de déclencher un fetch à chaque cycle 3min).
+const WEATHER_REFRESH_MS = 15 * 60 * 1000; // 15 minutes
+let lastWeatherRefresh = 0;
+// Premier chargement météo au démarrage (non bloquant)
+refreshWeather().then(() => { lastWeatherRefresh = Date.now(); }).catch(() => {});
 
 setInterval(() => {
   try {
@@ -2617,6 +2837,19 @@ setInterval(() => {
     const durationMs = Date.now() - t0;
     // Régénérer les alertes dynamiques après recalcul des scores
     generateDynamicAlerts();
+    // ── Météo : refresh Open-Meteo toutes les 15min (pas à chaque cycle 3min) ──
+    if (Date.now() - lastWeatherRefresh >= WEATHER_REFRESH_MS) {
+      lastWeatherRefresh = Date.now();
+      refreshWeather()
+        .then(() => console.log(`[storage] Météo rafraîchie (boost=${getWeatherBoost().toFixed(2)})`))
+        .catch((e) => console.warn("[storage] refreshWeather:", e));
+    }
+    // ── Alertes de repositionnement GPS : régénérées sur les scores frais ──
+    //    si on connaît la dernière position GPS envoyée par le client.
+    try {
+      const gps = getLastDriverGps();
+      if (gps) generateRepositioningAlerts(gps.lat, gps.lng);
+    } catch (e) { console.warn('[repositioning] cycle 3min:', e); }
     // ── H4 : recalibrer supply EMA + tendance 3h + z-score anomalie ──────
     try { recalibrateSupplyDynamics(); } catch(e) { console.warn('[H4] cycle:', e); }
     // ── H3 : mettre à jour variance historique / intervalles de confiance ─
@@ -2646,6 +2879,32 @@ setInterval(() => {
 }, REFRESH_INTERVAL_MS);
 
 // ─── API Storage ──────────────────────────────────────────────────────────────
+
+// ─── Métriques Éco temps réel (taux km à vide, €/h & €/km réels) ─────────────
+// EMPTY_RIDE_RATIO : part estimée de km parcourus "à vide" (sans client) quand
+// aucune donnée réelle n'est disponible. 0.30 = placeholder métier réaliste
+// (un VTC roule ~30% de ses km sans passager : approche, repositionnement).
+export const EMPTY_RIDE_RATIO = 0.30;
+
+export interface EcoMetrics {
+  total_km: number;
+  total_km_vide: number;
+  taux_km_vide: number;          // % km vide / (km vide + km client)
+  eur_per_km_reel: number;       // net total / km total
+  eur_per_hour_reel: number;     // net total / heures travaillées
+  eur_per_hour_target: number;   // depuis driver_profile.hourly_target_income
+  gap_vs_target: number;         // €/h réel - cible
+  rides_per_day: number;         // courses/jour moyennées sur 7 j
+  best_hour: number;             // heure (0-23) du meilleur €/h moyen
+  worst_hour: number;            // heure (0-23) du pire €/h moyen
+  total_rides: number;
+  total_net_eur: number;
+  total_duration_h: number;
+  km_vide_h_est: number;         // heures estimées roulées à vide
+  is_simulated: boolean;         // true si valeurs simulées (aucune ride en DB)
+  best_hour_rate: number;
+  worst_hour_rate: number;
+}
 
 export interface IStorage {
   getAllZones(): any[];
@@ -2694,6 +2953,7 @@ export interface IStorage {
   updateMaintenanceKm(addedKm: number): void;
   getDriverPerformance(): any;
   computeDriverPerformance(period: "daily" | "weekly"): any;
+  getEcoMetrics(): EcoMetrics;
   incrementProfileKm(addedKm: number): void;
   getPlatformCredentials(): any[];
   getPlatformCredential(platform: string): any;
@@ -3424,6 +3684,126 @@ export const storage: IStorage = {
     return { daily: parse(daily), weekly: parse(weekly) };
   },
   computeDriverPerformance: (period) => computeDriverPerformance(period),
+
+  // ─── Métriques Éco temps réel : taux km à vide + €/h & €/km réels ──────────
+  // Calcule depuis les rides existants. Si aucune ride en DB, retourne des
+  // valeurs simulées réalistes (is_simulated=true) pour que l'UI reste non-vide.
+  getEcoMetrics(): EcoMetrics {
+    const profile = stmtGetDriverProfile.get() as any;
+    const target = Number(profile?.hourly_target_income ?? 35);
+    const r2 = (v: number) => Math.round(v * 100) / 100;
+    const r1 = (v: number) => Math.round(v * 10) / 10;
+
+    // Agrégats globaux sur la table rides
+    const agg = sqlite.prepare(
+      `SELECT COUNT(*) AS n,
+              COALESCE(SUM(distance_km), 0) AS km,
+              COALESCE(SUM(duration_min), 0) AS dur,
+              COALESCE(SUM(net_profit), 0) AS net
+         FROM rides`
+    ).get() as any;
+
+    const totalRides = Number(agg?.n ?? 0);
+
+    if (totalRides === 0) {
+      // ─── Valeurs simulées réalistes (aucune ride en DB) ──────────────────
+      const total_km = 180;
+      const total_net_eur = 85;
+      const total_duration_h = 5.8;          // ~12 courses sur ~5,8h de travail
+      const total_km_vide = r1(total_km * EMPTY_RIDE_RATIO);
+      const km_client = total_km - total_km_vide;
+      const eur_per_hour_reel = r1(total_net_eur / total_duration_h);
+      return {
+        total_km,
+        total_km_vide,
+        taux_km_vide: r1((total_km_vide / (total_km_vide + km_client)) * 100),
+        eur_per_km_reel: r2(total_net_eur / total_km),
+        eur_per_hour_reel,
+        eur_per_hour_target: r1(target),
+        gap_vs_target: r1(eur_per_hour_reel - target),
+        rides_per_day: 12,
+        best_hour: 19,
+        worst_hour: 14,
+        total_rides: 12,
+        total_net_eur: r2(total_net_eur),
+        total_duration_h: r1(total_duration_h),
+        km_vide_h_est: r1(total_duration_h * EMPTY_RIDE_RATIO),
+        is_simulated: true,
+        best_hour_rate: r1(target + 8),
+        worst_hour_rate: r1(target - 18),
+      };
+    }
+
+    const total_km = r1(Number(agg.km));
+    const total_net_eur = r2(Number(agg.net));
+    const total_duration_h = Number(agg.dur) / 60;
+
+    // Km à vide estimé (placeholder réaliste : pas de colonne dédiée en DB)
+    const total_km_vide = r1(total_km * EMPTY_RIDE_RATIO);
+    const km_client = Math.max(0, total_km - total_km_vide);
+    const denomKm = total_km_vide + km_client;
+    const taux_km_vide = denomKm > 0 ? r1((total_km_vide / denomKm) * 100) : 0;
+
+    const eur_per_km_reel = total_km > 0 ? r2(total_net_eur / total_km) : 0;
+    const eur_per_hour_reel = total_duration_h > 0 ? r1(total_net_eur / total_duration_h) : 0;
+
+    // Courses/jour sur 7 derniers jours
+    const cutoff7 = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const recent = sqlite.prepare(
+      `SELECT COUNT(*) AS n FROM rides WHERE timestamp >= ?`
+    ).get(cutoff7) as any;
+    const recentN = Number(recent?.n ?? 0);
+    const rides_per_day = recentN > 0 ? r1(recentN / 7) : r1(totalRides / 7);
+
+    // Meilleur / pire €/h par heure de la journée (moyenne hourly_rate groupée).
+    // Group BY heure SQLite (strftime sur timestamp ISO). Record plain object
+    // pour éviter l'itération de Map (incompatible target courant).
+    const byHourRows = sqlite.prepare(
+      `SELECT CAST(strftime('%H', timestamp) AS INTEGER) AS h,
+              AVG(hourly_rate) AS rate
+         FROM rides
+        WHERE timestamp IS NOT NULL
+        GROUP BY h
+        HAVING COUNT(*) > 0`
+    ).all() as any[];
+
+    let best_hour = 19;
+    let worst_hour = 14;
+    let best_hour_rate = 0;
+    let worst_hour_rate = 0;
+    if (byHourRows.length > 0) {
+      let bestRate = -Infinity;
+      let worstRate = Infinity;
+      for (const row of byHourRows) {
+        const h = Number(row.h);
+        const rate = Number(row.rate) || 0;
+        if (rate > bestRate) { bestRate = rate; best_hour = h; }
+        if (rate < worstRate) { worstRate = rate; worst_hour = h; }
+      }
+      best_hour_rate = r1(bestRate);
+      worst_hour_rate = r1(worstRate);
+    }
+
+    return {
+      total_km,
+      total_km_vide,
+      taux_km_vide,
+      eur_per_km_reel,
+      eur_per_hour_reel,
+      eur_per_hour_target: r1(target),
+      gap_vs_target: r1(eur_per_hour_reel - target),
+      rides_per_day,
+      best_hour,
+      worst_hour,
+      total_rides: totalRides,
+      total_net_eur,
+      total_duration_h: r1(total_duration_h),
+      km_vide_h_est: r1(total_duration_h * EMPTY_RIDE_RATIO),
+      is_simulated: false,
+      best_hour_rate,
+      worst_hour_rate,
+    };
+  },
 
   // Diff J vs J-1 pour l'analyse inversée
   getDailyDiff: () => {

@@ -34,6 +34,27 @@ interface DriverProfile {
   prefer_long_rides?: boolean;
 }
 
+// Métriques Éco temps réel renvoyées par GET /api/economics/metrics (snake_case)
+interface EcoMetrics {
+  total_km: number;
+  total_km_vide: number;
+  taux_km_vide: number;
+  eur_per_km_reel: number;
+  eur_per_hour_reel: number;
+  eur_per_hour_target: number;
+  gap_vs_target: number;
+  rides_per_day: number;
+  best_hour: number;
+  worst_hour: number;
+  total_rides: number;
+  total_net_eur: number;
+  total_duration_h: number;
+  km_vide_h_est: number;
+  is_simulated: boolean;
+  best_hour_rate: number;
+  worst_hour_rate: number;
+}
+
 interface RideStats {
   total: number;
   totalNetProfit: number;
@@ -100,6 +121,8 @@ const DEFAULT_PROFILE: DriverProfile = {
 };
 
 const WORK_HOURS = 8;
+// Part estimée des km roulés à vide (miroir UI de EMPTY_RIDE_RATIO côté serveur).
+const EMPTY_RIDE_RATIO_UI = 0.30;
 const UBER_COMMISSION_BENCHMARK = 25; // %
 const FUEL_BENCHMARK = 1.44; // €/course (20km × 7.5L/100 × 1.92€)
 
@@ -172,6 +195,15 @@ function useEconomicsData() {
   const profile: DriverProfile = profileQ.data ?? DEFAULT_PROFILE;
 
   return { profileQ, statsQ, ridesQ, profitQ, distQ, profile };
+}
+
+// Hook dédié aux métriques Éco temps réel (€/h réel, €/km, taux km à vide).
+// refetchInterval 3000ms — cohérent avec le cycle de recalcul de l'app.
+function useEcoMetrics() {
+  return useQuery<EcoMetrics>({
+    queryKey: ["/api/economics/metrics"],
+    refetchInterval: 3_000,
+  });
 }
 
 // Agrégats journaliers calculés depuis les courses + le profil
@@ -254,6 +286,119 @@ function KpiCard({ icon, label, value, sub, color }: {
         {sub && <p className="text-[11px] text-muted-foreground mt-0.5">{sub}</p>}
       </CardContent>
     </Card>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────
+// SECTION « Performance temps réel » — 4 KPI cards basées sur EcoMetrics
+// ────────────────────────────────────────────────────────────────
+
+// Carte KPI spécifique à la performance réelle (valeur + seuil + zone colorée)
+function PerfCard({ icon, label, value, sub, color }: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub?: React.ReactNode;
+  color: string;
+}) {
+  return (
+    <Card className="bg-card border-border" style={{ borderColor: `${color}40` }}>
+      <CardContent className="py-3 px-4">
+        <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+          <span style={{ color }}>{icon}</span>
+          <span>{label}</span>
+        </div>
+        <p className="text-2xl font-bold leading-tight" style={{ color }}>{value}</p>
+        {sub && <div className="text-[11px] text-muted-foreground mt-0.5">{sub}</div>}
+      </CardContent>
+    </Card>
+  );
+}
+
+function PerfRealtimeSection({ eco, loading }: { eco?: EcoMetrics; loading: boolean }) {
+  if (loading || !eco) {
+    return (
+      <section>
+        <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
+          <Zap size={13} className="text-primary" /> Performance temps réel
+        </p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-24 w-full" />)}
+        </div>
+      </section>
+    );
+  }
+
+  const target = eco.eur_per_hour_target || 35;
+
+  // €/h réel : vert si ≥ objectif, orange si ≥ 70% objectif, rouge sinon
+  const hourReel = eco.eur_per_hour_reel;
+  const hourColor =
+    hourReel >= target ? "#22c55e" : hourReel >= target * 0.7 ? "#f59e0b" : "#ef4444";
+
+  // €/km réel : vert si ≥ 1.00, rouge sinon (seuil rentabilité strict)
+  const kmReel = eco.eur_per_km_reel;
+  const kmColor = kmReel >= 1.0 ? "#22c55e" : "#ef4444";
+
+  // Taux km à vide : vert si <20%, orange si <35%, rouge si ≥35%
+  const tauxVide = eco.taux_km_vide;
+  const videColor = tauxVide < 20 ? "#22c55e" : tauxVide < 35 ? "#f59e0b" : "#ef4444";
+
+  // vs Objectif : progress bar colorée (ratio €/h réel / cible, clamp 0..100)
+  const ratio = target > 0 ? Math.max(0, Math.min(100, (hourReel / target) * 100)) : 0;
+  const gap = eco.gap_vs_target;
+  const gapColor = gap >= 0 ? "#22c55e" : gap >= -target * 0.3 ? "#f59e0b" : "#ef4444";
+
+  const frEur = (v: number, d = 1) => `${v.toFixed(d).replace(".", ",")}€`;
+
+  return (
+    <section>
+      <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
+        <Zap size={13} className="text-primary" /> Performance temps réel
+        {eco.is_simulated && (
+          <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-amber-500/50 text-amber-400">
+            estimé
+          </Badge>
+        )}
+      </p>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <PerfCard
+          icon={<Clock size={14} />}
+          label="€/h réel"
+          value={frEur(hourReel)}
+          sub={`objectif ${frEur(target, 0)}/h`}
+          color={hourColor}
+        />
+        <PerfCard
+          icon={<Euro size={14} />}
+          label="€/km réel"
+          value={`${kmReel.toFixed(2).replace(".", ",")}€`}
+          sub="seuil 1€/km"
+          color={kmColor}
+        />
+        <PerfCard
+          icon={<Car size={14} />}
+          label="Km à vide"
+          value={`${tauxVide.toFixed(0)}%`}
+          sub={`cible <20% · ~${eco.total_km_vide.toFixed(0)} km`}
+          color={videColor}
+        />
+        <PerfCard
+          icon={<Target size={14} />}
+          label="vs Objectif"
+          value={`${gap >= 0 ? "+" : ""}${frEur(gap)}/h`}
+          color={gapColor}
+          sub={
+            <div className="mt-1 h-2 rounded-full bg-muted overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all"
+                style={{ width: `${ratio}%`, background: gapColor }}
+              />
+            </div>
+          }
+        />
+      </div>
+    </section>
   );
 }
 
@@ -395,7 +540,9 @@ function buildInsights(agg: DailyAgg, scores: ProfitabilityScore[], profile: Dri
 // ──────────────────────────────────────────────────────────────────────────────
 export default function EconomicsDashboard() {
   const { profileQ, ridesQ, profitQ, distQ, profile } = useEconomicsData();
+  const ecoQ = useEcoMetrics();
   const { boostByZone, activeEventCount } = usePredictHQ();
+  const eco = ecoQ.data;
 
   const rides: Ride[] = ridesQ.data ?? [];
   const scores: ProfitabilityScore[] = profitQ.data ?? [];
@@ -483,6 +630,9 @@ export default function EconomicsDashboard() {
           </Badge>
         </div>
       </div>
+
+      {/* SECTION 0 — Performance temps réel (€/h, €/km, km à vide, vs objectif) */}
+      <PerfRealtimeSection eco={eco} loading={ecoQ.isLoading} />
 
       {/* SECTION 1 — KPIs Journaliers */}
       <section>
@@ -682,6 +832,61 @@ export default function EconomicsDashboard() {
               <p className="text-[11px] text-muted-foreground mt-1 text-center italic">
                 Graphique vide — en attente des premières courses du jour.
               </p>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
+      {/* SECTION 6 — Journée : temps roulé & km à vide estimé */}
+      <section>
+        <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
+          <Clock size={13} className="text-primary" /> Journée — temps roulé &amp; km à vide estimé
+        </p>
+        <Card className="bg-card border-border">
+          <CardContent className="py-3 px-4">
+            {ecoQ.isLoading || !eco ? (
+              <Skeleton className="h-10 w-full" />
+            ) : (
+              <>
+                <p className="text-sm">
+                  Vous avez roulé{" "}
+                  <span className="font-bold text-foreground">
+                    {eco.total_duration_h.toFixed(1).replace(".", ",")}h
+                  </span>
+                  , dont{" "}
+                  <span
+                    className="font-bold"
+                    style={{ color: eco.taux_km_vide >= 35 ? "#ef4444" : eco.taux_km_vide >= 20 ? "#f59e0b" : "#22c55e" }}
+                  >
+                    ~{eco.km_vide_h_est.toFixed(1).replace(".", ",")}h à vide estimé
+                  </span>{" "}
+                  ({eco.taux_km_vide.toFixed(0)}% des km · ~{eco.total_km_vide.toFixed(0)} km sur {eco.total_km.toFixed(0)} km).
+                </p>
+                <div className="flex flex-wrap items-center gap-2 mt-2">
+                  {eco.taux_km_vide >= 20 && (
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] gap-1"
+                      style={{
+                        borderColor: eco.taux_km_vide >= 35 ? "#ef444466" : "#f59e0b66",
+                        color: eco.taux_km_vide >= 35 ? "#ef4444" : "#f59e0b",
+                      }}
+                    >
+                      <AlertTriangle size={11} /> KM VIDE EST. élevé
+                    </Badge>
+                  )}
+                  <Badge variant="outline" className="text-[10px] border-border text-muted-foreground gap-1">
+                    <TrendingUp size={11} /> Meilleure heure : {eco.best_hour}h ({eco.best_hour_rate.toFixed(0)}€/h)
+                  </Badge>
+                  <Badge variant="outline" className="text-[10px] border-border text-muted-foreground gap-1">
+                    <Clock size={11} /> {eco.rides_per_day.toFixed(1)} courses/jour (7j)
+                  </Badge>
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-2">
+                  Estimation à {(EMPTY_RIDE_RATIO_UI * 100).toFixed(0)}% des km — approche, repositionnement et retours à vide.
+                  {eco.is_simulated && " Données simulées (aucune course en base)."}
+                </p>
+              </>
             )}
           </CardContent>
         </Card>
