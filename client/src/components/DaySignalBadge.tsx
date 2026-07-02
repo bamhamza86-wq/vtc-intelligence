@@ -42,13 +42,39 @@ const STATE_CONFIG = {
 
 // ─── Composant ────────────────────────────────────────────────────────────────
 
-export function DaySignalBadge() {
+interface DaySignalBadgeProps {
+  /** compact=true → pastille seule sans label ni score (usage mobile header) */
+  compact?: boolean;
+}
+
+export function DaySignalBadge({ compact = false }: DaySignalBadgeProps) {
   const signal = useDaySignal();
   const cfg    = STATE_CONFIG[signal.state];
 
   const tooltipText = signal.isLoading
     ? "Calcul du signal en cours…"
     : `Score journée : ${signal.score}/100\n${signal.reason}`;
+
+  // ─── Mode compact : pastille seule (mobile header) ────────────────────────
+  if (compact) {
+    return (
+      <div
+        data-testid="day-signal-badge"
+        title={tooltipText}
+        className="flex items-center justify-center w-8 h-8 cursor-default select-none"
+      >
+        <span className="relative flex shrink-0 items-center justify-center w-4 h-4">
+          {cfg.animate && (
+            <span
+              className={`absolute inset-0 rounded-full ${cfg.bg} opacity-40 ${cfg.animate}`}
+              aria-hidden="true"
+            />
+          )}
+          <span className={`relative block w-3 h-3 rounded-full ${cfg.bg} ring-1 ${cfg.ring}`} />
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div

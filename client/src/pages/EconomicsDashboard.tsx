@@ -608,9 +608,10 @@ export default function EconomicsDashboard() {
   const SHOW_LEGACY_SECTIONS: boolean = false;
 
   return (
-    <div className="p-4 max-w-6xl mx-auto space-y-5">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    // ─── EconomicsDashboard — mobile : p-3, overflow-x-auto sur les sections tables ───
+    <div className="p-3 sm:p-4 max-w-6xl mx-auto space-y-4 sm:space-y-5">
+      {/* Header — mobile : stack vertical */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div>
           <h2 className="font-bold text-lg flex items-center gap-2">
             <BarChart2 size={20} className="text-primary" />
@@ -746,6 +747,7 @@ export default function EconomicsDashboard() {
         ) : zoneCards.length === 0 ? (
           <p className="text-xs text-muted-foreground italic">Aucune donnée de zone disponible.</p>
         ) : (
+          <div className="overflow-x-auto">
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
             {zoneCards.map((z) => {
               const color = hourlyColor(z.hourlyNet);
@@ -781,6 +783,7 @@ export default function EconomicsDashboard() {
                 </Card>
               );
             })}
+          </div>
           </div>
         )}
       </section>

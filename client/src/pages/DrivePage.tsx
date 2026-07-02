@@ -18,6 +18,7 @@ import { X, Navigation, TrendingUp } from "lucide-react";
 import { apiRequest, REALTIME_INTERVAL } from "@/lib/queryClient";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
 import { useNextPeakHour } from "@/hooks/useNextPeakHour";
+import { useWakeLock } from "@/hooks/useWakeLock";
 import { haversineKm, estimateRideGain } from "@/lib/geoDistance";
 import { FatigueBanner } from "@/components/FatigueBanner";
 import { DailyGoalBar } from "@/components/DailyGoalBar";
@@ -31,6 +32,9 @@ function fmtCountdown(minutes: number): string {
 }
 
 export default function DrivePage() {
+  // ── Wake Lock — empêche l'écran de s'éteindre pendant la conduite ──────────
+  useWakeLock();
+
   const { position } = useGpsPosition();
   const now = new Date();
   const currentHour = now.getHours();
@@ -48,8 +52,9 @@ export default function DrivePage() {
   const top = topZones[0];
 
   return (
+    // ─── DrivePage — plein écran avec safe-area (notch / Dynamic Island) ────────
     <div
-      className="fixed inset-0 z-[100] bg-black text-white flex flex-col overflow-hidden select-none"
+      className="fixed inset-0 z-[100] bg-black text-white flex flex-col overflow-hidden select-none pt-safe pb-safe"
       data-testid="drive-mode"
       style={{ fontFamily: "Inter, system-ui, sans-serif" }}
     >
@@ -78,8 +83,8 @@ export default function DrivePage() {
         <FatigueBanner />
       </div>
 
-      {/* Corps — 4 grandes zones info */}
-      <div className="flex-1 grid grid-rows-4 gap-4 p-4 md:p-6 min-h-0">
+      {/* Corps — 4 grandes zones info — mobile : auto rows pour tenir sur 375px */}
+      <div className="flex-1 grid grid-rows-[auto_1fr_1fr_1fr_1fr] sm:grid-rows-4 gap-3 sm:gap-4 p-3 sm:p-4 md:p-6 min-h-0 overflow-y-auto">
         {/* Bloc 1 — Où aller */}
         <div className="rounded-3xl bg-emerald-500/10 border-2 border-emerald-500/40 flex items-center gap-4 md:gap-8 px-6 md:px-10 py-4 min-h-0">
           <Navigation size={64} className="text-emerald-400 shrink-0" strokeWidth={2.5} />
@@ -89,7 +94,7 @@ export default function DrivePage() {
             </div>
             {top?.zone ? (
               <>
-                <div className="text-3xl md:text-5xl font-black text-emerald-100 leading-tight truncate">
+                <div className="text-2xl sm:text-3xl md:text-5xl font-black text-emerald-100 leading-tight truncate">
                   {top.zone.name}
                 </div>
                 <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 mt-2 text-emerald-200/90">
@@ -128,7 +133,7 @@ export default function DrivePage() {
             </div>
             {top ? (
               <>
-                <div className="text-5xl md:text-7xl font-black text-amber-100 leading-none tabular-nums">
+                <div className="text-4xl sm:text-5xl md:text-7xl font-black text-amber-100 leading-none tabular-nums">
                   ~
                   {estimateRideGain({
                     avgDistanceKm: top.avg_distance_km ?? top.avgDistanceKm ?? 8,
@@ -189,7 +194,7 @@ export default function DrivePage() {
             {nextPeak.hour != null ? (
               <>
                 <div
-                  className={`text-6xl md:text-8xl font-black leading-none tabular-nums ${
+                  className={`text-4xl sm:text-6xl md:text-8xl font-black leading-none tabular-nums ${
                     nextPeak.imminent ? "text-red-100" : "text-sky-100"
                   }`}
                 >

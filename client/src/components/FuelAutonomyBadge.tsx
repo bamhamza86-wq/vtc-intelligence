@@ -33,16 +33,18 @@ export function FuelAutonomyBadge() {
   };
 
   return (
+    // ─── Compact mobile : badge pill condensé ─────────────────────────────────
     <button
       onClick={handleClick}
       type="button"
-      className="flex items-center gap-1.5 rounded-full border border-white/20 bg-white/5 hover:bg-white/15 active:bg-white/25 px-3 py-1.5 text-[11px] text-white/70 font-medium transition-colors select-none"
+      className="flex items-center gap-1 rounded-full border border-white/20 bg-white/5 hover:bg-white/15 active:bg-white/25 px-2 sm:px-3 py-1 sm:py-1.5 text-[10px] sm:text-[11px] text-white/70 font-medium transition-colors select-none"
       data-testid="fuel-autonomy-badge"
       title="Cliquez pour mettre à jour l'autonomie après un plein"
     >
-      <Fuel size={13} className="shrink-0 text-amber-400" />
+      <Fuel size={12} className="shrink-0 text-amber-400" />
       <span className="tabular-nums">
-        {Math.round(kmProfitableLeft)}km · {fmtH(hoursLeft)}
+        {Math.round(kmProfitableLeft)}km
+        <span className="hidden sm:inline"> · {fmtH(hoursLeft)}</span>
       </span>
     </button>
   );

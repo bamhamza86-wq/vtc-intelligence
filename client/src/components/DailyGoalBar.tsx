@@ -33,15 +33,16 @@ export function DailyGoalBar({ variant }: DailyGoalBarProps) {
   // ── Variante compact ────────────────────────────────────────────────────
   if (variant === "compact") {
     return (
+      // ─── Mobile : ligne unique lisible, tailles réduites ─────────────────
       <div
-        className="flex items-center gap-3 py-2"
+        className="flex items-center gap-2 py-2"
         data-testid="daily-goal-bar"
       >
-        <Target size={14} className={`shrink-0 ${textColor}`} />
+        <Target size={13} className={`shrink-0 ${textColor}`} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between mb-1">
-            <span className="text-xs text-muted-foreground font-medium">Objectif jour</span>
-            <span className={`text-xs font-bold tabular-nums ${textColor}`}>
+            <span className="text-[11px] sm:text-xs text-muted-foreground font-medium">Objectif jour</span>
+            <span className={`text-[11px] sm:text-xs font-bold tabular-nums ${textColor}`}>
               {fmtEur(currentEuros)} / {fmtEur(goalEuros)}
             </span>
           </div>
@@ -64,13 +65,19 @@ export function DailyGoalBar({ variant }: DailyGoalBarProps) {
 
   // ── Variante XXL (DrivePage) ────────────────────────────────────────────
   return (
+    // ─── Variante XXL — icon et texte adaptatifs mobile ──────────────────────
     <div
-      className={`rounded-3xl border-2 ${borderColor} ${bgColor} flex items-center gap-4 md:gap-8 px-6 md:px-10 py-4 min-h-0`}
+      className={`rounded-3xl border-2 ${borderColor} ${bgColor} flex items-center gap-3 sm:gap-4 md:gap-8 px-4 sm:px-6 md:px-10 py-3 sm:py-4 min-h-0`}
       data-testid="daily-goal-bar"
     >
       <Target
+        size={40}
+        className={`${textColor} shrink-0 sm:hidden`}
+        strokeWidth={2.5}
+      />
+      <Target
         size={64}
-        className={`${textColor} shrink-0`}
+        className={`${textColor} shrink-0 hidden sm:block`}
         strokeWidth={2.5}
       />
       <div className="flex-1 min-w-0">
@@ -80,7 +87,7 @@ export function DailyGoalBar({ variant }: DailyGoalBarProps) {
         </div>
 
         {/* Chiffres XXL */}
-        <div className={`text-5xl md:text-7xl font-black leading-none tabular-nums ${textColor.replace("400", "100")}`}>
+        <div className={`text-3xl sm:text-5xl md:text-7xl font-black leading-none tabular-nums ${textColor.replace("400", "100")}`}>
           {fmtEur(currentEuros)}
           <span className={`text-2xl md:text-3xl ml-3 ${textColor} opacity-70`}>
             / {fmtEur(goalEuros)}

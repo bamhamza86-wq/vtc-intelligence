@@ -18,6 +18,7 @@ import { useZonesSummary } from "@/hooks/useZonesSummary";
 import { useRepositioningAlerts } from "@/hooks/useRepositioningAlerts";
 import type { EventProximity } from "@/lib/eventProximity";
 import { RareEventBanner } from "@/components/RareEventBanner";
+import { RoutingSourceBanner } from "@/components/RoutingSourceBanner";
 
 const COLORS = { ultraHigh: "#22c55e", high: "#86efac", medium: "#fbbf24", low: "#f97316", veryLow: "#ef4444" };
 
@@ -317,7 +318,13 @@ export default function MapPage() {
     const tryInit = () => {
       const L = (window as any).L;
       if (!L) { setTimeout(tryInit, 300); return; }
-      const map = L.map(mapRef.current, { center: [48.9180, 2.4350], zoom: 11, zoomControl: true });
+      // ──────────────────────────────────────────────────────────────────────────────
+      // Centrage GPS temps réel : on lit la position singleton (déjà dispo si
+      // watchPosition est actif depuis une autre page) plutôt qu'une constante Paris.
+      // Fallback : Bd Ney (48.8976, 2.3299) si GPS pas encore accordé.
+      const _gpsCenter = (window as any).__gpsLastPosition
+        ?? { lat: 48.8976, lng: 2.3299 };
+      const map = L.map(mapRef.current, { center: [_gpsCenter.lat, _gpsCenter.lng], zoom: 13, zoomControl: true });
       L.tileLayer("https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&hl=fr", {
         attribution: "© Google Maps",
         subdomains: ["0","1","2","3"],
@@ -366,6 +373,18 @@ export default function MapPage() {
     };
     render();
   }, [position.lat, position.lng, isFallback]);
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Recentrage GPS : dès que la première position GPS réelle est reçue (passage
+  // isFallback=true → false), recentrer la carte sur la vraie position.
+  // N'est exécuté qu'une fois (ref flag) pour ne pas perturber les zooms manuels.
+  const gpsFirstCenterDone = useRef(false);
+  useEffect(() => {
+    if (!isFallback && !gpsFirstCenterDone.current && mapInstance.current) {
+      gpsFirstCenterDone.current = true;
+      mapInstance.current.setView([position.lat, position.lng], 13, { animate: true });
+    }
+  }, [isFallback, position.lat, position.lng]);
 
   // Markers zones profitabilité
   useEffect(() => {
@@ -633,6 +652,8 @@ export default function MapPage() {
     <div className="relative flex flex-col" style={{ height: "calc(100vh - 8.5rem)" }}>
       {/* ─── Bandeau alerte événement rare (Lot C) — premier enfant, au-dessus de la carte ───── */}
       <RareEventBanner />
+      {/* ─── Bandeau TomTom non connecté — visible si ETA sans trafic temps réel ─────────── */}
+      <RoutingSourceBanner />
       <MapLoader />
       {/* Animation pulsante pour la heatmap de boost PredictHQ (boost ≥ 2.0) */}
       <style>{`@keyframes phqHeatPulse{0%,100%{opacity:0.35;}50%{opacity:0.7;}} .phq-heat-pulse{animation:phqHeatPulse 1.8s ease-in-out infinite;}`}</style>
@@ -764,11 +785,24 @@ export default function MapPage() {
             <RouteSourceBadge source={etaSource} size="xs" />
           </div>
 
-          {/* Bouton mode conduite — plein écran, coin supérieur gauche */}
+          {/* ─── Bouton mode conduite :
+               Mobile  → FAB flottant bottom-right (fixed) au-dessus nav bottom
+               Desktop → bouton coin supérieur gauche (sticky dans la carte) ─── */}
+          {/* FAB mobile */}
           <Link
             href="/drive"
-            className="absolute top-3 left-3 z-[1000] flex items-center gap-1.5 rounded-lg bg-emerald-500/90 backdrop-blur px-3 py-2 border border-emerald-300/40 text-white text-sm font-bold shadow-lg hover:bg-emerald-500 active:scale-95 transition-all"
+            className="fixed bottom-20 right-4 z-[1100] sm:hidden flex items-center justify-center rounded-full h-14 w-14 bg-emerald-500 text-white shadow-2xl active:scale-95 transition-all border-2 border-emerald-300/50"
             data-testid="button-enter-drive"
+            title="Mode conduite"
+            aria-label="Mode conduite"
+          >
+            <span className="text-2xl leading-none">🚗</span>
+          </Link>
+          {/* Bouton desktop */}
+          <Link
+            href="/drive"
+            className="hidden sm:flex absolute top-3 left-3 z-[1000] items-center gap-1.5 rounded-lg bg-emerald-500/90 backdrop-blur px-3 py-2 border border-emerald-300/40 text-white text-sm font-bold shadow-lg hover:bg-emerald-500 active:scale-95 transition-all"
+            data-testid="button-enter-drive-desktop"
             title="Basculer en mode conduite plein écran"
           >
             <span className="text-lg leading-none">🚗</span>
@@ -792,7 +826,7 @@ export default function MapPage() {
             const airportStats = airportKey && flightData ? flightData[airportKey] : null;
 
             return (
-              <div className="absolute bottom-4 left-4 right-4 z-[1000] max-w-sm">
+              <div className="absolute bottom-4 left-4 right-4 z-[1000] max-w-sm pb-safe">
                 <Card className="shadow-2xl border-primary/30">
                   <CardHeader className="pb-2 pt-3 px-4">
                     <div className="flex items-start justify-between">

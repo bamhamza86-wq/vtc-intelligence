@@ -40,23 +40,27 @@ export function FatigueBanner() {
   const { container, message } = config[fatigueLevel as keyof typeof config];
 
   return (
+    // ─── Mobile : flex-row compact, padding réduit, tient sur 1 ligne ──────────
     <div
-      className={`flex items-center gap-3 rounded-xl px-4 py-3 ${container}`}
+      className={`flex items-center gap-2 rounded-xl px-3 py-2 sm:px-4 sm:py-3 ${container}`}
       data-testid="fatigue-banner"
     >
       {/* Icône d'alerte */}
-      <AlertTriangle size={20} className="shrink-0" aria-hidden />
+      <AlertTriangle size={16} className="shrink-0 sm:hidden" aria-hidden />
+      <AlertTriangle size={20} className="shrink-0 hidden sm:block" aria-hidden />
 
-      {/* Message */}
-      <span className="flex-1 text-sm font-medium">{message}</span>
+      {/* Message — tronqué sur mobile */}
+      <span className="flex-1 text-xs sm:text-sm font-medium truncate">{message}</span>
 
       {/* Bouton de réinitialisation de session */}
       <button
         onClick={resetSession}
-        className="shrink-0 rounded-lg border border-current/40 bg-white/30 px-3 py-1 text-xs font-semibold hover:bg-white/50 active:bg-white/60 transition-colors"
+        className="shrink-0 rounded-lg border border-current/40 bg-white/30 px-2.5 py-1 text-xs font-semibold hover:bg-white/50 active:bg-white/60 transition-colors whitespace-nowrap"
         type="button"
+        data-testid="fatigue-banner-reset"
       >
-        J'ai fait une pause
+        <span className="hidden sm:inline">J’ai fait une pause</span>
+        <span className="sm:hidden">Pause ✓</span>
       </button>
     </div>
   );

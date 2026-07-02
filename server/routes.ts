@@ -1442,7 +1442,17 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       tomtom_source_active: stats.tomtomHits > 0,
       tomtom_key_configured: !!(tomtomCred?.api_key && tomtomCred.api_key.length > 5),
       tomtom_status:       tomtomCred?.status ?? "unconfigured",
-      routing_priority:    stats.tomtomAvailable ? "tomtom" : stats.osrmAvailable ? "osrm" : "calibrated",
+      // ─── Priorité TomTom (SOURCE PRIMAIRE) — ordre : tomtom > osrm > calibrated ─────────────
+      // tomtom_priority : toujours true — indique que TomTom est la cible idéale
+      // warning         : message clair si TomTom non connecté
+      // effective_source : source réellement active selon disponibilité
+      tomtom_priority:     true,
+      warning:             !(tomtomCred?.api_key && tomtomCred.status === "connected")
+        ? "TomTom key missing — ETA sans trafic temps réel (OSRM fallback actif)"
+        : null,
+      routing_priority:    "tomtom",   // ordre cible : tomtom > osrm > calibrated
+      effective_source:    stats.tomtomHits > 0 ? "tomtom"
+        : (stats.osrmAvailable ? "osrm" : "calibrated"),
       activeSource:        stats.tomtomHits > 0 ? "tomtom"
         : stats.googleAvailable ? "google"
         : (stats.osrmAvailable ? "osrm" : "calibrated"),

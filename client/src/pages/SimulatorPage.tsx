@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
@@ -95,6 +96,17 @@ export default function SimulatorPage() {
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
 
   const now = useNow(1000);
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Query routing-status : état TomTom + source effective (poll 30s)
+  // Utilisé pour afficher le bandeau d'alerte dans le panneau Comparaison sources
+  const { data: routingStatus } = useQuery<any>({
+    queryKey: ["/api/routing-status"],
+    queryFn:  () => apiRequest("GET", "/api/routing-status").then(r => r.json()),
+    refetchInterval: 30_000,
+    staleTime:       20_000,
+  });
+  const tomtomConnected = routingStatus?.tomtom_connected ?? true; // optimiste par défaut
 
   // ── Query best-route temps réel — refetch toutes les 3s ─────────────────────
   const { data: routeData, dataUpdatedAt, isFetching, refetch } = useQuery<any>({
@@ -472,7 +484,35 @@ export default function SimulatorPage() {
               <Gauge size={15} /> Comparaison des sources de routing
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="pt-2">
+            {/* ─── Bandeau TomTom non connecté (HAUT du panneau) ───────────────────
+                Affiché si TomTom absent → ETA OSRM sans trafic. Lien /sources.
+            ─────────────────────────────────────────────────────────────────────── */}
+            {!tomtomConnected && (
+              <div
+                data-testid="simulator-tomtom-warning-banner"
+                className="flex items-start gap-2 mb-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-400 text-amber-900 text-xs"
+              >
+                <Navigation size={13} className="shrink-0 mt-0.5 text-amber-600" />
+                <span className="flex-1">
+                  <span className="font-semibold">⚠️ TomTom non connecté</span>
+                  {" — ETA basé sur OSRM sans trafic. "}
+                  <Link href="/sources" className="underline underline-offset-2 font-semibold hover:text-amber-950">
+                    Connecter dans Sources
+                  </Link>
+                </span>
+              </div>
+            )}
+            {/* ─── Warning GPS indisponible ─────────────────────────────────────── */}
+            {isFallback && originMode === "gps" && (
+              <div
+                data-testid="simulator-gps-fallback-warning"
+                className="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg bg-slate-100 border border-slate-300 text-slate-700 text-xs"
+              >
+                <Navigation size={12} className="shrink-0 text-slate-500" />
+                GPS indisponible — position par défaut (Bd Ney)
+              </div>
+            )}
             <div className="space-y-2 text-sm">
               <div className="flex items-center justify-between py-1.5 border-b border-border/50">
                 <span className="flex items-center gap-2"><SourceBadge source="tomtom" /> <span className="text-xs text-muted-foreground">temps réel + trafic</span></span>
@@ -485,7 +525,15 @@ export default function SimulatorPage() {
                 <span className="font-mono font-semibold tabular-nums" data-testid="text-eta-osrm">{sourceComparison.etaOsrm} min</span>
               </div>
               <div className="flex items-center justify-between py-1.5 border-b border-border/50">
-                <span className="flex items-center gap-2"><SourceBadge source="calibrated" /> <span className="text-xs text-muted-foreground">réf. Bd Ney</span></span>
+                {/* ─── Label calibré : "réf. GPS live" si GPS actif, sinon "réf. Bd Ney" ────
+                    Quand l'origine est la vraie position GPS, "Bd Ney" serait trompeur.
+                ────────────────────────────────────────────────────────────────────────── */}
+                <span className="flex items-center gap-2">
+                  <SourceBadge source="calibrated" />
+                  <span className="text-xs text-muted-foreground">
+                    {!isFallback && originMode === "gps" ? "réf. GPS live" : "réf. position actuelle"}
+                  </span>
+                </span>
                 <span className="font-mono font-semibold tabular-nums" data-testid="text-eta-calibrated">{sourceComparison.etaCalibrated} min</span>
               </div>
               <div className="flex items-center justify-between py-1.5">

@@ -156,8 +156,9 @@ export function RecoWhereToGo({ position, topZones, onFocusZone }: RecoWhereToGo
   const resumeHour = nextPeak.hour != null ? fmtHour(nextPeak.hour) : null;
 
   return (
+    // ─── Mobile : flex-col stack | sm+ : flex-row inline ─────────────────────
     <div className={`px-3 py-2 ${bandeauBg}`} data-testid="reco-where-to-go">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
 
         {/* ── Toggle état chauffeur (gauche) ── */}
         <div className="shrink-0">
@@ -291,10 +292,10 @@ export function RecoWhereToGo({ position, topZones, onFocusZone }: RecoWhereToGo
           )}
         </div>
 
-        {/* ── Countdown prochain pic (droite) ── */}
+        {/* ── Countdown prochain pic (droite sur sm+, inline row sur mobile) ── */}
         {!isPause && nextPeak.hour != null && !nextPeak.isNow && (
           <div
-            className={`shrink-0 flex flex-col items-end rounded-md px-2 py-1 border ${
+            className={`shrink-0 flex flex-col items-start sm:items-end rounded-md px-2 py-1 border ${
               nextPeak.imminent
                 ? "border-red-500/60 bg-red-500/10"
                 : "border-amber-500/40 bg-amber-500/10"

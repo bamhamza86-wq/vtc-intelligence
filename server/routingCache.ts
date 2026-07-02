@@ -612,10 +612,19 @@ export async function getRouteForZone(
   if (cached && now < cached.expiresAt) return cached;
 
   // 1bis. TomTom Routing (SOURCE PRIMAIRE — trafic temps réel)
+  // ───────────────────────────────────────────────────────────────────────────────
+  // Ordre de priorité strict : TomTom > OSRM > calibré
+  // Si TomTom absent/échec → log explicite + passage OSRM
   if (dest) {
     const tomtomKey = await getTomTomKey();
+    if (!tomtomKey) {
+      console.warn(`[routing-cache] ⚠️ TomTom clé absente pour zone ${zoneId} — fallback OSRM actif. Connecter TomTom pour ETA temps réel.`);
+    }
     if (tomtomKey) {
       const tt = await fetchTomTomRoute(originLat, originLng, dest.lat, dest.lng, tomtomKey);
+      if (!tt) {
+        console.warn(`[routing-cache] ⚠️ TomTom échec zone ${zoneId} (quota dépassé ou clé KO) — fallback OSRM.`);
+      }
       if (tt) {
         const roadKm   = Math.round((tt.distanceM / 1000) * 10) / 10;
         // TomTom = temps avec trafic → seulement × 0.93 (anti-surestimation)

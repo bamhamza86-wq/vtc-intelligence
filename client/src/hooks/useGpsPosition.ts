@@ -18,7 +18,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
 export const GPS_FALLBACK = { lat: 48.8976, lng: 2.3299 }; // Bd Ney Paris 18e
 
@@ -40,6 +40,11 @@ export interface UseGpsPositionResult {
   refresh:       () => void;         // forcer une nouvelle lecture GPS
   error:         string | null;
   speedKmh:      number;             // vitesse lissée en km/h (0 si absente)
+  // ───────────────────────────────────────────────────────────────
+  // freshnessSec : âge en secondes depuis la dernière mise à jour GPS réelle.
+  // null si aucune position GPS reçue (encore pending ou fallback).
+  // < 10s = position fraîche (bonne qualité) ; >= 10s = position stale.
+  freshnessSec:  number | null;
 }
 
 // ── Conversion vitesse ───────────────────────────────────────────────────────
@@ -73,6 +78,10 @@ function startSharedWatch(): void {
       };
       _lastRawPosition = gps;
       _lastPositionDate = new Date();
+      // ── Expose la position GPS dans le singleton window pour MapPage (init carte) ──
+      if (typeof window !== "undefined") {
+        (window as any).__gpsLastPosition = { lat: gps.lat, lng: gps.lng };
+      }
       _listeners.forEach(fn => fn(gps));
     },
     (err) => {
@@ -122,6 +131,10 @@ export function useGpsPosition(): UseGpsPositionResult {
         };
         _lastRawPosition = gps;
         _lastPositionDate = new Date();
+        // ── Expose la position GPS dans le singleton window pour MapPage (init carte) ──
+        if (typeof window !== "undefined") {
+          (window as any).__gpsLastPosition = { lat: gps.lat, lng: gps.lng };
+        }
         setRawPosition(gps);
         setLastUpdatedAt(new Date());
         setStatus("granted");
@@ -182,6 +195,17 @@ export function useGpsPosition(): UseGpsPositionResult {
   const isFallback = rawPosition === null;
   const speedKmh = rawPosition?.speedKmh ?? 0;
 
+  // ───────────────────────────────────────────────────────────────────
+  // freshnessSec : age en secondes depuis la dernière position GPS reçue.
+  // Re-calculé à chaque render (pas de setInterval nécessaire — les composants
+  // qui en ont besoin peuvent appeler useNow(1000) séparément).
+  // null si jamais de position GPS reçue (status pending/denied/fallback).
+  const freshnessSec = useMemo<number | null>(() => {
+    if (!lastUpdatedAt) return null;
+    return Math.max(0, Math.floor((Date.now() - lastUpdatedAt.getTime()) / 1000));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastUpdatedAt]);
+
   return {
     position,
     rawPosition,
@@ -191,5 +215,6 @@ export function useGpsPosition(): UseGpsPositionResult {
     refresh,
     error,
     speedKmh,
+    freshnessSec,
   };
 }

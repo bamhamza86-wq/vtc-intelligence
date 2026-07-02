@@ -3,6 +3,9 @@
 @tailwind utilities;
 
 :root {
+  /* ─── Safe-area insets (iPhone notch / Dynamic Island) ──────────────────── */
+  --safe-top: env(safe-area-inset-top);
+  --safe-bottom: env(safe-area-inset-bottom);
   --button-outline: rgba(0,0,0,0.1);
   --badge-outline: rgba(0,0,0,0.05);
   --opaque-button-border-intensity: -8;
@@ -94,3 +97,15 @@
 .dark .leaflet-control-zoom a { background-color: #1c2333 !important; color: #88ccaa !important; border-color: #2d3748 !important; }
 .dark .leaflet-control-zoom a:hover { background-color: #2d3748 !important; }
 .leaflet-container { background: #0f1924 !important; }
+
+/* ─── Safe-area utilitaires ──────────────────────────────────────────────── */
+.pt-safe { padding-top: env(safe-area-inset-top); }
+.pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+
+/* ─── Media queries utilitaires desktop-only / mobile-only ──────────────── */
+@media (max-width: 640px) {
+  .desktop-only { display: none !important; }
+}
+@media (min-width: 641px) {
+  .mobile-only { display: none !important; }
+}
