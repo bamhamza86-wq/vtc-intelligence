@@ -15,6 +15,7 @@ import ProfilePage from "./pages/ProfilePage";
 import BestRoutePage from "./pages/BestRoutePage";
 import ReturnJourneyPage from "./pages/ReturnJourneyPage";
 import SmartPlanPage from "./pages/SmartPlanPage";
+import DrivePage from "./pages/DrivePage";
 import EconomicsDashboard from "./pages/EconomicsDashboard";
 import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/not-found";
@@ -109,6 +110,7 @@ export default function App() {
                 <Route path="/best-route" component={BestRoutePage} />
                 <Route path="/return-journey" component={ReturnJourneyPage} />
                 <Route path="/smart-plan" component={SmartPlanPage} />
+                <Route path="/drive" component={DrivePage} />
                 <Route path="/simulator" component={SimulatorPage} />
                 <Route path="/alerts" component={AlertsPage} />
                 <Route path="/economics" component={EconomicsDashboard} />

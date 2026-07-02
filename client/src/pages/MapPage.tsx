@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest, REALTIME_INTERVAL, SLOW_INTERVAL, STATIC_INTERVAL } from "@/lib/queryClient";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
@@ -11,6 +12,7 @@ import { TrendingUp, Clock, Zap, Plane, ChevronDown, ChevronUp, Navigation, Radi
 import { UpdateWidget } from "@/components/UpdateWidget";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 import { PredictHQBadge } from "@/components/PredictHQBadge";
+import { RecoWhereToGo } from "@/components/RecoWhereToGo";
 import { usePredictHQ } from "@/hooks/usePredictHQ";
 import { useZonesSummary } from "@/hooks/useZonesSummary";
 import { useRepositioningAlerts } from "@/hooks/useRepositioningAlerts";
@@ -632,6 +634,13 @@ export default function MapPage() {
       {/* Animation pulsante pour la heatmap de boost PredictHQ (boost ≥ 2.0) */}
       <style>{`@keyframes phqHeatPulse{0%,100%{opacity:0.35;}50%{opacity:0.7;}} .phq-heat-pulse{animation:phqHeatPulse 1.8s ease-in-out infinite;}`}</style>
 
+      {/* ── Bandeau « Où aller maintenant » — meilleure zone + distance + gain + countdown pic ── */}
+      <RecoWhereToGo
+        position={position}
+        topZones={topZones as any[]}
+        onFocusZone={focusZone}
+      />
+
       {/* ── Badge alertes de repositionnement GPS (zones chaudes <10 min) ──── */}
       {/* Affiché si au moins une alerte 'repositioning' active dans 5 km. */}
       {/* Clic → recentre la carte sur la zone. Disparaît quand l'alerte expire. */}
@@ -751,6 +760,17 @@ export default function MapPage() {
             <span className="text-[10px] text-white/70">Source ETA active</span>
             <RouteSourceBadge source={etaSource} size="xs" />
           </div>
+
+          {/* Bouton mode conduite — plein écran, coin supérieur gauche */}
+          <Link
+            href="/drive"
+            className="absolute top-3 left-3 z-[1000] flex items-center gap-1.5 rounded-lg bg-emerald-500/90 backdrop-blur px-3 py-2 border border-emerald-300/40 text-white text-sm font-bold shadow-lg hover:bg-emerald-500 active:scale-95 transition-all"
+            data-testid="button-enter-drive"
+            title="Basculer en mode conduite plein écran"
+          >
+            <span className="text-lg leading-none">🚗</span>
+            <span className="tracking-wide">Mode conduite</span>
+          </Link>
 
           {/* Popup zone sélectionnée — enrichie avec données vols */}
           {selectedZone && (() => {
