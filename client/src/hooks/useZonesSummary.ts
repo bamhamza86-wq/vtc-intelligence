@@ -26,8 +26,16 @@
  *   }
  * ─────────────────────────────────────────────────────────────────────────────
  */
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import {
+  classifyEventProximity,
+  PROXIMITY_SORT_ORDER,
+} from "@/lib/eventProximity";
+import type { EventProximity } from "@/lib/eventProximity";
+
+export type { EventProximity };
 
 const ZONES_SUMMARY_INTERVAL = 30_000; // 30s — suffisant pour la carte
 
@@ -71,6 +79,7 @@ interface RawZonesSummaryEvent {
   is_active?: boolean;
   hours_until_start?: number;
 }
+
 
 interface RawNextEvent {
   id?: string;
@@ -118,8 +127,15 @@ export interface ZonesSummaryEvent {
   rank: number;
   boost: number;
   start?: string;
+  end?: string;
   is_active: boolean;
   hours_until_start?: number;
+  /** Minutes signées avant le début (négatif = déjà commencé). null si pas de start. */
+  minutesUntilStart?: number | null;
+  /** Classe de proximité horaire pour le code couleur UI. */
+  proximity?: EventProximity;
+  /** Libellé court : « dans 42 min », « 18:30 », « en cours ». */
+  timeLabel?: string;
 }
 
 export interface NextEvent {
@@ -175,7 +191,17 @@ function normalizeNextEvent(raw: RawNextEvent | null | undefined): NextEvent | n
   };
 }
 
-export function useZonesSummary(): UseZonesSummaryResult {
+/** Options du hook. */
+export interface UseZonesSummaryOptions {
+  /** Si true (défaut), ne conserve que les events du jour courant. */
+  todayOnly?: boolean;
+  /** Si true, garde aussi les events déjà terminés. Défaut : false. */
+  includePast?: boolean;
+}
+
+export function useZonesSummary(options: UseZonesSummaryOptions = {}): UseZonesSummaryResult {
+  const { todayOnly = true, includePast = false } = options;
+
   const { data, isLoading, isError } = useQuery<RawZonesSummaryResponse>({
     queryKey: ["/api/predicthq/zones-summary"],
     queryFn: async () => {
@@ -186,6 +212,15 @@ export function useZonesSummary(): UseZonesSummaryResult {
     staleTime: 25_000,
     retry: 1,
   });
+
+  // Tick d'horloge (30s) : rafraîchit proximity + timeLabel côté UI même quand
+  // le backend n'a pas encore renvoyé de nouvelle payload.
+  const [clockTick, setClockTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setClockTick(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  const now = new Date(clockTick);
 
   const rawZones = data?.zones ?? [];
   const zones: ZoneSummary[] = rawZones
@@ -215,11 +250,11 @@ export function useZonesSummary(): UseZonesSummaryResult {
   }
 
   const rawEvents = data?.events ?? [];
-  const events: ZonesSummaryEvent[] = rawEvents
+  const eventsMapped: ZonesSummaryEvent[] = rawEvents
     .map((e) => {
       const id = str(e.id, e.title, e.name) ?? "";
       const title = str(e.title, e.name) ?? "Événement";
-      return {
+      const base: ZonesSummaryEvent = {
         id,
         title,
         zone_id: str(e.zone_id, e.zoneId),
@@ -229,20 +264,37 @@ export function useZonesSummary(): UseZonesSummaryResult {
         rank: num(e.rank, e.local_rank) ?? 0,
         boost: num(e.phq_boost, e.demand_boost, e.boost) ?? 1.0,
         start: e.start,
+        end: e.end,
         is_active: e.is_active ?? true,
         hours_until_start: num(e.hours_until_start),
-      } as ZonesSummaryEvent;
+      };
+      const prox = classifyEventProximity(base.start, base.end, now);
+      return { ...base, ...prox };
     })
-    .filter((e) => e.is_active)
-    .sort((a, b) => b.boost - a.boost);
+    .filter((e) => e.is_active);
+
+  // Filtrage jour courant + code couleur : on retire par défaut les events
+  // d'un autre jour et les events déjà terminés.
+  let events = eventsMapped;
+  if (todayOnly) {
+    events = events.filter((e) => e.proximity !== "future" && (includePast || e.proximity !== "past"));
+  } else if (!includePast) {
+    events = events.filter((e) => e.proximity !== "past");
+  }
+  events.sort((a, b) => {
+    const pa = PROXIMITY_SORT_ORDER[a.proximity ?? "future"];
+    const pb = PROXIMITY_SORT_ORDER[b.proximity ?? "future"];
+    if (pa !== pb) return pa - pb;
+    return b.boost - a.boost;
+  });
 
   const maxBoost =
     num(data?.max_boost, data?.maxBoost) ??
     zones.reduce((mx, z) => Math.max(mx, z.phq_boost), 1.0);
 
-  const activeCount =
-    num(data?.active_count, data?.activeCount) ??
-    (events.length || zones.filter((z) => z.phq_boost > 1.0).length);
+  // active_count reflète désormais la liste filtrée (jour courant) pour rester
+  // cohérent avec le compteur affiché dans le panel latéral.
+  const activeCount = events.length || zones.filter((z) => z.phq_boost > 1.0).length;
 
   return {
     zones,

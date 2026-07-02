@@ -17,8 +17,13 @@
  *   usePredictHQBoostPreview() → boostByZone pour une heure donnée
  * ─────────────────────────────────────────────────────────────────────────────
  */
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { classifyEventProximity, PROXIMITY_SORT_ORDER } from "@/lib/eventProximity";
+import type { EventProximity } from "@/lib/eventProximity";
+
+export type { EventProximity };
 
 // ─── Types backend bruts ─────────────────────────────────────────────────────
 
@@ -84,6 +89,12 @@ export interface PredictHQEvent {
   rank?: number;
   attendance?: number;
   is_active?: boolean;
+  /** Minutes signées avant le début (start). Négatif = déjà commencé. null si pas de start. */
+  minutesUntilStart?: number | null;
+  /** Classe de proximité horaire pour le code couleur UI. */
+  proximity?: EventProximity;
+  /** Libellé court prêt à afficher : « dans 42 min », « 18:30 », « en cours ». */
+  timeLabel?: string;
 }
 
 export interface PredictHQSurge {
@@ -98,6 +109,12 @@ export interface PredictHQSurge {
 
 const REALTIME = 3_000;          // 3s — quasi temps réel
 const SURGES_INTERVAL = 60_000;  // 1 min
+
+/** Enrichit un événement avec proximity/minutesUntilStart/timeLabel selon l'horloge locale. */
+function enrichEventProximity(ev: PredictHQEvent, now: Date): PredictHQEvent {
+  const info = classifyEventProximity(ev.start, ev.end, now);
+  return { ...ev, ...info };
+}
 
 // ─── Conversion intensité surge → boost approximatif ──────────────────────────
 function intensityToBoost(intensity?: SurgeIntensity): number {
@@ -144,7 +161,17 @@ export interface UsePredictHQResult {
   isError: boolean;
 }
 
-export function usePredictHQ(): UsePredictHQResult {
+/** Options du hook usePredictHQ. */
+export interface UsePredictHQOptions {
+  /** Si true (défaut), ne renvoie que les événements du jour courant (calendaire local). */
+  todayOnly?: boolean;
+  /** Si true, garde aussi les events qui déjà passés dans la journée. Défaut : false (on filtre les past). */
+  includePast?: boolean;
+}
+
+export function usePredictHQ(options: UsePredictHQOptions = {}): UsePredictHQResult {
+  const { todayOnly = true, includePast = false } = options;
+
   const eventsQ = useQuery<RawEventsResponse>({
     queryKey: ["/api/predicthq/events"],
     queryFn: async () => {
@@ -167,8 +194,18 @@ export function usePredictHQ(): UsePredictHQResult {
     retry: 1,
   });
 
+  // Tick d'horloge : force un re-render toutes les 30 s pour que les libellés
+  // « dans N min » et les seuils de proximité (rouge/orange) restent à jour
+  // même en l'absence de nouveau fetch (l'API PredictHQ ne bouge qu'à l'heure).
+  const [clockTick, setClockTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setClockTick(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const now = new Date(clockTick);
   const rawEvents = eventsQ.data?.events ?? [];
-  const events: PredictHQEvent[] = rawEvents.map((e) => ({
+  const baseEvents: PredictHQEvent[] = rawEvents.map((e) => ({
     id: e.id,
     title: e.title,
     category: e.category,
@@ -182,13 +219,29 @@ export function usePredictHQ(): UsePredictHQResult {
     is_active: e.is_active,
   }));
 
+  // Enrichissement proximité + filtrage jour courant.
+  const enriched = baseEvents.map((e) => enrichEventProximity(e, now));
+  let events = enriched;
+  if (todayOnly) {
+    events = events.filter((e) => e.proximity !== "future" && (includePast || e.proximity !== "past"));
+  } else if (!includePast) {
+    events = events.filter((e) => e.proximity !== "past");
+  }
+  // Tri : les plus imminents d'abord, puis par boost décroissant.
+  events.sort((a, b) => {
+    const pa = PROXIMITY_SORT_ORDER[a.proximity ?? "future"];
+    const pb = PROXIMITY_SORT_ORDER[b.proximity ?? "future"];
+    if (pa !== pb) return pa - pb;
+    return (b.boost ?? 1) - (a.boost ?? 1);
+  });
+
+  // Le boostByZone reste calculé sur les events retenus (jour courant) → la
+  // heatmap ne colorie plus des zones sur la base d'un event de demain.
   const boostByZone = deriveBoostFromEvents(events);
   const status = statusQ.data;
   const isConnected = status?.connected ?? status?.status === "connected" ?? false;
-  const activeEventCount =
-    status?.active_events ??
-    eventsQ.data?.active_count ??
-    events.filter((e) => (e.boost ?? 1) > 1.0).length;
+  // active_event_count reflète désormais les events du jour courant (cohérent avec la liste affichée).
+  const activeEventCount = events.filter((e) => (e.boost ?? 1) > 1.0 || e.proximity === "imminent").length;
 
   return {
     events,

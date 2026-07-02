@@ -18,15 +18,20 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { Badge } from "@/components/ui/badge";
+import type { EventProximity } from "@/lib/eventProximity";
 
 interface Props {
   boost?: number | null;
   eventTitle?: string | null;
   compact?: boolean;
   className?: string;
+  /** Proximité horaire de l'event (imminent<1h → rouge, soon<3h → orange). */
+  proximity?: EventProximity;
+  /** Libellé court à afficher : « dans 42 min », « 18:30 », « en cours ». */
+  timeLabel?: string;
 }
 
-export function PredictHQBadge({ boost, eventTitle, compact = false, className = "" }: Props) {
+export function PredictHQBadge({ boost, eventTitle, compact = false, className = "", proximity, timeLabel }: Props) {
   const b = typeof boost === "number" && isFinite(boost) ? boost : 1.0;
 
   // Pas d'événement actif → ne rien afficher
@@ -34,6 +39,28 @@ export function PredictHQBadge({ boost, eventTitle, compact = false, className =
 
   const sizeCls = compact ? "text-[10px] px-1.5 py-0 gap-0.5" : "text-xs px-2 py-0.5 gap-1";
   const title = eventTitle || "Événement PredictHQ en cours";
+
+  // Code couleur proximité : prend le dessus sur les paliers de boost.
+  if (proximity === "imminent") {
+    return (
+      <Badge
+        title={title}
+        className={`inline-flex items-center ${sizeCls} bg-red-500/25 text-red-200 border-red-500/60 border whitespace-nowrap animate-pulse font-semibold ${className}`}
+      >
+        🔴 {timeLabel || "év. imminent"} · ×{b.toFixed(1)}
+      </Badge>
+    );
+  }
+  if (proximity === "soon") {
+    return (
+      <Badge
+        title={title}
+        className={`inline-flex items-center ${sizeCls} bg-orange-500/20 text-orange-200 border-orange-500/50 border whitespace-nowrap font-semibold ${className}`}
+      >
+        🟠 {timeLabel || "bientôt"} · ×{b.toFixed(1)}
+      </Badge>
+    );
+  }
 
   // Palier 1 : léger (gris)
   if (b <= 1.3) {

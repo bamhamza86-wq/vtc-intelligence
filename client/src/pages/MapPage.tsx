@@ -14,6 +14,7 @@ import { PredictHQBadge } from "@/components/PredictHQBadge";
 import { usePredictHQ } from "@/hooks/usePredictHQ";
 import { useZonesSummary } from "@/hooks/useZonesSummary";
 import { useRepositioningAlerts } from "@/hooks/useRepositioningAlerts";
+import type { EventProximity } from "@/lib/eventProximity";
 
 const COLORS = { ultraHigh: "#22c55e", high: "#86efac", medium: "#fbbf24", low: "#f97316", veryLow: "#ef4444" };
 
@@ -51,6 +52,19 @@ function getEventRankStyle(rank: number): { color: string; size: number; pulsing
   if (rank >= 80) return { color: "#ef4444", size: 40, pulsing: true, dot: "🔴" };
   if (rank >= 60) return { color: "#f97316", size: 30, pulsing: false, dot: "🟠" };
   return { color: "#eab308", size: 20, pulsing: false, dot: "🟡" };
+}
+
+// Code couleur selon la proximité horaire :
+//   imminent (< 1h ou en cours) → rouge pulsant
+//   soon     (< 3h)              → orange
+//   today    (plus tard)         → style neutre basé sur le rank
+function getEventProximityStyle(
+  proximity: EventProximity | undefined,
+  rank: number,
+): { color: string; size: number; pulsing: boolean; dot: string } {
+  if (proximity === "imminent") return { color: "#ef4444", size: 42, pulsing: true, dot: "🔴" };
+  if (proximity === "soon") return { color: "#f97316", size: 32, pulsing: false, dot: "🟠" };
+  return getEventRankStyle(rank);
 }
 
 // ─── Heatmap boost PredictHQ — teinte de l'overlay zone selon le phq_boost ─────
@@ -436,7 +450,8 @@ export default function MapPage() {
         }
         if (lat == null || lng == null) return;
         const rank = ev.rank ?? 0;
-        const { color, size, pulsing } = getEventRankStyle(rank);
+        // Code couleur basé sur la proximité horaire (rouge <1h, orange <3h), sinon rank.
+        const { color, size, pulsing } = getEventProximityStyle(ev.proximity, rank);
         const half = size / 2;
         const icon = L.divIcon({
           className: "",
@@ -449,11 +464,17 @@ export default function MapPage() {
           iconAnchor: [half, half],
         });
         const m = L.marker([lat, lng], { icon, zIndexOffset: 1500, interactive: true }).addTo(mapInstance.current);
+        const startTime = ev.start
+          ? new Date(ev.start).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
+          : "";
+        const timeSpan = ev.timeLabel
+          ? `<span style="color:${color};font-weight:600;">⏱ ${ev.timeLabel}</span>`
+          : "";
         m.bindTooltip(
           `<div style="font-size:11px;line-height:1.45;">
             <strong>${getEventDot(rank)} ${ev.title}</strong><br>
-            ${ev.start ? `📅 ${fmtDate(ev.start)}` : ""}<br>
-            <span style="color:#f59e0b;">boost ×${ev.boost.toFixed(2)}</span> · <span style="color:#9ca3af;">rank ${rank}</span>
+            ${startTime ? `🕒 ${startTime}` : ""}${timeSpan ? " · " + timeSpan : ""}<br>
+            <span style="color:#f59e0b;">boost ×${(ev.boost ?? 1).toFixed(2)}</span> · <span style="color:#9ca3af;">rank ${rank}</span>
           </div>`,
           { direction: "top", offset: [0, -half], opacity: 0.96, className: "phq-event-tooltip" }
         );
@@ -462,7 +483,7 @@ export default function MapPage() {
       });
     };
     render();
-  }, [JSON.stringify(phqEvents.map(e => [e.id, e.rank, e.boost, e.lat, e.lng, e.zone_id])), zones]);
+  }, [JSON.stringify(phqEvents.map(e => [e.id, e.rank, e.boost, e.lat, e.lng, e.zone_id, e.proximity, e.timeLabel])), zones]);
 
   // Markers événements (incluant vols injectés)
   useEffect(() => {
@@ -870,15 +891,32 @@ export default function MapPage() {
                 <div className="divide-y divide-border">
                   {phqEvents.map((ev, i) => {
                     const rank = ev.rank ?? 0;
-                    const { color } = getEventRankStyle(rank);
+                    // Couleur basée sur la proximité pour surligner les events urgents.
+                    const { color } = getEventProximityStyle(ev.proximity, rank);
+                    // Bordure gauche colorée pour les events imminent/soon.
+                    const urgentBorder = ev.proximity === "imminent"
+                      ? "border-l-2 border-red-500"
+                      : ev.proximity === "soon"
+                        ? "border-l-2 border-orange-500"
+                        : "";
                     return (
-                      <div key={ev.id || i} className="p-3" data-testid={`phq-event-${i}`}>
+                      <div
+                        key={ev.id || i}
+                        className={`p-3 ${urgentBorder}`}
+                        data-testid={`phq-event-${i}`}
+                        data-proximity={ev.proximity ?? "today"}
+                      >
                         <p className="text-xs font-medium flex items-start gap-1.5 leading-tight">
                           <span className="shrink-0">{getEventDot(rank)}</span>
                           <span className="truncate">{ev.title}{ev.zone_name ? <span className="text-muted-foreground font-normal"> — {ev.zone_name}</span> : null}</span>
                         </p>
                         <p className="text-[10px] text-muted-foreground mt-1">
-                          rank {rank} · <span className="text-amber-400 font-semibold">boost ×{ev.boost.toFixed(2)}</span>{ev.start ? <> · {fmtDate(ev.start)}</> : null}
+                          rank {rank} · <span className="text-amber-400 font-semibold">boost ×{ev.boost.toFixed(2)}</span>
+                          {ev.timeLabel ? (
+                            <> · <span style={{ color, fontWeight: 600 }}>⏱ {ev.timeLabel}</span></>
+                          ) : ev.start ? (
+                            <> · {fmtDate(ev.start)}</>
+                          ) : null}
                         </p>
                         {ev.zone_id && (
                           <button
