@@ -14,6 +14,7 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { User, BarChart, Wrench, Brain, Gauge, AlertTriangle, Lightbulb, MapPin, Clock, Plug, CheckCircle2, XCircle, AlertCircle, RefreshCw } from "lucide-react";
+import { MobileSettings } from "@/components/MobileSettings";
 
 const ZONES_93 = [
   { id: "z_cdg", name: "CDG" }, { id: "z_orly", name: "Orly" },
@@ -379,6 +380,9 @@ export default function ProfilePage() {
           )}
         </CardContent>
       </Card>
+
+      {/* ─────────────────────── Préférences mobile ─────────────────────── */}
+      <MobileSettings />
 
       <Button className="w-full h-12" onClick={() => saveMutation.mutate(form)} disabled={saveMutation.isPending} data-testid="button-save-profile">{saveMutation.isPending ? "Sauvegarde..." : "Sauvegarder le profil"}</Button>
 

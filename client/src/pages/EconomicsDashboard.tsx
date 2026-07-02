@@ -1,6 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient, API_BASE, getAuthToken } from "@/lib/queryClient";
+// ── Pull-to-refresh : wrapper tactile + retour haptique ──────────────────────
+import { PullToRefresh } from "@/components/PullToRefresh";
+import { haptic } from "@/lib/haptics";
 import { useGpsPosition, GPS_FALLBACK } from "@/hooks/useGpsPosition";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -546,6 +549,16 @@ export default function EconomicsDashboard() {
   const { boostByZone, activeEventCount } = usePredictHQ();
   const eco = ecoQ.data;
 
+  // ── Pull-to-refresh : invalide les queries économiques clés + haptic ───────
+  const onRefresh = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["/api/rides/stats"] }),
+      queryClient.invalidateQueries({ queryKey: ["/api/rides"] }),
+      queryClient.invalidateQueries({ queryKey: ["/api/driver-profile"] }),
+    ]);
+    haptic("success");
+  }, []);
+
   const rides: Ride[] = ridesQ.data ?? [];
   const scores: ProfitabilityScore[] = profitQ.data ?? [];
   const routeEntries: Record<string, RouteEntry> = distQ.data?.entries ?? {};
@@ -608,7 +621,9 @@ export default function EconomicsDashboard() {
   const SHOW_LEGACY_SECTIONS: boolean = false;
 
   return (
-    // ─── EconomicsDashboard — mobile : p-3, overflow-x-auto sur les sections tables ───
+    // ── PullToRefresh — englobe tout le contenu du dashboard ────────────────
+    // EconomicsDashboard — mobile : p-3, overflow-x-auto sur les sections tables
+    <PullToRefresh onRefresh={onRefresh}>
     <div className="p-3 sm:p-4 max-w-6xl mx-auto space-y-4 sm:space-y-5">
       {/* Header — mobile : stack vertical */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -926,6 +941,7 @@ export default function EconomicsDashboard() {
         </button>
       </div>
     </div>
+    </PullToRefresh>
   );
 }
 

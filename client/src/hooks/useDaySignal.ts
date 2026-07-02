@@ -16,12 +16,12 @@
  * Rafraîchi toutes les 2 minutes.
  * ─────────────────────────────────────────────────────────────────────────────
  */
-import { useQuery } from "@tanstack/react-query";
+import { useSmartQueryRefresh } from "./useSmartQueryRefresh";
 import { apiRequest } from "@/lib/queryClient";
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
-const REFRESH_INTERVAL = 2 * 60_000;   // 2 min
+// REFRESH_INTERVAL supprimé — géré par useSmartQueryRefresh (30s tab active, 5min masquée)
 const STALE_TIME       = 90_000;       // 90s
 const TOP_ZONES_LIMIT  = 5;
 /** Valeur brute max attendue avant normalisation → 100 */
@@ -139,13 +139,12 @@ export function useDaySignal(): DaySignal {
     (currentHour + 2) % 24,
   ];
 
-  const { data, isLoading } = useQuery<RawTopZone[][]>({
-    queryKey: ["/api/day-signal", currentHour],
-    queryFn: () => Promise.all(hours.map(fetchTopZonesForHour)),
-    refetchInterval: REFRESH_INTERVAL,
-    staleTime: STALE_TIME,
-    retry: 1,
-  });
+  // Migration vers useSmartQueryRefresh : pulse 30s tab active + auto-pause en arrière-plan
+  const { data, isLoading } = useSmartQueryRefresh<RawTopZone[][]>(
+    ["/api/day-signal", currentHour],
+    () => Promise.all(hours.map(fetchTopZonesForHour)),
+    { staleTime: STALE_TIME, retry: 1 },
+  );
 
   if (isLoading || !data) {
     return {

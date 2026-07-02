@@ -18,7 +18,8 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { Navigation, Zap, Clock, TrendingUp } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useSmartQueryRefresh } from "@/hooks/useSmartQueryRefresh";
+import { apiRequest } from "@/lib/queryClient";
 import { haversineKm, estimateRideGain, estimateNetGain, computeConfidence } from "@/lib/geoDistance";
 import { useNextPeakHour } from "@/hooks/useNextPeakHour";
 import { useDriverState } from "@/hooks/useDriverState";
@@ -88,11 +89,12 @@ export function RecoWhereToGo({ position, topZones, onFocusZone }: RecoWhereToGo
   const nextPeak                = useNextPeakHour();
   const { state: driverState }  = useDriverState();
 
-  // Profil chauffeur — paramètres économiques personnalisés
-  const { data: driverProfile } = useQuery<DriverProfile>({
-    queryKey: ["/api/driver-profile"],
-    staleTime: 5 * 60_000,
-  });
+  // Profil chauffeur — migration vers useSmartQueryRefresh (pulse 30s + auto-pause)
+  const { data: driverProfile } = useSmartQueryRefresh<DriverProfile>(
+    ["/api/driver-profile"],
+    () => apiRequest("GET", "/api/driver-profile").then((r) => r.json()),
+    { staleTime: 5 * 60_000 },
+  );
 
   const top = topZones?.[0];
   if (!top || !top.zone) return null;

@@ -13,7 +13,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useSmartQueryRefresh } from "@/hooks/useSmartQueryRefresh";
 import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 import { AlertTriangle, ExternalLink } from "lucide-react";
@@ -31,14 +31,12 @@ interface RoutingStatus {
 // ── Composant ─────────────────────────────────────────────────────────────────
 
 export function RoutingSourceBanner() {
-  // ── Query /api/routing-status (polling 30s, non bloquant) ──────────────────
-  const { data } = useQuery<RoutingStatus>({
-    queryKey: ["/api/routing-status"],
-    queryFn:  () =>
-      apiRequest("GET", "/api/routing-status").then(r => r.json()),
-    refetchInterval: 30_000,
-    staleTime:       20_000,
-  });
+  // ── Migration vers useSmartQueryRefresh : pulse 30s tab active + auto-pause en arrière-plan
+  const { data } = useSmartQueryRefresh<RoutingStatus>(
+    ["/api/routing-status"],
+    () => apiRequest("GET", "/api/routing-status").then(r => r.json()),
+    { staleTime: 20_000 },
+  );
 
   // ── Si TomTom connecté ou données pas encore chargées → pas de bandeau ──────
   if (!data || data.tomtom_connected) return null;

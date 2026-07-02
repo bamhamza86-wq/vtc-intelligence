@@ -9,7 +9,9 @@
 // manuel via /api/rides (filtre sur la date du jour), avec fallback à 0.
 // ──────────────────────────────────────────────────────────────────────────────
 import { useQuery } from "@tanstack/react-query";
+import { useSmartQueryRefresh } from "./useSmartQueryRefresh";
 import { useDrivingSession } from "./useDrivingSession";
+import { apiRequest } from "@/lib/queryClient";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Constantes
@@ -106,14 +108,19 @@ export interface DailyGoalResult {
 export function useDailyGoal(): DailyGoalResult {
   const { hoursDriven } = useDrivingSession();
 
-  const profileQ = useQuery<DriverProfile | null>({
-    queryKey: ["/api/driver-profile"],
-  });
+  // Migration vers useSmartQueryRefresh : pulse 30s + auto-pause en arrière-plan
+  const profileQ = useSmartQueryRefresh<DriverProfile | null>(
+    ["/api/driver-profile"],
+    () => apiRequest("GET", "/api/driver-profile").then((r) => r.json()),
+  );
 
-  const statsQ = useQuery<RideStats>({
-    queryKey: ["/api/rides/stats"],
-  });
+  // Migration vers useSmartQueryRefresh : pulse 30s + auto-pause en arrière-plan
+  const statsQ = useSmartQueryRefresh<RideStats>(
+    ["/api/rides/stats"],
+    () => apiRequest("GET", "/api/rides/stats").then((r) => r.json()),
+  );
 
+  // /api/rides non migré — endpoint non listé comme temps réel critique
   const ridesQ = useQuery<Ride[]>({
     queryKey: ["/api/rides"],
   });

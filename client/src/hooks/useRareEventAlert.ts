@@ -10,8 +10,8 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import { useQuery } from "@tanstack/react-query";
 import { useCallback } from "react";
+import { useSmartQueryRefresh } from "./useSmartQueryRefresh";
 import { apiRequest } from "@/lib/queryClient";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -125,11 +125,11 @@ export interface UseRareEventAlertResult {
 }
 
 export function useRareEventAlert(): UseRareEventAlertResult {
-  const { data: events = [] } = useQuery<EventCandidate[]>({
-    queryKey: ["/api/events"],
-    queryFn: () => apiRequest("GET", "/api/events").then((r) => r.json()),
-    refetchInterval: 30_000,
-  });
+  // Migration vers useSmartQueryRefresh : pulse 30s tab active + auto-pause en arrière-plan
+  const { data: events = [] } = useSmartQueryRefresh<EventCandidate[]>(
+    ["/api/events"],
+    () => apiRequest("GET", "/api/events").then((r) => r.json()),
+  );
 
   // Filtrer, scorer, trier, exclure les events déjà dismissés
   const candidates: ScoredEvent[] = (events as EventCandidate[])

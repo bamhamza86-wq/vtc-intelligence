@@ -1,7 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Link } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, REALTIME_INTERVAL, SLOW_INTERVAL, STATIC_INTERVAL } from "@/lib/queryClient";
+// ── Pull-to-refresh : wrapper tactile + retour haptique ──────────────────────
+import { PullToRefresh } from "@/components/PullToRefresh";
+import { haptic } from "@/lib/haptics";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
 import { GpsFreshness } from "@/components/GpsFreshness";
 import { Badge } from "@/components/ui/badge";
@@ -225,6 +228,18 @@ function FlightPanel({ flightData }: { flightData: any }) {
 export default function MapPage() {
   // ── GPS temps réel (hook global — position toujours fraîche + fallback Bd Ney) ──
   const { position, isFallback, lastUpdatedAt } = useGpsPosition();
+
+  // ── Pull-to-refresh : invalide les queries clés puis déclenche haptic ────────
+  const queryClient = useQueryClient();
+  const onRefresh = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["/api/top-zones"] }),
+      queryClient.invalidateQueries({ queryKey: ["/api/profitability"] }),
+      queryClient.invalidateQueries({ queryKey: ["/api/events"] }),
+      queryClient.invalidateQueries({ queryKey: ["/api/routing-status"] }),
+    ]);
+    haptic("success");
+  }, [queryClient]);
 
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<any>(null);
@@ -649,6 +664,10 @@ export default function MapPage() {
   const fmtH = (h: number) => `${h.toString().padStart(2,"0")}:00`;
 
   return (
+    // ── PullToRefresh — englobe tout le contenu de la page ───────────────────
+    // Le wrapper est positionné en relatif et hérite de la hauteur fixe ;
+    // la carte Leaflet (absolute fill) reste plein écran à l'intérieur.
+    <PullToRefresh onRefresh={onRefresh}>
     <div className="relative flex flex-col" style={{ height: "calc(100vh - 8.5rem)" }}>
       {/* ─── Bandeau alerte événement rare (Lot C) — premier enfant, au-dessus de la carte ───── */}
       <RareEventBanner />
@@ -1039,5 +1058,6 @@ export default function MapPage() {
         </div>
       </div>
     </div>
+    </PullToRefresh>
   );
 }
