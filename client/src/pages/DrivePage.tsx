@@ -19,6 +19,9 @@ import { apiRequest, REALTIME_INTERVAL } from "@/lib/queryClient";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
 import { useNextPeakHour } from "@/hooks/useNextPeakHour";
 import { haversineKm, estimateRideGain } from "@/lib/geoDistance";
+import { FatigueBanner } from "@/components/FatigueBanner";
+import { DailyGoalBar } from "@/components/DailyGoalBar";
+import { FuelAutonomyBadge } from "@/components/FuelAutonomyBadge";
 
 function fmtCountdown(minutes: number): string {
   if (minutes < 60) return `${minutes} min`;
@@ -70,8 +73,13 @@ export default function DrivePage() {
         </Link>
       </div>
 
-      {/* Corps — 3 grandes zones info */}
-      <div className="flex-1 grid grid-rows-3 gap-4 p-4 md:p-6 min-h-0">
+      {/* ── Bandeau fatigue (au-dessus des blocs XXL) ─────────────────────── */}
+      <div className="px-4 pt-2">
+        <FatigueBanner />
+      </div>
+
+      {/* Corps — 4 grandes zones info */}
+      <div className="flex-1 grid grid-rows-4 gap-4 p-4 md:p-6 min-h-0">
         {/* Bloc 1 — Où aller */}
         <div className="rounded-3xl bg-emerald-500/10 border-2 border-emerald-500/40 flex items-center gap-4 md:gap-8 px-6 md:px-10 py-4 min-h-0">
           <Navigation size={64} className="text-emerald-400 shrink-0" strokeWidth={2.5} />
@@ -212,6 +220,8 @@ export default function DrivePage() {
             )}
           </div>
         </div>
+        {/* Bloc 4 — Objectif journalier */}
+        <DailyGoalBar variant="xxl" />
       </div>
 
       {/* Bandeau bas — position GPS + horloge secondaire */}
@@ -220,6 +230,7 @@ export default function DrivePage() {
           📍 GPS {position.lat.toFixed(4)}, {position.lng.toFixed(4)}
         </span>
         <span>vtc-one · mode conduite</span>
+        <FuelAutonomyBadge />
       </div>
     </div>
   );

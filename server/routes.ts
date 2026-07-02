@@ -633,7 +633,39 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     const scores = storage.getTopZones(hour, dayType, limit);
     const zones = storage.getAllZones();
     const zoneMap: any = Object.fromEntries(zones.map((z: any) => [z.id, z]));
-    res.json(scores.map((s: any) => ({ ...s, zone: zoneMap[s.zone_id] })));
+    // ─── Décote -15 sur score_final pour les zones récemment ignorées (Lot C) ────────────
+    const ignoredZones = storage.getRecentlyIgnoredZoneIds();
+    res.json(scores.map((s: any) => {
+      const zoneId = s.zone_id ?? s.zone_id_z;
+      const isIgnored = ignoredZones.has(zoneId);
+      const baseScore = s.profitability_index ?? 0;
+      const adjustedScore = isIgnored ? Math.max(0, baseScore - 15) : baseScore;
+      return {
+        ...s,
+        zone: zoneMap[zoneId],
+        profitability_index: adjustedScore,
+        profitabilityIndex: adjustedScore,
+        ...(isIgnored ? { ignored_penalty: 15 } : {}),
+      };
+    }));
+  });
+
+  // ─── Routes mémoire des refus de recommandations (Lot C) ─────────────────────────
+
+  // POST /api/reco/ignore — enregistre le refus d'une zone pour 2 heures
+  app.post("/api/reco/ignore", (req, res) => {
+    const { zone_id } = req.body ?? {};
+    if (!zone_id || typeof zone_id !== "string") {
+      return res.status(400).json({ error: "zone_id manquant ou invalide" });
+    }
+    storage.recordRecoIgnored(zone_id);
+    return res.json({ ok: true });
+  });
+
+  // GET /api/reco/ignored — liste les zone_id actuellement ignorées
+  app.get("/api/reco/ignored", (_req, res) => {
+    const ids = storage.getRecentlyIgnoredZoneIds();
+    res.json({ zone_ids: Array.from(ids) });
   });
 
   app.get("/api/events", async (_req, res) => {

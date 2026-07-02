@@ -17,6 +17,7 @@ import {
   TrendingUp, Euro, Fuel, Wrench, Target, ChevronRight,
   AlertTriangle, CheckCircle, Clock, Zap, Car, BarChart2, Settings,
 } from "lucide-react";
+import { DailyGoalBar } from "@/components/DailyGoalBar";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Types — l'API SQLite renvoie majoritairement du snake_case.
@@ -634,6 +635,11 @@ export default function EconomicsDashboard() {
             <Settings size={12} /> {profile.platform_commission_pct}% comm.
           </Badge>
         </div>
+      </div>
+
+      {/* ── Widget compact Objectif jour (en haut du dashboard) ─────────── */}
+      <div className="rounded-xl border border-border bg-card px-4 py-1">
+        <DailyGoalBar variant="compact" />
       </div>
 
       {/* SECTION 0 — Performance temps réel (€/h, €/km, km à vide, vs objectif) */}

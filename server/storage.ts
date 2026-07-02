@@ -222,6 +222,17 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_pred_confidence_zone ON prediction_confidence(zone_id);
 `);
 
+// ─── Table mémoire des refus de recommandations (Lot C) ───────────────────────
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS reco_ignored (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    zone_id    TEXT NOT NULL,
+    timestamp  TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_reco_ignored_expires ON reco_ignored(expires_at);
+`);
+
 // ─── Prepared statements globaux — compilés une seule fois à l'init ───────────────────
 // Bench: alerts/events étaient recompilés à chaque requête HTTP (−64-197% latence sous 50 req. simult.)
 // Pré-compiler élimine l'overhead parser SQLite sur les chemins chauds.
@@ -2963,6 +2974,10 @@ export interface IStorage {
   getActivePredictHQEvents(zone_id?: string): PredictHQEventRow[];
   getPredictHQBoostForZone(zone_id: string, hour: number): number;
   clearOldPredictHQEvents(): void;
+  // ─── Mémoire des refus de recommandations (Lot C) ─────────────────────────────
+  recordRecoIgnored(zoneId: string): void;
+  getRecentlyIgnoredZoneIds(): Set<string>;
+  cleanExpiredRecoIgnored(): void;
 }
 
 // Type structurel local (évite l'import circulaire avec predictHQService.ts)
@@ -4008,5 +4023,32 @@ export const storage: IStorage = {
     // Supprime les events terminés depuis plus de 2 heures.
     const cutoff = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     sqlite.prepare("DELETE FROM predicthq_events WHERE end_time < ?").run(cutoff);
+  },
+
+  // ─── Mémoire des refus de recommandations (Lot C) ─────────────────────────────
+
+  // Enregistre un refus pour une zone donnée, expire dans 2 heures.
+  recordRecoIgnored(zoneId: string): void {
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+    sqlite.prepare(
+      "INSERT INTO reco_ignored (zone_id, timestamp, expires_at) VALUES (?, ?, ?)"
+    ).run(zoneId, now.toISOString(), expiresAt.toISOString());
+  },
+
+  // Nettoie les refus expirés puis retourne l'ensemble des zone_id encore actifs.
+  getRecentlyIgnoredZoneIds(): Set<string> {
+    this.cleanExpiredRecoIgnored();
+    const rows = sqlite.prepare(
+      "SELECT DISTINCT zone_id FROM reco_ignored WHERE expires_at > ?"
+    ).all(new Date().toISOString()) as { zone_id: string }[];
+    return new Set(rows.map(r => r.zone_id));
+  },
+
+  // Supprime les enregistrements dont la date d'expiration est passée.
+  cleanExpiredRecoIgnored(): void {
+    sqlite.prepare(
+      "DELETE FROM reco_ignored WHERE expires_at < ?"
+    ).run(new Date().toISOString());
   },
 };

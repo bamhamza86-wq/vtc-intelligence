@@ -17,6 +17,7 @@ import { usePredictHQ } from "@/hooks/usePredictHQ";
 import { useZonesSummary } from "@/hooks/useZonesSummary";
 import { useRepositioningAlerts } from "@/hooks/useRepositioningAlerts";
 import type { EventProximity } from "@/lib/eventProximity";
+import { RareEventBanner } from "@/components/RareEventBanner";
 
 const COLORS = { ultraHigh: "#22c55e", high: "#86efac", medium: "#fbbf24", low: "#f97316", veryLow: "#ef4444" };
 
@@ -629,7 +630,9 @@ export default function MapPage() {
   const fmtH = (h: number) => `${h.toString().padStart(2,"0")}:00`;
 
   return (
-    <div className="flex flex-col" style={{ height: "calc(100vh - 8.5rem)" }}>
+    <div className="relative flex flex-col" style={{ height: "calc(100vh - 8.5rem)" }}>
+      {/* ─── Bandeau alerte événement rare (Lot C) — premier enfant, au-dessus de la carte ───── */}
+      <RareEventBanner />
       <MapLoader />
       {/* Animation pulsante pour la heatmap de boost PredictHQ (boost ≥ 2.0) */}
       <style>{`@keyframes phqHeatPulse{0%,100%{opacity:0.35;}50%{opacity:0.7;}} .phq-heat-pulse{animation:phqHeatPulse 1.8s ease-in-out infinite;}`}</style>

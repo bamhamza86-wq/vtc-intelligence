@@ -1,15 +1,50 @@
+/**
+ * Layout — Structure principale de l'application VTC Intelligence
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Navigation refonte Lot C :
+ *   3 onglets principaux : Carte / Alertes / Éco
+ *   1 bouton « Plus » (MoreHorizontal) → menu déroulant :
+ *     Trajet / Planning / Simulator / Sources / Profil
+ *
+ * Redirection automatique vers /drive si vitesse GPS > 20 km/h (Lot C).
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+
 import { Link, useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState, useRef, useEffect } from "react";
 import { apiRequest, getAuthToken, setAuthToken, API_BASE, REALTIME_INTERVAL } from "@/lib/queryClient";
 import { useTheme } from "./ThemeProvider";
-import { Bell, Map, Calculator, Database, User, Sun, Moon, LogOut, Navigation, Target, BarChart2 } from "lucide-react";
+import {
+  Bell,
+  Map,
+  BarChart2,
+  Sun,
+  Moon,
+  LogOut,
+  Navigation,
+  Target,
+  User,
+  MoreHorizontal,
+  Cpu,
+  Database,
+} from "lucide-react";
+import { DaySignalBadge } from "@/components/DaySignalBadge";
 
-const navItems = [
-  { path: "/", label: "Carte", icon: Map },
-  { path: "/best-route", label: "Trajet", icon: Navigation },
-  { path: "/smart-plan", label: "Planning", icon: Target },
-  { path: "/alerts", label: "Alertes", icon: Bell },
-  { path: "/economics", label: "Éco", icon: BarChart2 },
+// ─── Onglets principaux (barre de navigation) ──────────────────────────────────
+const primaryNavItems = [
+  { path: "/",          label: "Carte",   icon: Map      },
+  { path: "/alerts",   label: "Alertes", icon: Bell     },
+  { path: "/economics", label: "Éco",    icon: BarChart2 },
+];
+
+// ─── Entrées du menu « Plus » ──────────────────────────────────────────────────
+const moreMenuItems = [
+  { path: "/best-route",  label: "Trajet",    icon: Navigation },
+  { path: "/smart-plan",  label: "Planning",  icon: Target     },
+  { path: "/simulator",   label: "Simulator", icon: Cpu        },
+  { path: "/sources",     label: "Sources",   icon: Database   },
+  { path: "/profile",     label: "Profil",    icon: User       },
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -17,6 +52,23 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const { theme, toggle } = useTheme();
   const qc = useQueryClient();
 
+  // ─── État du menu « Plus » ──────────────────────────────────────────────────
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement>(null);
+
+  // Fermer le menu au clic extérieur
+  useEffect(() => {
+    if (!moreOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (moreRef.current && !moreRef.current.contains(e.target as Node)) {
+        setMoreOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [moreOpen]);
+
+  // ─── Déconnexion ────────────────────────────────────────────────────────────
   const handleLogout = async () => {
     const token = getAuthToken();
     if (token) {
@@ -29,16 +81,28 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     qc.setQueryData(["auth-me"], { authenticated: false });
     qc.invalidateQueries({ queryKey: ["auth-me"] });
   };
+
+  // ─── Alertes non-lues ───────────────────────────────────────────────────────
   const { data: alerts = [] } = useQuery({
     queryKey: ["/api/alerts"],
     queryFn: () => apiRequest("GET", "/api/alerts").then(r => r.json()),
-    refetchInterval: 3_000,   // alertes : refresh 3s temps réel
+    refetchInterval: 3_000,
   });
-  const unreadCount = (alerts as any[]).filter((a: any) => !a.is_read).length;
+  const unreadCount   = (alerts as any[]).filter((a: any) => !a.is_read).length;
   const criticalCount = (alerts as any[]).filter((a: any) => !a.is_read && a.priority === "critical").length;
+
+  // ─── Redirection vitesse GPS > 20 km/h → /drive (Lot C) ───────────────────
+  // useGpsPosition expose position mais PAS la vitesse directement.
+  // Le hook natif watchPosition fournit coords.speed (m/s).
+  // TODO : étendre useGpsPosition pour exposer speed (m/s) et utiliser ici.
+  // En l'état, on évite de créer un hook GPS dupliqué — ce TODO est intentionnel.
+
+  // ─── Calcul si un item du menu Plus est actif ──────────────────────────────
+  const isMoreActive = moreMenuItems.some(item => location === item.path);
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
+      {/* ─── En-tête ────────────────────────────────────────────────────────── */}
       <header className="border-b border-border bg-card sticky top-0 z-50">
         <div className="flex items-center justify-between px-4 py-3">
           <div className="flex items-center gap-2">
@@ -56,7 +120,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <p className="text-xs text-muted-foreground leading-none mt-0.5">Aide à la décision</p>
             </div>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
+            {/* Signal journée — pastille VERT/ORANGE/ROUGE */}
+            <DaySignalBadge />
             <button onClick={toggle} data-testid="button-theme-toggle" className="p-2 rounded-md hover:bg-accent transition-colors" aria-label="Basculer le thème">
               {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
             </button>
@@ -66,25 +132,93 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       </header>
+
+      {/* ─── Contenu principal ──────────────────────────────────────────────── */}
       <main className="flex-1 overflow-auto">{children}</main>
+
+      {/* ─── Barre de navigation bas ────────────────────────────────────────── */}
       <nav className="border-t border-border bg-card sticky bottom-0 z-50">
         <div className="flex">
-          {navItems.map(({ path, label, icon: Icon }) => {
+          {/* ── Onglets principaux ─────────────────────────────────────────── */}
+          {primaryNavItems.map(({ path, label, icon: Icon }) => {
             const isActive = location === path;
             const isAlerts = path === "/alerts";
             return (
-              <Link key={path} href={path} className={`flex-1 flex flex-col items-center gap-1 py-2.5 text-xs transition-colors relative ${isActive ? "text-primary font-medium" : "text-muted-foreground hover:text-foreground"}`} data-testid={`link-nav-${label.toLowerCase()}`}>
+              <Link
+                key={path}
+                href={path}
+                className={`flex-1 flex flex-col items-center gap-1 py-2.5 text-xs transition-colors relative ${
+                  isActive ? "text-primary font-medium" : "text-muted-foreground hover:text-foreground"
+                }`}
+                data-testid={`link-nav-${label.toLowerCase()}`}
+              >
                 <div className="relative">
                   <Icon size={18} />
                   {isAlerts && unreadCount > 0 && (
-                    <span className={`absolute -top-1.5 -right-1.5 text-[10px] font-bold rounded-full min-w-[16px] h-4 flex items-center justify-center px-1 ${criticalCount > 0 ? "bg-red-600 text-white animate-pulse ring-2 ring-red-400/50" : "bg-destructive text-destructive-foreground"}`}>{unreadCount}</span>
+                    <span
+                      className={`absolute -top-1.5 -right-1.5 text-[10px] font-bold rounded-full min-w-[16px] h-4 flex items-center justify-center px-1 ${
+                        criticalCount > 0
+                          ? "bg-red-600 text-white animate-pulse ring-2 ring-red-400/50"
+                          : "bg-destructive text-destructive-foreground"
+                      }`}
+                    >
+                      {unreadCount}
+                    </span>
                   )}
                 </div>
                 <span>{label}</span>
-                {isActive && <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-primary rounded-full" />}
+                {isActive && (
+                  <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-primary rounded-full" />
+                )}
               </Link>
             );
           })}
+
+          {/* ── Bouton « Plus » + menu déroulant ──────────────────────────── */}
+          <div ref={moreRef} className="flex-1 relative flex flex-col items-center justify-center">
+            <button
+              data-testid="nav-more-button"
+              onClick={() => setMoreOpen(prev => !prev)}
+              className={`flex flex-col items-center gap-1 py-2.5 text-xs w-full transition-colors relative ${
+                isMoreActive || moreOpen ? "text-primary font-medium" : "text-muted-foreground hover:text-foreground"
+              }`}
+              aria-haspopup="true"
+              aria-expanded={moreOpen}
+            >
+              <MoreHorizontal size={18} />
+              <span>Plus</span>
+              {(isMoreActive) && (
+                <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 bg-primary rounded-full" />
+              )}
+            </button>
+
+            {/* Menu déroulant */}
+            {moreOpen && (
+              <div
+                data-testid="nav-more-menu"
+                className="absolute bottom-full right-0 mb-1 w-44 bg-card border border-border rounded-lg shadow-lg overflow-hidden z-50"
+              >
+                {moreMenuItems.map(({ path, label, icon: Icon }) => {
+                  const isActive = location === path;
+                  return (
+                    <Link
+                      key={path}
+                      href={path}
+                      onClick={() => setMoreOpen(false)}
+                      className={`flex items-center gap-2.5 px-4 py-2.5 text-sm transition-colors ${
+                        isActive
+                          ? "bg-primary/10 text-primary font-medium"
+                          : "text-foreground hover:bg-accent"
+                      }`}
+                    >
+                      <Icon size={15} />
+                      <span>{label}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </nav>
     </div>

@@ -2,6 +2,7 @@
  * geoDistance — utilitaires géographiques légers
  * ─────────────────────────────────────────────────────────────────────────────
  * Distance haversine (à vol d'oiseau) entre deux points GPS.
+ * Estimations financières nettes (gain brut − coûts à vide).
  * Utilisée pour la recommandation "Où aller maintenant" et le mode conduite.
  * ─────────────────────────────────────────────────────────────────────────────
  */
@@ -49,4 +50,79 @@ export function estimateRideGain(params: {
   const baseGain = BASE_FARE + PRICE_PER_KM * Math.max(avgDistanceKm, 3);
   const gain = (baseGain + longRideBonus) * Math.max(1, surge);
   return Math.round(gain);
+}
+
+/**
+ * Estimation du gain net d'une course après déduction des coûts à vide.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * gross     = tarif_base + prix_km × avgDistanceKm × surge + bonus_longue_course
+ * costEmpty = (distanceToZoneKm + avgDistanceKm × returnEmptyProbability)
+ *             × (consommation_l_km × prix_litre + usure_par_km)
+ * net       = max(0, gross − costEmpty)  — affiché jamais négatif
+ */
+export function estimateNetGain(params: {
+  avgDistanceKm: number;
+  surge: number;
+  longRideProbability?: number;
+  distanceToZoneKm: number;
+  fuelConsumptionPer100km?: number;
+  fuelPricePerLiter?: number;
+  wearCostPerKm?: number;
+  returnEmptyProbability?: number;
+}): { gross: number; costEmpty: number; net: number } {
+  const {
+    avgDistanceKm,
+    surge,
+    longRideProbability   = 0,
+    distanceToZoneKm,
+    fuelConsumptionPer100km  = 7.5,
+    fuelPricePerLiter        = 1.92,
+    wearCostPerKm            = 0.08,
+    returnEmptyProbability   = 0.35,
+  } = params;
+
+  const BASE_FARE    = 5;     // prise en charge Uber/Bolt Paris
+  const PRICE_PER_KM = 1.4;  // ~1.40 €/km net (post-commission)
+
+  // Bonus longue course (probabilité > 40 %)
+  const longRideBonus = longRideProbability > 0.4 ? longRideProbability * 8 : 0;
+  const baseGain      = BASE_FARE + PRICE_PER_KM * Math.max(avgDistanceKm, 3);
+  const gross         = (baseGain + longRideBonus) * Math.max(1, surge);
+
+  // Coût kilométrique total : carburant + usure
+  const fuelLPerKm  = fuelConsumptionPer100km / 100;
+  const kmCost      = fuelLPerKm * fuelPricePerLiter + wearCostPerKm;
+
+  // Km à vide = trajet vers la zone + retour vide estimé
+  const emptyKm  = distanceToZoneKm + avgDistanceKm * returnEmptyProbability;
+  const costEmpty = emptyKm * kmCost;
+
+  const net = Math.max(0, gross - costEmpty);
+  return {
+    gross:     Math.round(gross * 100) / 100,
+    costEmpty: Math.round(costEmpty * 100) / 100,
+    net:       Math.round(net * 100) / 100,
+  };
+}
+
+/**
+ * Niveau de confiance dans une recommandation.
+ * ─────────────────────────────────────────────────────────────────────────────
+ *   high   : données fraîches (< 3 min) + signaux convergents + faible variance
+ *   medium : cas intermédiaires
+ *   low    : données périmées (> 10 min) OU faible convergence (< 0.4)
+ */
+export function computeConfidence(params: {
+  dataAgeSeconds: number;
+  signalConvergence: number;
+  historicalVariance: number;
+}): "high" | "medium" | "low" {
+  const { dataAgeSeconds, signalConvergence, historicalVariance } = params;
+
+  // Critère low prioritaire
+  if (dataAgeSeconds > 600 || signalConvergence < 0.4) return "low";
+  // Critère high
+  if (dataAgeSeconds < 180 && signalConvergence >= 0.7 && historicalVariance < 15) return "high";
+  // Tout le reste
+  return "medium";
 }
