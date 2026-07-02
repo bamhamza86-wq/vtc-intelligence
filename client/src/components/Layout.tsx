@@ -30,6 +30,7 @@ import {
   Database,
 } from "lucide-react";
 import { DaySignalBadge } from "@/components/DaySignalBadge";
+import { useGpsPosition } from "@/hooks/useGpsPosition";
 
 // ─── Onglets principaux (barre de navigation) ──────────────────────────────────
 const primaryNavItems = [
@@ -47,8 +48,13 @@ const moreMenuItems = [
   { path: "/profile",     label: "Profil",    icon: User       },
 ];
 
+// ─── Redirection auto vers /drive ─────────────────────────────────────────────
+// Seuils avec hystérésis pour éviter les allers-retours autour de 20 km/h.
+const DRIVE_ENTER_KMH = 20; // au-dessus → mode conduite
+const DRIVE_EXIT_KMH  = 8;  // en-dessous et déjà sur /drive → on ne quitte pas auto
+
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const [location] = useLocation();
+  const [location, navigate] = useLocation();
   const { theme, toggle } = useTheme();
   const qc = useQueryClient();
 
@@ -92,10 +98,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const criticalCount = (alerts as any[]).filter((a: any) => !a.is_read && a.priority === "critical").length;
 
   // ─── Redirection vitesse GPS > 20 km/h → /drive (Lot C) ───────────────────
-  // useGpsPosition expose position mais PAS la vitesse directement.
-  // Le hook natif watchPosition fournit coords.speed (m/s).
-  // TODO : étendre useGpsPosition pour exposer speed (m/s) et utiliser ici.
-  // En l'état, on évite de créer un hook GPS dupliqué — ce TODO est intentionnel.
+  // useGpsPosition expose désormais speedKmh (via coords.speed × 3.6).
+  // Hystérésis : on entre à 20 km/h, on ne sort JAMAIS automatiquement (le chauffeur
+  // reprend le contrôle manuellement, évite le clignotement au feu rouge).
+  // Opt-out possible via localStorage `vtc.autodrive_off`="1".
+  const { speedKmh } = useGpsPosition();
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.localStorage.getItem("vtc.autodrive_off") === "1") return;
+    if (speedKmh >= DRIVE_ENTER_KMH && location !== "/drive") {
+      navigate("/drive");
+    }
+    // Note: DRIVE_EXIT_KMH volontairement inutilisé — pas de sortie auto.
+    void DRIVE_EXIT_KMH;
+  }, [speedKmh, location, navigate]);
 
   // ─── Calcul si un item du menu Plus est actif ──────────────────────────────
   const isMoreActive = moreMenuItems.some(item => location === item.path);

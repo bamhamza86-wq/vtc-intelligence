@@ -28,6 +28,7 @@ export interface GpsPosition {
   lat: number;
   lng: number;
   accuracy?: number; // mètres
+  speedKmh?: number; // vitesse instantanée en km/h (undefined si non fournie)
 }
 
 export interface UseGpsPositionResult {
@@ -38,6 +39,14 @@ export interface UseGpsPositionResult {
   isFallback:    boolean;            // true si on utilise Bd Ney
   refresh:       () => void;         // forcer une nouvelle lecture GPS
   error:         string | null;
+  speedKmh:      number;             // vitesse lissée en km/h (0 si absente)
+}
+
+// ── Conversion vitesse ───────────────────────────────────────────────────────
+// GeolocationCoordinates.speed est en m/s (ou null si indisponible)
+function msToKmh(speedMs: number | null | undefined): number | undefined {
+  if (speedMs == null || Number.isNaN(speedMs) || speedMs < 0) return undefined;
+  return speedMs * 3.6;
 }
 
 // ── Singleton partagé — une seule instance watchPosition pour toute l'app ────
@@ -60,6 +69,7 @@ function startSharedWatch(): void {
         lat:      pos.coords.latitude,
         lng:      pos.coords.longitude,
         accuracy: pos.coords.accuracy,
+        speedKmh: msToKmh(pos.coords.speed),
       };
       _lastRawPosition = gps;
       _lastPositionDate = new Date();
@@ -108,6 +118,7 @@ export function useGpsPosition(): UseGpsPositionResult {
           lat:      pos.coords.latitude,
           lng:      pos.coords.longitude,
           accuracy: pos.coords.accuracy,
+          speedKmh: msToKmh(pos.coords.speed),
         };
         _lastRawPosition = gps;
         _lastPositionDate = new Date();
@@ -169,6 +180,7 @@ export function useGpsPosition(): UseGpsPositionResult {
 
   const position: GpsPosition = rawPosition ?? GPS_FALLBACK;
   const isFallback = rawPosition === null;
+  const speedKmh = rawPosition?.speedKmh ?? 0;
 
   return {
     position,
@@ -178,5 +190,6 @@ export function useGpsPosition(): UseGpsPositionResult {
     isFallback,
     refresh,
     error,
+    speedKmh,
   };
 }
