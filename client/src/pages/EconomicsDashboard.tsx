@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
+import { TomTomStatusPill } from "@/components/TomTomStatusPill";
 import { PredictHQBadge } from "@/components/PredictHQBadge";
 import { usePredictHQ } from "@/hooks/usePredictHQ";
 import {
@@ -625,6 +626,11 @@ export default function EconomicsDashboard() {
     // EconomicsDashboard — mobile : p-3, overflow-x-auto sur les sections tables
     <PullToRefresh onRefresh={onRefresh}>
     <div className="p-3 sm:p-4 max-w-6xl mx-auto space-y-4 sm:space-y-5">
+      {/* Rappel visuel état routage TomTom en haut de page */}
+      <div className="flex justify-end">
+        <TomTomStatusPill />
+      </div>
+
       {/* Header — mobile : stack vertical */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div>

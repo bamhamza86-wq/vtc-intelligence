@@ -25,6 +25,7 @@ import { useNextPeakHour } from "@/hooks/useNextPeakHour";
 import { useDriverState } from "@/hooks/useDriverState";
 import { useGpsPosition, GPS_FALLBACK } from "@/hooks/useGpsPosition";
 import { DriverStateToggle } from "@/components/DriverStateToggle";
+import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -131,6 +132,9 @@ export function RecoWhereToGo({ position, topZones, onFocusZone }: RecoWhereToGo
   const avgDist  = top.avg_distance_km     ?? top.avgDistanceKm      ?? 8;
   const longRide = top.long_ride_probability ?? top.longRideProbability ?? 0;
   const etaMin   = top.eta_to_zone         ?? top.etaToZone           ?? null;
+  // ─── Source du calcul ETA/distance (tomtom|osrm|google|calibrated) ──────────
+  const reco     = top as { distance_source?: string };
+  const distSrc  = reco.distance_source     ?? top.distanceSource      ?? "calibrated";
   const phqBoost = top.phq_boost           ?? top.phqBoost            ?? 1.0;
   // Âge du signal (en secondes) — fourni par le backend ou fallback 60s
   const dataAgeSec = top.data_age_seconds  ?? top.dataAgeSeconds      ?? 60;
@@ -302,6 +306,8 @@ export function RecoWhereToGo({ position, topZones, onFocusZone }: RecoWhereToGo
                       >
                         {Math.round(etaMin)} min
                       </strong>
+                      {/* Source du calcul ETA/distance */}
+                      <RouteSourceBadge source={distSrc} size="xs" />
                     </span>
                   )}
 

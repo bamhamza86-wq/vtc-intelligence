@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import SurgeTransparencyWidget from "@/components/SurgeTransparencyWidget";
+import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -37,6 +38,8 @@ interface Slot {
   arriveBy: string;
   etaMin: number;
   distKm: number;
+  // ─── Source du calcul ETA/distance (tomtom|osrm|google|calibrated) ──────────
+  distanceSource?: string;
   bufferMin: number;
   urgency: "now" | "soon" | "upcoming" | "later";
   detail?: string;
@@ -54,6 +57,8 @@ interface EventBlock {
   zoneLng: number;
   etaMin: number;
   distKm: number;
+  // ─── Source du calcul ETA/distance (tomtom|osrm|google|calibrated) ──────────
+  distanceSource?: string;
   demandBoost: number;
   eventType: string;
   clickedAt: string;
@@ -296,6 +301,8 @@ function SlotCard({ slot, zoneLat, zoneLng, userLat, userLng, isAirport }: {
             <ArrowRight size={14} className="text-muted-foreground/60" />
             <span className="text-[9px] text-muted-foreground">{slot.etaMin}min</span>
             <span className="text-[9px] text-muted-foreground">{slot.distKm}km</span>
+            {/* Source du calcul ETA/distance */}
+            <RouteSourceBadge source={slot.distanceSource ?? "calibrated"} size="xs" />
           </div>
 
           {/* Arrivée sur zone */}
@@ -389,6 +396,8 @@ function EventBlockCard({ block, userPos, isExpanded, onToggle }: {
           <div className="flex items-center gap-2 text-[10px] text-muted-foreground mb-1">
             <span className="flex items-center gap-0.5"><MapPin size={9} />{block.distKm}km</span>
             <span className="flex items-center gap-0.5"><Clock size={9} />~{block.etaMin}min trajet</span>
+            {/* Source du calcul ETA/distance */}
+            <RouteSourceBadge source={block.distanceSource ?? "calibrated"} size="xs" />
             {block.demandBoost > 1.1 && (
               <span className="flex items-center gap-0.5 text-green-400 font-semibold">
                 <TrendingUp size={9} />×{block.demandBoost.toFixed(2)}
@@ -437,6 +446,9 @@ function EventBlockCard({ block, userPos, isExpanded, onToggle }: {
               {" "}· ETA trajet{" "}
               <strong className="text-foreground">{block.etaMin} min</strong>
               {" "}({block.distKm} km)
+              {" "}
+              {/* Source du calcul ETA/distance */}
+              <RouteSourceBadge source={block.distanceSource ?? "calibrated"} size="xs" />
             </span>
           </div>
 

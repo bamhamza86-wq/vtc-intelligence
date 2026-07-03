@@ -594,7 +594,9 @@ function cacheKey(zoneId: string, lat: number, lng: number): string {
 
 /**
  * Récupère la route pour une zone depuis le cache ou les APIs.
- * Priorité : cache valide → Google → OSRM → calibré
+ * Priorité stricte : cache valide → TomTom (trafic temps réel) → Google → OSRM → calibré
+ * Le champ `source` reflète la source réellement utilisée :
+ *   "tomtom" si TomTom a répondu, sinon "google", sinon "osrm", sinon "calibrated".
  */
 export async function getRouteForZone(
   zoneId:    string,

@@ -917,7 +917,10 @@ export default function MapPage() {
                           <Navigation size={11} className="text-green-400" />
                           ETA trajet : <strong className="text-foreground tabular-nums">{Math.round(etaToZone)} min</strong>
                         </span>
-                        <RouteSourceBadge source={etaSource} size="xs" />
+                        {/* Badge source par zone : TomTom primaire, sinon fallback OSRM/Calibré */}
+                        <span data-testid="map-eta-source-badge">
+                          <RouteSourceBadge source={p.distance_source ?? p.distanceSource ?? "calibrated"} size="xs" />
+                        </span>
                       </div>
                     )}
 

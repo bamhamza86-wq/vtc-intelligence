@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { DaySignalBadge } from "@/components/DaySignalBadge";
 import { LiveIndicator } from "@/components/LiveIndicator";
+import { TomTomStatusPill } from "@/components/TomTomStatusPill";
 import { useLiveRefresh } from "@/hooks/useLiveRefresh";
 import { useSSE } from "@/hooks/useSSE";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
@@ -165,9 +166,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <div className="flex sm:hidden" data-testid="day-signal-mobile">
               <DaySignalBadge compact />
             </div>
+            {/* Pastille TomTom compacte sur mobile (icône seule, à côté de DaySignalBadge) */}
+            <div className="flex sm:hidden">
+              <TomTomStatusPill compact />
+            </div>
             {/* Indicateur LIVE/STALE fraîcheur GPS */}
             <div className="hidden sm:flex">
               <LiveIndicator />
+            </div>
+            {/* Pastille TomTom actif / non connecté — juste après LiveIndicator (desktop) */}
+            <div className="hidden sm:flex">
+              <TomTomStatusPill />
             </div>
             {/* Bouton thème — desktop seulement (mobile : dans menu Plus) */}
             <button

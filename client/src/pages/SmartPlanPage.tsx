@@ -14,6 +14,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import PredictionPanel from "@/components/PredictionPanel";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
+import { TomTomStatusPill } from "@/components/TomTomStatusPill";
 import { PredictHQBadge } from "@/components/PredictHQBadge";
 import { usePredictHQSurges, type PredictHQSurge } from "@/hooks/usePredictHQ";
 
@@ -659,6 +660,8 @@ export default function SmartPlanPage() {
           <ModelReliabilityBadge />
         </div>
         <div className="flex items-center gap-2">
+          {/* Rappel état routage TomTom en haut de page */}
+          <TomTomStatusPill />
           <GpsFreshness lastUpdatedAt={lastUpdatedAt} isFallback={isFallback} />
           {plan && (
             <div className="flex items-center gap-1 text-[10px] text-muted-foreground">

@@ -49,14 +49,15 @@ const ZONE_COURSE_PROFILE: Record<string, { avgDistKm: number; avgFare: number; 
 const COURSE_AVG_SPEED_KMH = 28;
 
 // ── Badge coloré de la source de distance/ETA ───────────────────────────────
+// Unifié sur le composant partagé RouteSourceBadge (source primaire TomTom +
+// fallback OSRM/Google/Calibré). Wrapper local conservé uniquement pour porter
+// le data-testid="badge-source-<source>" attendu par les tests e2e existants.
 function SourceBadge({ source }: { source: string }) {
-  if (source === "tomtom")
-    return <Badge className="bg-green-500/20 text-green-400 border-green-500/30 hover:bg-green-500/20" data-testid={`badge-source-${source}`}>🚦 TomTom</Badge>;
-  if (source === "google")
-    return <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20" data-testid={`badge-source-${source}`}>🚦 Trafic</Badge>;
-  if (source === "osrm")
-    return <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/20" data-testid={`badge-source-${source}`}>🛣️ OSRM</Badge>;
-  return <Badge className="bg-gray-500/20 text-gray-400 border-gray-500/30 hover:bg-gray-500/20" data-testid={`badge-source-${source}`}>📊 Calibré</Badge>;
+  return (
+    <span data-testid={`badge-source-${source}`}>
+      <RouteSourceBadge source={source} size="sm" />
+    </span>
+  );
 }
 
 // ── Petit ticker pour afficher l'âge de la dernière donnée best-route ─────────
@@ -366,6 +367,9 @@ export default function SimulatorPage() {
         const id = selectedZone.zone?.id;
         const profile = ZONE_COURSE_PROFILE[id];
         const r = calc.data;
+        // ── Source temps réel exploitable ? (TomTom/Google avec trafic) ────────
+        // Sinon les calculs reposent sur l'estimation OSRM (sans trafic) → warning.
+        const realtimeUsable = selectedZone.distanceSource === "tomtom" || selectedZone.distanceSource === "google";
         return (
           <Card className="border-primary/40">
             <CardHeader className="pb-2">
@@ -375,14 +379,35 @@ export default function SimulatorPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
+              {/* ─── Warning : calculs basés sur estimation OSRM (pas de trafic temps réel) ───
+                  Affiché au-dessus des chiffres calculés quand TomTom/Google absent.
+              ───────────────────────────────────────────────────────── */}
+              {!realtimeUsable && (
+                <div
+                  data-testid="simulator-osrm-estimate-warning"
+                  className="flex items-start gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-400 text-amber-900 text-xs"
+                >
+                  <span className="shrink-0">⚠</span>
+                  <span className="flex-1">
+                    Calculs basés sur estimation OSRM (sans trafic) —{" "}
+                    <Link href="/sources" className="underline underline-offset-2 font-semibold hover:text-amber-950">
+                      connecter TomTom
+                    </Link>{" "}
+                    pour temps réel
+                  </span>
+                </div>
+              )}
               {/* Récap repositionnement + course */}
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="bg-muted/40 rounded-lg p-2.5">
                   <p className="text-muted-foreground flex items-center gap-1"><Navigation size={11} /> Repositionnement</p>
-                  <p className="font-semibold mt-0.5">
-                    {selectedZone.etaMinutes} min · {selectedZone.distanceKm} km
+                  <p className="font-semibold mt-0.5 flex items-center gap-1.5 flex-wrap">
+                    <span>{selectedZone.etaMinutes} min · {selectedZone.distanceKm} km</span>
+                    {/* Badge source inline : TomTom primaire, sinon fallback OSRM/Calibré */}
+                    <span data-testid="simulator-reposition-source-badge">
+                      <RouteSourceBadge source={selectedZone.distanceSource ?? "calibrated"} size="xs" />
+                    </span>
                   </p>
-                  <div className="mt-1"><SourceBadge source={selectedZone.distanceSource} /></div>
                 </div>
                 <div className="bg-muted/40 rounded-lg p-2.5">
                   <p className="text-muted-foreground flex items-center gap-1"><RouteIcon size={11} /> Course client</p>
@@ -513,18 +538,27 @@ export default function SimulatorPage() {
                 GPS indisponible — position par défaut (Bd Ney)
               </div>
             )}
-            <div className="space-y-2 text-sm">
-              <div className="flex items-center justify-between py-1.5 border-b border-border/50">
-                <span className="flex items-center gap-2"><SourceBadge source="tomtom" /> <span className="text-xs text-muted-foreground">temps réel + trafic</span></span>
-                <span className="font-mono font-semibold tabular-nums" data-testid="text-eta-tomtom">
+            {/* ─── Mise en avant visuelle de la source active ────────────────────────
+                Quand TomTom (ou Google) est la source effective → la ligne TomTom est
+                sur fond vert clair et les autres sont grisées (opacity réduite).
+                Sinon aucune ligne n'est privilégiée (affichage neutre).
+            ────────────────────────────────────────────────────── */}
+            {(() => { const _tt = sourceComparison.src === "tomtom" || sourceComparison.src === "google"; return (
+            <div className="space-y-2 text-sm" data-testid="simulator-source-comparison" data-tomtom-active={_tt ? "true" : "false"}>
+              <div
+                className={`flex items-center justify-between py-1.5 px-2 -mx-2 rounded-md border-b border-border/50 transition-colors ${_tt ? "bg-green-500/15 border-green-500/40 ring-1 ring-green-500/30" : ""}`}
+                data-testid="simulator-source-row-tomtom"
+              >
+                <span className={`flex items-center gap-2 ${_tt ? "font-semibold" : ""}`}><SourceBadge source="tomtom" /> <span className="text-xs text-muted-foreground">temps réel + trafic</span>{_tt && <span className="text-[10px] font-bold text-green-500 uppercase tracking-wide">✓ active</span>}</span>
+                <span className={`font-mono font-semibold tabular-nums ${_tt ? "text-green-400" : ""}`} data-testid="text-eta-tomtom">
                   {sourceComparison.etaTomtom != null ? `${sourceComparison.etaTomtom} min` : "n/a"}
                 </span>
               </div>
-              <div className="flex items-center justify-between py-1.5 border-b border-border/50">
+              <div className={`flex items-center justify-between py-1.5 border-b border-border/50 transition-opacity ${_tt ? "opacity-40" : ""}`} data-testid="simulator-source-row-osrm">
                 <span className="flex items-center gap-2"><SourceBadge source="osrm" /> <span className="text-xs text-muted-foreground">routes sans trafic</span></span>
                 <span className="font-mono font-semibold tabular-nums" data-testid="text-eta-osrm">{sourceComparison.etaOsrm} min</span>
               </div>
-              <div className="flex items-center justify-between py-1.5 border-b border-border/50">
+              <div className={`flex items-center justify-between py-1.5 border-b border-border/50 transition-opacity ${_tt ? "opacity-40" : ""}`} data-testid="simulator-source-row-calibrated">
                 {/* ─── Label calibré : "réf. GPS live" si GPS actif, sinon "réf. Bd Ney" ────
                     Quand l'origine est la vraie position GPS, "Bd Ney" serait trompeur.
                 ────────────────────────────────────────────────────────────────────────── */}
@@ -548,6 +582,7 @@ export default function SimulatorPage() {
                 </span>
               </div>
             </div>
+            ); })()}
             <Separator className="my-3" />
             <p className="text-[11px] text-muted-foreground flex items-start gap-1.5">
               <Info size={12} className="mt-0.5 shrink-0 text-primary" />

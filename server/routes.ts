@@ -204,6 +204,39 @@ export function registerRoutes(httpServer: Server, app: Express): void {
 
   app.get("/api/zones", (_req, res) => { res.json(storage.getAllZones()); });
 
+  // ════════════════════════════════════════════════════════════════════════════
+  // ETA-2 : HELPERS ENRICHISSEMENT ETA / SOURCE (rétro-compat client)
+  // ────────────────────────────────────────────────────────────────────────────
+  // Tous les endpoints qui renvoient un ETA/duration doivent exposer la source
+  // effective des données de routing. On expose DEUX noms en parallèle pour la
+  // rétro-compatibilité côté client :
+  //   • distance_source (snake_case, nom canonique cible)
+  //   • distanceSource  (camelCase, conservé pour l'existant)
+  // Plus eta_source (même valeur que la source de distance : le même provider
+  // fournit distance ET durée) et un _ts (timestamp ms) sur chaque payload.
+  // Valeurs possibles : "tomtom" | "osrm" | "google" | "calibrated".
+  // ────────────────────────────────────────────────────────────────────────────
+  // Normalise une source de routing (fallback "calibrated" si absente/inconnue).
+  const normalizeRoutingSource = (src?: string | null): string => {
+    const s = (src ?? "").toLowerCase();
+    return (s === "tomtom" || s === "osrm" || s === "google" || s === "calibrated")
+      ? s
+      : "calibrated";
+  };
+  // Injecte distance_source + distanceSource + eta_source sur un objet zone.
+  // Ne réécrit jamais un distanceSource déjà présent (sémantique préservée).
+  const withRoutingSource = <T extends Record<string, any>>(obj: T, src?: string | null): T & {
+    distance_source: string; distanceSource: string; eta_source: string;
+  } => {
+    const source = normalizeRoutingSource(obj.distanceSource ?? obj.distance_source ?? src);
+    return {
+      ...obj,
+      distance_source: source,   // ← snake_case canonique (ETA-2)
+      distanceSource:  obj.distanceSource ?? source, // ← camelCase existant conservé
+      eta_source:      source,   // ← même provider fournit distance + durée
+    };
+  };
+
   // ─── /api/current — Snapshot temps réel (2s refresh) ──────────────────
   // Regroupe profitability + top-zones + alertes actives + meta refresh
   // en 1 seul appel — réduit les requêtes de 3 → 1 par cycle 2s
@@ -241,10 +274,14 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       } catch { /* garde scores non-enrichis */ }
 
       // Top 5 zones triées sur scores ENRICHIS (avec flight_boost appliqué)
+      // ─── ETA-2 : chaque zone expose distance_source + eta_source depuis le cache routing ───
       const topZones = [...enrichedScores]
         .sort((a: any, b: any) => (b.profitability_index ?? 0) - (a.profitability_index ?? 0))
         .slice(0, 5)
-        .map((s: any) => ({ ...s, zone: zoneMap[s.zone_id] }));
+        .map((s: any) => {
+          const rc = getCachedRoute(s.zone_id);
+          return withRoutingSource({ ...s, zone: zoneMap[s.zone_id], eta_to_zone: rc.etaMin }, rc.source);
+        });
 
       // lastRefresh depuis seed_meta (clé 'last_refresh_ts' OU 'last_seed_ts')
       const meta = storage.getSeedMeta();
@@ -259,6 +296,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         lastRefresh: lastRefreshTs,
         nextRefresh: new Date(new Date(lastRefreshTs).getTime() + 3 * 60 * 1000).toISOString(),
         zones: zoneMap,
+        _ts: Date.now(), // ← ETA-2 : timestamp de la réponse
       });
     } catch (err) {
       res.status(500).json({ error: "Erreur /api/current", details: String(err) });
@@ -498,6 +536,11 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           congestion_label:   congestedRT.congestionLabel,
           eta_to_zone:        congestedRT.etaMin,
           speed_effective:    congestedRT.speedKmH,
+          // ─── ETA-2 : source des données distance/ETA (snake + camel + eta_source) ───
+          distance_source:    normalizeRoutingSource(cachedRoute.source),
+          distanceSource:     normalizeRoutingSource(cachedRoute.source),
+          eta_source:         normalizeRoutingSource(cachedRoute.source),
+          _ts:                Date.now(),
           min_per_km:         breakEvenRT.minPerKm,
           break_even_ok:      breakEvenRT.breakEvenOk,
           congestion_penalty: breakEvenRT.penalty,
@@ -648,14 +691,17 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       const isIgnored = ignoredZones.has(zoneId);
       const baseScore = s.profitability_index ?? 0;
       const adjustedScore = isIgnored ? Math.max(0, baseScore - 15) : baseScore;
-      return {
+      // ─── ETA-2 : source routing (tomtom/osrm/google/calibrated) + ETA depuis le cache ───
+      const rc = getCachedRoute(zoneId);
+      return withRoutingSource({
         ...s,
         zone_id: zoneId,
         zone: zoneMap[zoneId],
         profitability_index: adjustedScore,
         profitabilityIndex: adjustedScore,
+        eta_to_zone: rc.etaMin,
         ...(isIgnored ? { ignored_penalty: 15 } : {}),
-      };
+      }, rc.source);
     });
     // Applique le boost communautaire après le calcul du score initial
     for (const z of topZones) {
@@ -663,7 +709,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       if (imp) {
         z.profitability_index = Math.max(0, Math.min(100, z.profitability_index * (1 + imp.boost_pct / 100)));
         z.profitabilityIndex = z.profitability_index;
-        z.community_boost_pct = imp.boost_pct;
+        (z as any).community_boost_pct = imp.boost_pct;
       }
     }
     res.json(topZones);
@@ -676,7 +722,11 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     const lat = parseFloat(req.query.lat as string) || 48.8976;
     const lng = parseFloat(req.query.lng as string) || 2.3299;
     const result = getBestZoneNow(lat, lng);
-    res.json(result || { error: "no_data", _ts: Date.now() });
+    if (!result) return res.json({ error: "no_data", _ts: Date.now() });
+    // ─── ETA-2 : ajoute distance_source + eta_source depuis le cache routing de la zone ───
+    // getBestZoneNow (storage) reste intact ; on enrichit uniquement la réponse HTTP.
+    const rc = getCachedRoute(result.zone_id, lat, lng);
+    res.json(withRoutingSource({ ...result, eta_min: rc.etaMin }, rc.source));
   });
 
   // ─── Lot Beta : countdown prochain pic (heure suivante avec score > 70) ──────────
@@ -1253,6 +1303,9 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         const roadKm = cal?.road_km ?? 20;
         const congested = getCongestedETA(zoneId, roadKm, h);
         const breakEven = computeBreakEvenPenalty(zoneId, roadKm, congested.etaMin, congested.congestionFactor);
+        // ─── ETA-2 : source routing effective de la zone (tomtom/osrm/google/calibrated) ───
+        const rc  = getCachedRoute(zoneId, lat, lng);
+        const src = normalizeRoutingSource(rc.source);
         return {
           zone_id:            zoneId,
           hour:               h,
@@ -1267,6 +1320,10 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           congestion_penalty: breakEven.penalty,
           // ETA de référence libre-flux (nuit h=2) pour comparaison
           eta_freeflow_min:   cal ? Math.round((roadKm / cal.speed_pm) * 60 * 2.4) : null,
+          // ─── ETA-2 : source distance/ETA (snake + camel + eta_source) ───
+          distance_source:    src,
+          distanceSource:     src,
+          eta_source:         src,
         };
       });
 
@@ -1274,6 +1331,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         hour:      h,
         timestamp: new Date().toISOString(),
         zones:     result,
+        _ts:       Date.now(), // ← ETA-2 : timestamp de la réponse
       });
     } catch (err) {
       res.status(500).json({ error: String(err) });
@@ -1518,6 +1576,54 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       predicthq_active_events: phqActiveEvents,
       predicthq_max_boost:    Math.round(phqMaxBoost * 100) / 100,
     });
+  });
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // ETA-2 : GET /api/routing-diagnostics
+  // ────────────────────────────────────────────────────────────────────────────
+  // Diagnostic par zone du cache routing : source effective (tomtom/osrm/google/
+  // calibrated), ETA, distance et âge (secondes) de l'entrée. Fournit aussi le
+  // décompte par source + le taux de hit TomTom (part des zones servies en trafic
+  // temps réel). Query optionnelle : ?lat=&lng= pour l'origine GPS du chauffeur.
+  // ════════════════════════════════════════════════════════════════════════════
+  app.get("/api/routing-diagnostics", (req, res) => {
+    try {
+      const originLat = parseFloat(req.query.lat as string ?? "") || DEFAULT_ORIGIN.lat;
+      const originLng = parseFloat(req.query.lng as string ?? "") || DEFAULT_ORIGIN.lng;
+      const now = Date.now();
+
+      // Toutes les entrées du cache pour cette origine (fallback calibré si absente).
+      const routes = getAllCachedRoutes(originLat, originLng);
+
+      // ─── Décompte par source + lignes par zone ──────────────────────────────
+      const counts: Record<string, number> = { tomtom: 0, osrm: 0, google: 0, calibrated: 0 };
+      const zonesOut = Object.entries(routes).map(([zoneId, entry]) => {
+        const source = normalizeRoutingSource(entry.source);
+        counts[source] = (counts[source] ?? 0) + 1;
+        // âge de l'entrée en secondes (0 si fraîchement calibrée)
+        const ageSec = entry.cachedAt ? Math.max(0, Math.round((now - entry.cachedAt) / 1000)) : 0;
+        return {
+          zone_id:     zoneId,
+          source,
+          eta_min:     entry.etaMin,
+          distance_km: entry.roadKm,
+          age_sec:     ageSec,
+        };
+      });
+
+      // ─── Taux de hit TomTom = part des zones servies via TomTom ─────────────
+      const total = zonesOut.length || 1;
+      const tomtomHitRate = Math.round((counts.tomtom / total) * 100) / 100;
+
+      res.json({
+        zones:           zonesOut,
+        counts,
+        tomtom_hit_rate: tomtomHitRate,
+        _ts:             now,
+      });
+    } catch (err) {
+      res.status(500).json({ error: "Erreur /api/routing-diagnostics", details: String(err) });
+    }
   });
 
   // ─── PredictHQ — aperçu du boost events par zone ────────────────────────────
@@ -1773,7 +1879,10 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           estimatedRevenue,
           reason,
           // Source des données de distance/ETA (tomtom / osrm / google / calibrated)
-          distanceSource: rcEntry.source ?? "calibrated",
+          // ─── ETA-2 : distanceSource (camel, existant) + distance_source + eta_source (snake) ───
+          distanceSource:  normalizeRoutingSource(rcEntry.source),
+          distance_source: normalizeRoutingSource(rcEntry.source),
+          eta_source:      normalizeRoutingSource(rcEntry.source),
           // Trafic historique — densité de congestion par zone
           congestionFactor:  congestedZ.congestionFactor,
           congestionLabel:   congestedZ.congestionLabel,
@@ -1798,6 +1907,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         top5,
         all: results,
         computedAt: new Date().toISOString(),
+        _ts: Date.now(), // ← ETA-2 : timestamp de la réponse
         // Métadonnées du cache Google Maps utilisé pour ce calcul
         routingCache: {
           lastUpdated:     routingLastRefresh.toISOString(),
@@ -2438,7 +2548,12 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         score:    s.profitability_index,
         surge:    s.surge_multiplier,
         fare:     s.avg_fare,
-        ...etaToZone(s.zone_id, zoneMap[s.zone_id]?.lat ?? 0, zoneMap[s.zone_id]?.lng ?? 0),
+        // ─── ETA-2 : etaToZone fournit déjà distanceSource ; on ajoute snake + eta_source ───
+        ...(() => {
+          const e = etaToZone(s.zone_id, zoneMap[s.zone_id]?.lat ?? 0, zoneMap[s.zone_id]?.lng ?? 0);
+          const src = normalizeRoutingSource(e.distanceSource);
+          return { ...e, distance_source: src, eta_source: src };
+        })(),
       }));
 
       // ── TEMPS RÉEL VOLS (CDG/Orly, prochain créneau concret) (étapes) ──────
@@ -2480,6 +2595,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           const st = getCacheStats();
           return st.tomtomAvailable ? "tomtom" : st.osrmAvailable ? "osrm" : st.googleAvailable ? "google" : "calibrated";
         })(),
+        _ts: Date.now(), // ← ETA-2 : timestamp de la réponse
       });
 
     } catch (err) {
@@ -2655,7 +2771,10 @@ export function registerRoutes(httpServer: Server, app: Express): void {
           mapsDetourUrl,
           globalScore,
           // Source des données distance/ETA (tomtom = trafic temps réel)
-          distanceSource: rcEntry.source,
+          // ─── ETA-2 : distanceSource (camel, existant) + distance_source + eta_source (snake) ───
+          distanceSource:  normalizeRoutingSource(rcEntry.source),
+          distance_source: normalizeRoutingSource(rcEntry.source),
+          eta_source:      normalizeRoutingSource(rcEntry.source),
         };
       });
 
@@ -2677,6 +2796,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
         hour,
         dayType,
         computedAt: new Date().toISOString(),
+        _ts: Date.now(), // ← ETA-2 : timestamp de la réponse
       });
     } catch (err) {
       console.error("[return-journey] error:", err);

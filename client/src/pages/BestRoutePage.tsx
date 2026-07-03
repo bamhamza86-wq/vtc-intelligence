@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { UpdateWidget } from "@/components/UpdateWidget";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
+import { TomTomStatusPill } from "@/components/TomTomStatusPill";
 import { PredictHQBadge } from "@/components/PredictHQBadge";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -636,6 +637,11 @@ export default function BestRoutePage() {
     const selectedZone = data.top5[selectedIdx];
     return (
       <div className="flex flex-col gap-5 pb-8">
+
+        {/* Confirmation utilisateur — état routage TomTom en haut de page */}
+        <div className="flex justify-end px-4 pt-3">
+          <TomTomStatusPill />
+        </div>
 
         {/* Header position + rafraîchir */}
         <div className="flex items-center justify-between px-4 pt-3">

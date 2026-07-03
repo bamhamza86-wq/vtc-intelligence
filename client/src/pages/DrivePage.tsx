@@ -24,6 +24,7 @@ import { haversineKm, estimateRideGain } from "@/lib/geoDistance";
 import { FatigueBanner } from "@/components/FatigueBanner";
 import { DailyGoalBar } from "@/components/DailyGoalBar";
 import { FuelAutonomyBadge } from "@/components/FuelAutonomyBadge";
+import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 import { useSwipe } from "@/hooks/useSwipe";
 import { haptic } from "@/lib/haptics";
 
@@ -223,6 +224,10 @@ export default function DrivePage() {
         >
           {heroDistanceLabel}
         </div>
+        {/* Badge source distance/ETA de la zone active : TomTom primaire, sinon OSRM/Calibré */}
+        <span className="text-[11px] opacity-60" data-testid="drive-hero-distance-source">
+          <RouteSourceBadge source={activeZone?.distance_source ?? "calibrated"} size="xs" />
+        </span>
         {/* €/h attendu */}
         <div
           className="text-[36px] font-bold text-green-400 leading-none tabular-nums"

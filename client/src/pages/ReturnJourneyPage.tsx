@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { UpdateWidget } from "@/components/UpdateWidget";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
+import { TomTomStatusPill } from "@/components/TomTomStatusPill";
 import { PredictHQBadge } from "@/components/PredictHQBadge";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -793,6 +794,10 @@ export default function ReturnJourneyPage() {
               GPS actif
             </div>
           )}
+          {/* Rappel état routage TomTom en haut de page */}
+          <div className={gpsStatus === "granted" && position ? "" : "ml-auto"}>
+            <TomTomStatusPill />
+          </div>
         </div>
       </div>
 
