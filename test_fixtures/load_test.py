@@ -52,6 +52,7 @@ DEFAULT_DURATION = 30.0  # secondes
 POLL_INTERVAL = 3.0
 WARMUP_CALLS = 5
 SSE_CONNECTIONS = 5
+N_PROBES = 20  # nb de probes SSE espacées de 500 ms
 SLA_MS = 300.0
 
 # Zones cibles pour les signalements (Stade de France + CDG)
@@ -78,8 +79,10 @@ class Sample:
 class Metrics:
     samples: list = field(default_factory=list)
     errors: list = field(default_factory=list)
-    sse_events: list = field(default_factory=list)  # (t_recv_ns, event_name)
+    sse_events: list = field(default_factory=list)  # (t_recv_ns, event_name, listener_id, data)
     signal_burst_start_ns: int = 0
+    probe_sent: dict = field(default_factory=dict)  # trace_id -> t_send_ns (client)
+    probe_recv: dict = field(default_factory=dict)  # trace_id -> [(t_recv_ns, listener_id), ...]
 
     def record(self, endpoint: str, latency_ns: int, status: int, error: Optional[str] = None):
         s = Sample(endpoint, latency_ns, status, error)
@@ -231,7 +234,7 @@ async def signal_burst(session: aiohttp.ClientSession, base: str, headers: dict,
 # ─── SSE listener ────────────────────────────────────────────────────────────
 async def sse_listener(session: aiohttp.ClientSession, base: str, headers: dict,
                         listener_id: int, stop: asyncio.Event, metrics: Metrics):
-    """Écoute /api/stream et enregistre timestamp de chaque event nommé."""
+    """Écoute /api/stream, parse event+data, corrèle load:probe par trace_id."""
     url = f"{base}/api/stream"
     try:
         async with session.get(url, headers={**headers, "Accept": "text/event-stream"},
@@ -247,7 +250,19 @@ async def sse_listener(session: aiohttp.ClientSession, base: str, headers: dict,
                 if line.startswith("event:"):
                     current_event = line.split(":", 1)[1].strip()
                 elif line.startswith("data:") and current_event:
-                    metrics.sse_events.append((perf_ns(), current_event, listener_id))
+                    t_recv = perf_ns()
+                    raw_data = line.split(":", 1)[1].strip()
+                    parsed = None
+                    try:
+                        parsed = json.loads(raw_data)
+                    except json.JSONDecodeError:
+                        pass
+                    metrics.sse_events.append((t_recv, current_event, listener_id, parsed))
+                    # Corrélation probe SSE
+                    if current_event == "load:probe" and isinstance(parsed, dict):
+                        tid = parsed.get("trace_id")
+                        if tid:
+                            metrics.probe_recv.setdefault(tid, []).append((t_recv, listener_id))
                     current_event = None
                 elif not line:
                     current_event = None
@@ -255,6 +270,30 @@ async def sse_listener(session: aiohttp.ClientSession, base: str, headers: dict,
         pass
     except Exception as e:
         metrics.errors.append(Sample(f"sse_{listener_id}", 0, 0, f"sse_error:{type(e).__name__}"))
+
+
+# ─── Burst probes SSE ─ mesure e2e réelle hors tick 3 min ─────────────────
+async def probe_sse_burst(session: aiohttp.ClientSession, base: str, headers: dict,
+                            n_probes: int, metrics: Metrics):
+    """Envoie N probes espacées de 500 ms sur POST /api/load/probe-broadcast.
+    Chaque probe porte un trace_id unique. Le listener SSE corrèle pour mesurer
+    la latence e2e ingestion → broadcast → réception client."""
+    for i in range(n_probes):
+        trace_id = f"probe-{int(time.time()*1000)}-{i}"
+        metrics.probe_sent[trace_id] = perf_ns()
+        try:
+            async with session.post(
+                f"{base}/api/load/probe-broadcast",
+                json={"trace_id": trace_id},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as r:
+                await r.read()
+                if r.status != 200:
+                    metrics.errors.append(Sample("probe_send", 0, r.status, "probe_http_error"))
+        except Exception as e:
+            metrics.errors.append(Sample("probe_send", 0, 0, f"probe:{type(e).__name__}"))
+        await asyncio.sleep(0.5)
 
 
 # ─── Runner principal ────────────────────────────────────────────────────────
@@ -295,21 +334,24 @@ async def run_harness(base: str, n_drivers: int, n_signals: int, duration: float
         sse_ready_ns = perf_ns()
         print(f"  {SSE_CONNECTIONS} connexions SSE établies")
 
-        # 5) Burst signaux + drivers en parallèle
-        print(f"  Lancement burst {n_signals} signaux + {n_drivers} chauffeurs ({duration}s)...")
+        # 5) Burst signaux + drivers + probes SSE en parallèle
+        print(f"  Lancement burst {n_signals} signaux + {n_drivers} chauffeurs + {N_PROBES} probes SSE ({duration}s)...")
         driver_tasks = [
             asyncio.create_task(driver_loop(session, base, headers, IDF_GRID[i % len(IDF_GRID)], duration, metrics, stop))
             for i in range(n_drivers)
         ]
         burst_task = asyncio.create_task(signal_burst(session, base, headers, sdf_zones, cdg_zones, n_signals, metrics))
+        probe_task = asyncio.create_task(probe_sse_burst(session, base, headers, N_PROBES, metrics))
 
         run_start_ns = perf_ns()
         await burst_task
         burst_end_ns = perf_ns()
-        print(f"  Burst terminé en {(burst_end_ns - run_start_ns)/1e6:.0f} ms")
+        print(f"  Burst signaux terminé en {(burst_end_ns - run_start_ns)/1e6:.0f} ms")
 
-        # 6) Attendre fin des drivers
-        await asyncio.gather(*driver_tasks)
+        # 6) Attendre fin des drivers ET probes
+        await asyncio.gather(*driver_tasks, probe_task)
+        # Laisser 2s aux SSE listeners pour recevoir les derniers events
+        await asyncio.sleep(2.0)
         run_end_ns = perf_ns()
 
         # 7) Fermer SSE
@@ -326,13 +368,24 @@ async def run_harness(base: str, n_drivers: int, n_signals: int, duration: float
 
     endpoint_stats = {ep: percentiles(vals) for ep, vals in by_endpoint.items()}
 
-    # Latence SSE : premier event zones:updated après le burst
+    # Latence SSE : premier event zones:updated après le burst (informational)
     sse_broadcast_ms = None
     sse_event_counts: dict = defaultdict(int)
-    for t_recv, ev_name, _ in metrics.sse_events:
+    for t_recv, ev_name, *_ in metrics.sse_events:
         sse_event_counts[ev_name] += 1
         if ev_name == "zones:updated" and sse_broadcast_ms is None and t_recv > metrics.signal_burst_start_ns:
             sse_broadcast_ms = (t_recv - metrics.signal_burst_start_ns) / 1e6
+
+    # Latence probe SSE e2e : t_send client → t_recv client via broadcast serveur
+    # Pour chaque probe reçue par au moins un listener, prendre le PREMIER recv
+    probe_e2e_ns = []
+    for tid, t_send in metrics.probe_sent.items():
+        recvs = metrics.probe_recv.get(tid)
+        if recvs:
+            t_recv = min(r[0] for r in recvs)
+            probe_e2e_ns.append(t_recv - t_send)
+    probe_e2e_stats = percentiles(probe_e2e_ns) if probe_e2e_ns else {"n": 0}
+    probes_lost = len(metrics.probe_sent) - len(probe_e2e_ns)
 
     # ─── Verdict ────────────────────────────────────────────────────────────
     n_errors = len(metrics.errors)
@@ -346,6 +399,9 @@ async def run_harness(base: str, n_drivers: int, n_signals: int, duration: float
         verdict_reasons.append(f"signal p95={signal_p95}ms ≥ {SLA_MS}ms")
     if n_errors > 0:
         verdict_reasons.append(f"{n_errors} erreur(s) sur {len(metrics.samples)} requêtes")
+    probe_p95 = probe_e2e_stats.get("p95_ms", float("inf"))
+    if probe_e2e_stats.get("n", 0) > 0 and probe_p95 >= SLA_MS:
+        verdict_reasons.append(f"probe SSE e2e p95={probe_p95}ms ≥ {SLA_MS}ms")
 
     verdict = "PASS" if not verdict_reasons else "FAIL"
 
@@ -373,12 +429,17 @@ async def run_harness(base: str, n_drivers: int, n_signals: int, duration: float
             "connections": SSE_CONNECTIONS,
             "events_received": dict(sse_event_counts),
             "signal_burst_to_first_zones_updated_ms": round(sse_broadcast_ms, 2) if sse_broadcast_ms else None,
-            "note": (
-                "L'événement 'zones:updated' est périodique (cycle serveur 3 min), "
-                "pas déclenché par un signal individuel. La latence rapportée reflète "
-                "surtout l'attente du prochain tick, pas le traitement du signal. "
+            "note_zones_updated": (
+                "'zones:updated' est périodique (cycle serveur 3 min). "
                 "Informational only — non inclus dans le verdict SLA."
             ),
+            "probe_e2e": {
+                "description": "Latence réelle client→serveur→broadcast→client via /api/load/probe-broadcast",
+                "probes_sent": len(metrics.probe_sent),
+                "probes_delivered": len(probe_e2e_ns),
+                "probes_lost": probes_lost,
+                **probe_e2e_stats,
+            },
         },
         "verdict": verdict,
         "verdict_reasons": verdict_reasons,
@@ -402,6 +463,11 @@ async def run_harness(base: str, n_drivers: int, n_signals: int, duration: float
     print(f"  SSE events         : {dict(sse_event_counts)}")
     if sse_broadcast_ms:
         print(f"  SSE burst→zones:updated : {sse_broadcast_ms:.0f} ms (informational, tick 3 min)")
+    if probe_e2e_stats.get("n", 0) > 0:
+        pe = probe_e2e_stats
+        pmark = " ✅" if pe.get("p95_ms", 0) < SLA_MS else " ❌"
+        print(f"  SSE probe e2e      : n={pe['n']}/{len(metrics.probe_sent)} "
+              f"p50={pe['p50_ms']:.1f}ms p95={pe['p95_ms']:.1f}ms p99={pe['p99_ms']:.1f}ms{pmark}")
     print()
     print(f"  ═══ VERDICT : {verdict} ═══")
     if verdict_reasons:

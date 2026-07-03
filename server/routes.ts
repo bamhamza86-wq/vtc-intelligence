@@ -3056,6 +3056,20 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   });
 
   // ─── SSE Stream temps réel ────────────────────────────────────────────
+  // ─── Probe de charge SSE — mesure latence e2e réelle hors tick 3 min ─────
+  // POST /api/load/probe-broadcast body { trace_id } → broadcast immédiat
+  // event: "load:probe" avec { trace_id, t_ingest_ns } → le client corrèle
+  // pour mesurer ingestion (t_send client) → broadcast (t_ingest serveur) →
+  // réception (t_recv client) sans dépendre du cycle périodique zones:updated.
+  // Test-only : aucun effet métier, purge auto (pas de persistance).
+  app.post("/api/load/probe-broadcast", requireAuth, (req, res) => {
+    const traceId = String((req.body || {}).trace_id || "");
+    if (!traceId) return res.status(400).json({ error: "trace_id_required" });
+    const tIngestNs = Number(process.hrtime.bigint());
+    sseService.broadcast("load:probe", { trace_id: traceId, t_ingest_ns: tIngestNs });
+    res.json({ ok: true, trace_id: traceId, t_ingest_ns: tIngestNs, clients: sseService.getClientCount() });
+  });
+
   app.get("/api/stream", requireAuth, (req, res) => {
     res.set({
       "Content-Type": "text/event-stream",
