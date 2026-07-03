@@ -22,6 +22,10 @@ import { useRepositioningAlerts } from "@/hooks/useRepositioningAlerts";
 import type { EventProximity } from "@/lib/eventProximity";
 import { RareEventBanner } from "@/components/RareEventBanner";
 import { RoutingSourceBanner } from "@/components/RoutingSourceBanner";
+// ─── Lot Beta : bandeau « Où aller maintenant » + pastille de fraîcheur ───
+import { RecommendationBanner } from "@/components/RecommendationBanner";
+import { DataFreshnessBadge } from "@/components/DataFreshnessBadge";
+import { ZoneSignalPanel } from "@/components/ZoneSignalPanel";
 
 const COLORS = { ultraHigh: "#22c55e", high: "#86efac", medium: "#fbbf24", low: "#f97316", veryLow: "#ef4444" };
 
@@ -289,6 +293,10 @@ export default function MapPage() {
   // ETA des zones calculé depuis la VRAIE position GPS du chauffeur (lat/lng frais).
   const { data: profitability = [] } = useQuery({ queryKey: ["/api/profitability", selectedHour, dayType, position.lat, position.lng], queryFn: () => apiRequest("GET", `/api/profitability?hour=${selectedHour}&dayType=${dayType}&lat=${position.lat}&lng=${position.lng}`).then(r => r.json()), refetchInterval: REALTIME_INTERVAL });
   const { data: topZones = [] } = useQuery({ queryKey: ["/api/top-zones", selectedHour, dayType], queryFn: () => apiRequest("GET", `/api/top-zones?hour=${selectedHour}&dayType=${dayType}&limit=5`).then(r => r.json()), refetchInterval: REALTIME_INTERVAL });
+  // ─── Lot Beta (Levier 5) : source du _ts pour la pastille de fraîcheur ───
+  // /api/top-zones ne renvoie pas de _ts ; on s'appuie sur /api/best-zone-now
+  // (même donnée temps réel, refetch 3s) qui expose un timestamp `_ts`.
+  const { data: topZonesData } = useQuery<{ _ts?: number }>({ queryKey: ["/api/best-zone-now", "freshness", position.lat, position.lng], queryFn: () => apiRequest("GET", `/api/best-zone-now?lat=${position.lat}&lng=${position.lng}`).then(r => r.json()), refetchInterval: 3000 });
   const { data: events = [] } = useQuery({ queryKey: ["/api/events"], queryFn: () => apiRequest("GET", "/api/events").then(r => r.json()), refetchInterval: SLOW_INTERVAL, staleTime: 20_000 });
   // Météo Open-Meteo — refetch toutes les 15min (aligné sur le cache backend TTL 15min)
   const { data: weather } = useQuery<{ condition: { code: number; description: string; precipitation_mm: number; windspeed_kmh: number; demand_boost: number; icon: string; updated_at: string }; zones_impacted: string[] }>({
@@ -530,17 +538,39 @@ export default function MapPage() {
       if (!L || !mapInstance.current) { setTimeout(render, 400); return; }
       eventMarkersRef.current.forEach(m => m.remove());
       eventMarkersRef.current = [];
+      // ─── Lot Beta (Levier 3) : filtrage PredictHQ du jour courant ──────────
+      // On ne conserve que les événements dont le début tombe aujourd'hui,
+      // triés par rank décroissant, limités aux 5 plus forts.
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+      const nowTs = Date.now();
+      const todayEvents = (events as any[])
+        .filter((e: any) => {
+          const startDate = new Date(e.start || e.start_local || e.start_time || e.datetime);
+          return startDate >= today && startDate < tomorrow;
+        })
+        .sort((a: any, b: any) => (b.rank || 0) - (a.rank || 0))
+        .slice(0, 5);
       // Anti-chevauchement : on n'affiche que les 3 événements les plus forts (boost
       // décroissant). Les labels restants sont décalés verticalement de façon progressive.
-      const sortedEvents = [...(events as any[])]
+      const sortedEvents = [...todayEvents]
         .filter((e: any) => e.zone)
         .sort((a: any, b: any) => (b.demand_boost ?? 1) - (a.demand_boost ?? 1))
         .slice(0, 3);
       sortedEvents.forEach((event: any, index: number) => {
         if (!event.zone) return;
+        // ─── Couleur pastille selon proximité temporelle de l'événement ──────
+        const startDate = new Date(event.start || event.start_local || event.start_time || event.datetime);
+        const minutesToEvent = (startDate.getTime() - nowTs) / 60000;
+        const proximityColor =
+          minutesToEvent < 60 ? "#ef4444"          // rouge  : imminent (< 1h)
+          : minutesToEvent < 180 ? "#f97316"       // orange : proche (1–3h)
+          : "#22c55e";                             // vert   : lointain (≥ 3h)
         const isFlightEvent = event.event_type === "flight_wave" || event.event_type === "flight_forecast";
         const isForecast = event.event_type === "flight_forecast";
-        const bgColor = isFlightEvent ? (isForecast ? "#38bdf8" : "#0ea5e9") : "#f59e0b";
+        // Lot Beta : les événements PredictHQ (non-vol) prennent la couleur de proximité temporelle.
+        const bgColor = isFlightEvent ? (isForecast ? "#38bdf8" : "#0ea5e9") : proximityColor;
         const textColor = "#000";
         const prefix = isFlightEvent ? "✈" : "⚡";
         const label = event.name.substring(0, 26);
@@ -557,6 +587,7 @@ export default function MapPage() {
           <div style="font-size:12px;min-width:220px;">
             <strong>${event.name}</strong><br>
             ${event.description || ""}<br>
+            ${!isFlightEvent ? `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${proximityColor};margin-right:4px;"></span><span>${minutesToEvent < 60 ? "Imminent" : minutesToEvent < 180 ? "Proche" : "Lointain"} (≈${Math.max(0, Math.round(minutesToEvent))} min)</span><br>` : ""}
             <span style="color:#f59e0b;">Boost ×${(event.demand_boost ?? 1).toFixed(2)}</span>
             ${event.expected_attendance ? `<br>~${event.expected_attendance} pass. VTC estim.` : ""}
           </div>
@@ -669,6 +700,10 @@ export default function MapPage() {
     // la carte Leaflet (absolute fill) reste plein écran à l'intérieur.
     <PullToRefresh onRefresh={onRefresh}>
     <div className="relative flex flex-col" style={{ height: "calc(100vh - 8.5rem)" }}>
+      {/* ─── Lot Beta : bandeau « Où aller maintenant » — TOUT en haut, au-dessus des autres bandeaux ───── */}
+      <RecommendationBanner />
+      {/* ─── Lot Beta (Levier 5) : pastille de fraîcheur des données, fixe en bas à gauche ───── */}
+      <DataFreshnessBadge ts={topZonesData?._ts} position="bottom-left" />
       {/* ─── Bandeau alerte événement rare (Lot C) — premier enfant, au-dessus de la carte ───── */}
       <RareEventBanner />
       {/* ─── Bandeau TomTom non connecté — visible si ETA sans trafic temps réel ─────────── */}
@@ -937,6 +972,9 @@ export default function MapPage() {
                         ✈ Boost CDG/Orly actif sur cette zone : ×{flightBoost.toFixed(2)}
                       </div>
                     )}
+
+                    {/* ─── Levier 9 : Signalement communautaire zone ────────── */}
+                    <ZoneSignalPanel zoneId={selectedZone.zone.id} />
 
                     <button className="text-xs text-muted-foreground mt-2 hover:text-foreground" onClick={() => setSelectedZone(null)}>Fermer</button>
                   </CardContent>

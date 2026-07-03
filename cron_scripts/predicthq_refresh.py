@@ -72,13 +72,31 @@ def login(session, username="root", password="12345678"):
     raise RuntimeError("Auth échouée (boucle épuisée)")
 
 
+def build_active_window():
+    # ─── Levier 10 : Filtrage PredictHQ — fenêtre active aujourd'hui → +7 jours ───
+    # L'API PredictHQ (/v1/events) accepte active.gte / active.lte pour ne
+    # retourner que les événements actifs sur la fenêtre demandée. Ici le cron
+    # n'appelle pas /v1/events directement : il déclenche /api/predicthq/refresh
+    # côté backend (server/predictHQService.ts applique déjà cette fenêtre).
+    # On transmet malgré tout les bornes dans le body pour expliciter le contrat
+    # de filtrage et permettre au backend de les honorer si besoin.
+    today = datetime.utcnow().date()
+    next_week = today + timedelta(days=7)
+    return {
+        "active.gte": today.isoformat(),
+        "active.lte": next_week.isoformat(),
+    }
+
+
 def call_refresh(session, token):
     """POST /api/predicthq/refresh avec retry. Retourne le JSON ou {}."""
     url = f"{BASE_URL}/api/predicthq/refresh"
     headers = {"Authorization": f"Bearer {token}"}
+    # ─── Levier 10 : bornes de fenêtre active transmises au refresh ───────────
+    params = build_active_window()
     for attempt in range(3):
         try:
-            r = session.post(url, headers=headers, json={}, timeout=REFRESH_TIMEOUT)
+            r = session.post(url, headers=headers, json=params, timeout=REFRESH_TIMEOUT)
             if r.status_code == 200:
                 try:
                     return r.json()

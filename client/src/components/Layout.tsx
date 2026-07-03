@@ -39,6 +39,7 @@ import {
 import { DaySignalBadge } from "@/components/DaySignalBadge";
 import { LiveIndicator } from "@/components/LiveIndicator";
 import { useLiveRefresh } from "@/hooks/useLiveRefresh";
+import { useSSE } from "@/hooks/useSSE";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
 
 // ─── Onglets principaux (barre de navigation) ──────────────────────────────────
@@ -69,6 +70,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   // ─── Pulse temps réel global (30s) ────────────────────────────────────
   useLiveRefresh();
+
+  // ─── SSE push serveur (Levier 1) : écoute /api/stream, reconnexion auto ──
+  // Émet des events window `vtc:sse` que les queries peuvent écouter pour re-fetch
+  useSSE();
 
   // ─── État du menu « Plus » ──────────────────────────────────────────────────
   const [moreOpen, setMoreOpen] = useState(false);

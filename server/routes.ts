@@ -1,6 +1,9 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+// ─── Levier 1 SSE : service de push temps réel + middleware auth ──────────────
+import { sseService } from "./sseService";
+import { requireAuth } from "./auth";
 // ← H2 : fusion adaptative multi-sources (TomTom + PHQ + vols + seeds)
 import {
   fusionSignals,
@@ -15,6 +18,9 @@ import {
   getSupplyDynamics,
   generateRepositioningAlerts,
   setLastDriverGps,
+  // ─── Lot Beta : meilleure zone maintenant + countdown prochain pic ───
+  getBestZoneNow,
+  getNextPeakCountdown,
   type SignalWeights,
   type Regime,
 } from "./storage";
@@ -635,19 +641,47 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     const zoneMap: any = Object.fromEntries(zones.map((z: any) => [z.id, z]));
     // ─── Décote -15 sur score_final pour les zones récemment ignorées (Lot C) ────────────
     const ignoredZones = storage.getRecentlyIgnoredZoneIds();
-    res.json(scores.map((s: any) => {
+    // ─── Levier 9 : pondération communautaire ±8% sur profitability_index ──────
+    const impacts = storage.getCommunityImpact();
+    const topZones = scores.map((s: any) => {
       const zoneId = s.zone_id ?? s.zone_id_z;
       const isIgnored = ignoredZones.has(zoneId);
       const baseScore = s.profitability_index ?? 0;
       const adjustedScore = isIgnored ? Math.max(0, baseScore - 15) : baseScore;
       return {
         ...s,
+        zone_id: zoneId,
         zone: zoneMap[zoneId],
         profitability_index: adjustedScore,
         profitabilityIndex: adjustedScore,
         ...(isIgnored ? { ignored_penalty: 15 } : {}),
       };
-    }));
+    });
+    // Applique le boost communautaire après le calcul du score initial
+    for (const z of topZones) {
+      const imp = impacts.get(z.zone_id);
+      if (imp) {
+        z.profitability_index = Math.max(0, Math.min(100, z.profitability_index * (1 + imp.boost_pct / 100)));
+        z.profitabilityIndex = z.profitability_index;
+        z.community_boost_pct = imp.boost_pct;
+      }
+    }
+    res.json(topZones);
+  });
+
+  // ─── Lot Beta : meilleure zone maintenant (score × distance) ─────────────────────
+  // Auth globale déjà appliquée à /api/* dans server/index.ts (pas de requireAuth inline).
+  // Fallback GPS métier : Bd Ney Paris 18e { lat: 48.8976, lng: 2.3299 }.
+  app.get("/api/best-zone-now", (req, res) => {
+    const lat = parseFloat(req.query.lat as string) || 48.8976;
+    const lng = parseFloat(req.query.lng as string) || 2.3299;
+    const result = getBestZoneNow(lat, lng);
+    res.json(result || { error: "no_data", _ts: Date.now() });
+  });
+
+  // ─── Lot Beta : countdown prochain pic (heure suivante avec score > 70) ──────────
+  app.get("/api/next-peak", (_req, res) => {
+    res.json(getNextPeakCountdown());
   });
 
   // ─── Routes mémoire des refus de recommandations (Lot C) ─────────────────────────
@@ -666,6 +700,29 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   app.get("/api/reco/ignored", (_req, res) => {
     const ids = storage.getRecentlyIgnoredZoneIds();
     res.json({ zone_ids: Array.from(ids) });
+  });
+
+  // ─── Levier 9 : Signalement communautaire ─────────────────────────────────────
+  // POST /api/zones/:id/signal — remontée terrain 1-tap (positif/négatif), validité 2h.
+  app.post("/api/zones/:id/signal", requireAuth, (req, res) => {
+    const zoneId = String(req.params.id);
+    const { type } = req.body ?? {};
+    if (type !== "positive" && type !== "negative") return res.status(400).json({ error: "invalid_type" });
+    const userId = (req as any).user?.id || "anon";
+    storage.recordCommunitySignal(zoneId, type, userId);
+    const impact = storage.getCommunityImpact(zoneId);
+    res.json({ ok: true, impact: impact.get(zoneId) || null, _ts: Date.now() });
+  });
+
+  // GET /api/community/impact — map de tous les impacts communautaires actifs.
+  app.get("/api/community/impact", requireAuth, (_req, res) => {
+    const map = storage.getCommunityImpact();
+    res.json({ impacts: Object.fromEntries(map), _ts: Date.now() });
+  });
+
+  // ─── Levier 7 : Fiabilité du modèle sur J-7 (MAE/RMSE/biais + score 0-100) ───
+  app.get("/api/model/reliability", requireAuth, (req, res) => {
+    res.json(storage.getModelReliability());
   });
 
   app.get("/api/events", async (_req, res) => {
@@ -2876,5 +2933,23 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       console.error("[idle-optimizer] error:", err);
       res.status(500).json({ error: String(err) });
     }
+  });
+
+  // ─── SSE Stream temps réel ────────────────────────────────────────────
+  app.get("/api/stream", requireAuth, (req, res) => {
+    res.set({
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    res.flushHeaders();
+    res.write(`event: connected\ndata: ${JSON.stringify({ ok: true, _ts: Date.now() })}\n\n`);
+    sseService.addClient(res);
+
+    // heartbeat toutes les 25s pour éviter timeout proxy
+    const hb = setInterval(() => { try { res.write(`: heartbeat\n\n`); } catch {} }, 25000);
+
+    req.on("close", () => { clearInterval(hb); sseService.removeClient(res); });
   });
 }

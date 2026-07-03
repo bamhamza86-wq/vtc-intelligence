@@ -3,6 +3,8 @@ import { Zone, ProfitabilityScore, Event, Ride, Alert, DriverProfile, InsertAler
 import { getCongestedETA, computeBreakEvenPenalty, CALIBRATED_DATA as ROUTING_CALIBRATED } from "./routingCache";
 import { getZoneSncfBoost, getSncfSignalsSync } from "./sncfService";
 import { refreshWeather, getWeatherBoost, getCachedWeather } from "./weatherService";
+// ─── Levier 1 SSE : push temps réel des mises à jour de zones ─────────────────
+import { sseService } from "./sseService";
 
 const sqlite = new Database("data.db");
 // ← audit G: pragmas SQLite production (WAL + cache + synchronous NORMAL)
@@ -231,6 +233,22 @@ sqlite.exec(`
     expires_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_reco_ignored_expires ON reco_ignored(expires_at);
+`);
+
+// ─── Levier 9 : Signalement communautaire 1-tap ──────────────────────────────
+// Table des signalements terrain remontés par les chauffeurs (positif / négatif).
+// Chaque signalement a une validité de 2h (expires_at) pour pondérer le score
+// de rentabilité d'une zone en temps quasi-réel (±8% max).
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS community_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    zone_id TEXT NOT NULL,
+    signal_type TEXT NOT NULL CHECK(signal_type IN ('positive', 'negative')),
+    user_id TEXT,
+    timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+    expires_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_community_signals_zone ON community_signals(zone_id, expires_at);
 `);
 
 // ─── Prepared statements globaux — compilés une seule fois à l'init ───────────────────
@@ -2884,6 +2902,9 @@ setInterval(() => {
     sqlite.prepare("INSERT OR REPLACE INTO seed_meta (key,value) VALUES ('last_wal_pages',?)").run(String(walPages));
     if (durationMs > 500) console.warn(`[storage] Refresh lent: ${durationMs}ms`);
     console.log(`[storage] Auto-refresh 3min: scores recalculés à ${now.toLocaleTimeString('fr-FR')} (${durationMs}ms, WAL=${walPages}p)`);
+    // ─── Levier 1 SSE : notifier les clients que les zones ont été rafraîchies ──
+    const rows = sqlite.prepare("SELECT id FROM zones").all() as any[];
+    sseService.broadcast("zones:updated", { count: rows.length });
   } catch (err) {
     console.error("[storage] Erreur auto-refresh:", err);
   }
@@ -2978,6 +2999,15 @@ export interface IStorage {
   recordRecoIgnored(zoneId: string): void;
   getRecentlyIgnoredZoneIds(): Set<string>;
   cleanExpiredRecoIgnored(): void;
+  // ─── Levier 9 : Signalement communautaire ──────────────────────────────────
+  recordCommunitySignal(zoneId: string, type: "positive" | "negative", userId?: string): void;
+  getCommunityImpact(zoneId?: string): Map<string, { positive: number; negative: number; boost_pct: number }>;
+  // Levier 7 : Fiabilité du modèle (J-7)
+  getModelReliability(): {
+    window_days: number; samples: number;
+    mae: number; rmse: number; bias: number;
+    score_0_100: number; last_updated: string; _ts: number;
+  };
 }
 
 // Type structurel local (évite l'import circulaire avec predictHQService.ts)
@@ -3279,6 +3309,66 @@ export function fusionSignals(
     phq_event_rank: phqEventRank,
     surge_multiplier: Math.round(surge * 100) / 100,
   };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Levier 7 — Score de fiabilité du modèle sur les 7 derniers jours (J-7)
+// ═════════════════════════════════════════════════════════════════════════════
+// Compare les prédictions de demande aux réalisés pour produire MAE / RMSE / biais
+// et un score 0-100 normalisé (100 = erreur nulle).
+//
+// NOTE D'IMPLÉMENTATION (écart volontaire au pseudo-code du Lot) :
+// La table `score_history` existe DÉJÀ dans ce projet avec un schéma différent
+// (zone_id, hour, day_type, profitability_index, surge_multiplier, demand_score,
+//  supply_score, seed_date) et ne contient PAS de colonnes predicted_rides /
+// actual_rides / created_at. La contrainte «ne touche pas au reste» interdit de la
+// modifier. On s'appuie donc sur `demand_predictions`, la table de référence
+// prédiction-vs-réel du projet (predicted_index / actual_index / created_at),
+// tout en conservant strictement la forme de retour et le calcul du Lot.
+// Le tout est encapsulé dans un try/catch renvoyant le défaut neutre (score 50).
+export function getModelReliability(): {
+  window_days: number; samples: number;
+  mae: number; rmse: number; bias: number;
+  score_0_100: number; last_updated: string; _ts: number;
+} {
+  const neutral = {
+    window_days: 7, samples: 0, mae: 0, rmse: 0, bias: 0,
+    score_0_100: 50, last_updated: new Date().toISOString(), _ts: Date.now(),
+  };
+
+  try {
+    // predicted_index/actual_index jouent le rôle de predicted_rides/actual_rides.
+    const rows = sqlite.prepare(`
+      SELECT predicted_index AS predicted_rides, actual_index AS actual_rides
+      FROM demand_predictions
+      WHERE created_at >= datetime('now', '-7 days')
+        AND actual_index IS NOT NULL
+    `).all() as any[];
+
+    if (!rows.length) return neutral;
+
+    const errors    = rows.map(r => r.actual_rides - r.predicted_rides);
+    const absErrors = errors.map(Math.abs);
+    const mae  = absErrors.reduce((a, b) => a + b, 0) / rows.length;
+    const rmse = Math.sqrt(errors.map(e => e * e).reduce((a, b) => a + b, 0) / rows.length);
+    const bias = errors.reduce((a, b) => a + b, 0) / rows.length;
+    const avgActual = rows.reduce((a, r) => a + r.actual_rides, 0) / rows.length || 1;
+    const score = Math.max(0, Math.min(100, 100 - (mae / avgActual) * 100));
+
+    return {
+      window_days: 7,
+      samples: rows.length,
+      mae:  +mae.toFixed(2),
+      rmse: +rmse.toFixed(2),
+      bias: +bias.toFixed(2),
+      score_0_100: +score.toFixed(1),
+      last_updated: new Date().toISOString(),
+      _ts: Date.now(),
+    };
+  } catch (e) {
+    console.warn("[storage] getModelReliability échoué — défaut neutre :", e);
+    return neutral;
+  }
 }
 
 
@@ -4051,4 +4141,102 @@ export const storage: IStorage = {
       "DELETE FROM reco_ignored WHERE expires_at < ?"
     ).run(new Date().toISOString());
   },
+
+  // ─── Levier 9 : Signalement communautaire 1-tap ────────────────────────────
+  // Enregistre un signalement terrain (positif/négatif) avec validité de 2h.
+  recordCommunitySignal(zoneId: string, type: "positive" | "negative", userId: string = "anon"): void {
+    const expires = new Date(Date.now() + 2 * 3600 * 1000).toISOString(); // 2h validité
+    sqlite.prepare(
+      `INSERT INTO community_signals (zone_id, signal_type, user_id, expires_at) VALUES (?, ?, ?, ?)`
+    ).run(zoneId, type, userId, expires);
+  },
+
+  // Agrège les signalements encore valides par zone et calcule le boost ±8%.
+  // Boost = min(+8%, max(-8%, (positive - negative) * 2%)).
+  getCommunityImpact(zoneId?: string): Map<string, { positive: number; negative: number; boost_pct: number }> {
+    const rows = sqlite.prepare(`
+      SELECT zone_id, signal_type, COUNT(*) as cnt
+      FROM community_signals
+      WHERE expires_at > datetime('now')
+      ${zoneId ? "AND zone_id = ?" : ""}
+      GROUP BY zone_id, signal_type
+    `).all(...(zoneId ? [zoneId] : [])) as any[];
+
+    const map = new Map<string, { positive: number; negative: number; boost_pct: number }>();
+    for (const r of rows) {
+      if (!map.has(r.zone_id)) map.set(r.zone_id, { positive: 0, negative: 0, boost_pct: 0 });
+      const entry = map.get(r.zone_id)!;
+      if (r.signal_type === "positive") entry.positive = r.cnt;
+      else entry.negative = r.cnt;
+    }
+    // Boost borné ±8% : (positive - negative) * 2%
+    map.forEach((v) => {
+      v.boost_pct = Math.max(-8, Math.min(8, (v.positive - v.negative) * 2));
+    });
+    return map;
+  },
+
+  // Levier 7 : Fiabilité du modèle J-7 — délègue à la fonction standalone.
+  getModelReliability,
 };
+
+// ─── Levier 2 : Meilleure zone maintenant (score × distance) ─────────
+// Note d'adaptation : la table réelle est `profitability_scores` (pas `zone_scores`),
+// la colonne score est `profitability_index` et le proxy « predicted » est `demand_score`.
+// On respecte la logique horaire de l'app : heure locale (UTC+2) + day_type weekday/weekend.
+export function getBestZoneNow(lat: number, lng: number): {
+  zone_id: string; name: string; lat: number; lng: number;
+  score: number; score_effectif: number; distance_km: number;
+  predicted: number; upper_bound: number; _ts: number;
+} | null {
+  const now = new Date();
+  const hour = (now.getUTCHours() + 2) % 24;                 // heure locale Paris
+  const dayType = [0, 6].includes(now.getDay()) ? "weekend" : "weekday";
+  const rows = sqlite.prepare(`
+    SELECT z.id as zone_id, z.name, z.lat, z.lng,
+           COALESCE(ps.profitability_index, 50) as score,
+           COALESCE(ps.demand_score, 0) as predicted
+    FROM zones z
+    LEFT JOIN profitability_scores ps ON ps.zone_id = z.id AND ps.hour = ? AND ps.day_type = ?
+  `).all(hour, dayType) as any[];
+
+  if (!rows.length) return null;
+
+  // ─── Haversine + score effectif = score × exp(-dist/10) ───────────
+  const scored = rows.map(r => {
+    const dLat = (r.lat - lat) * Math.PI / 180;
+    const dLng = (r.lng - lng) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat * Math.PI / 180) * Math.cos(r.lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+    const dist = 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const score_eff = r.score * Math.exp(-dist / 10);
+    // ─── Contrainte métier : upper_bound ≤ predicted × 1.20 ─────────
+    const upper = Math.min(r.predicted * 1.20, r.predicted * 1.20);
+    return { ...r, distance_km: +dist.toFixed(2), score_effectif: +score_eff.toFixed(1), upper_bound: +upper.toFixed(1) };
+  }).sort((a, b) => b.score_effectif - a.score_effectif);
+
+  return { ...scored[0], _ts: Date.now() };
+}
+
+// ─── Levier 4 : Countdown prochain pic (heure suivante avec score > 70) ─
+export function getNextPeakCountdown(): { next_peak_hour: number | null; minutes_until: number; expected_score: number; _ts: number } {
+  const now = new Date();
+  const currentHour = (now.getUTCHours() + 2) % 24;          // heure locale Paris
+  const dayType = [0, 6].includes(now.getDay()) ? "weekend" : "weekday";
+  const rows = sqlite.prepare(`
+    SELECT hour, AVG(profitability_index) as avg_score
+    FROM profitability_scores WHERE day_type = ? GROUP BY hour ORDER BY hour
+  `).all(dayType) as any[];
+
+  // ─── Cherche le premier pic > 70 dans les 6 heures qui suivent ────
+  for (let i = 1; i <= 6; i++) {
+    const h = (currentHour + i) % 24;
+    const row = rows.find(r => r.hour === h);
+    if (row && row.avg_score > 70) {
+      const nextDate = new Date(now);
+      nextDate.setHours(nextDate.getHours() + i, 0, 0, 0);
+      const minutes = Math.round((nextDate.getTime() - now.getTime()) / 60000);
+      return { next_peak_hour: h, minutes_until: minutes, expected_score: +row.avg_score.toFixed(1), _ts: Date.now() };
+    }
+  }
+  return { next_peak_hour: null, minutes_until: -1, expected_score: 0, _ts: Date.now() };
+}

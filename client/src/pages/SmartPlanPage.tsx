@@ -64,6 +64,47 @@ function UpcomingEventsSection() {
   );
 }
 
+// ─── Levier 7 : Badge fiabilité modèle J-7 ────────────────────────────────
+interface ModelReliability {
+  window_days: number; samples: number;
+  mae: number; rmse: number; bias: number;
+  score_0_100: number; last_updated: string; _ts: number;
+}
+
+/**
+ * Badge inline affichant le score de fiabilité du modèle sur J-7.
+ * Couleur : vert ≥ 70, orange 50-70, rouge < 50. Tooltip : mae, rmse, samples.
+ * Rafraîchi toutes les 60s (donnée agrégée, pas besoin du temps réel 3s).
+ */
+function ModelReliabilityBadge() {
+  const { data } = useQuery<ModelReliability>({
+    queryKey: ["/api/model/reliability"],
+    queryFn: () => apiRequest("GET", "/api/model/reliability").then((r) => r.json()),
+    refetchInterval: 60_000,
+  });
+  if (!data) return null;
+
+  const score = data.score_0_100;
+  // Code couleur : vert ≥ 70, orange 50-70, rouge < 50
+  const color = score >= 70 ? "#22c55e" : score >= 50 ? "#f59e0b" : "#ef4444";
+  const tooltip =
+    `Fiabilité du modèle sur ${data.window_days} jours\n` +
+    `MAE : ${data.mae} · RMSE : ${data.rmse} · biais : ${data.bias}\n` +
+    `Échantillons : ${data.samples} pts`;
+
+  return (
+    <span
+      data-testid="model-reliability-badge"
+      title={tooltip}
+      className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full cursor-help"
+      style={{ background: `${color}22`, color, border: `1px solid ${color}66` }}
+    >
+      <Activity size={10} />
+      Fiabilité modèle J-7 : {score}/100 ({data.samples} pts)
+    </span>
+  );
+}
+
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
 interface Alert {
@@ -614,6 +655,8 @@ export default function SmartPlanPage() {
         <div className="flex items-center gap-2">
           <Target size={18} className="text-cyan-400" />
           <span className="text-sm font-bold">Smart Planning</span>
+          {/* Levier 7 — Badge fiabilité modèle J-7 */}
+          <ModelReliabilityBadge />
         </div>
         <div className="flex items-center gap-2">
           <GpsFreshness lastUpdatedAt={lastUpdatedAt} isFallback={isFallback} />

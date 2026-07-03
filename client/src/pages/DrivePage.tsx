@@ -12,10 +12,10 @@
  * Rafraîchi toutes les 30s (top-zones + profitabilité).
  * ─────────────────────────────────────────────────────────────────────────────
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
-import { X, Navigation, TrendingUp } from "lucide-react";
+import { X, Navigation, TrendingUp, ArrowLeft } from "lucide-react";
 import { apiRequest, REALTIME_INTERVAL } from "@/lib/queryClient";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
 import { useNextPeakHour } from "@/hooks/useNextPeakHour";
@@ -34,12 +34,34 @@ function fmtCountdown(minutes: number): string {
   return `${h}h${m.toString().padStart(2, "0")}`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Levier 6 — Mode conduite XXL
+// ─────────────────────────────────────────────────────────────────────────────
+// Clé localStorage signalant que le mode conduite est actif. Posée à l'entrée
+// (mount) et retirée à la sortie (unmount) — permet aux autres écrans de savoir
+// si le chauffeur est en conduite plein écran.
+const DRIVING_MODE_KEY = "vtc.driving_mode_active";
+
 export default function DrivePage() {
   // ── Wake Lock — empêche l'écran de s'éteindre pendant la conduite ──────────
   useWakeLock();
 
   // ── Navigation (wouter) ──────────────────────────────────────────────────────
   const [, navigate] = useLocation();
+
+  // ── Levier 6 — État persisté "mode conduite actif" ─────────────────────────
+  // Posé à l'entrée, retiré à la sortie (unmount). try/catch : certains iframes
+  // publiés n'exposent pas localStorage.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(DRIVING_MODE_KEY, "1");
+    } catch { /* localStorage indisponible — ignore */ }
+    return () => {
+      try {
+        window.localStorage.removeItem(DRIVING_MODE_KEY);
+      } catch { /* localStorage indisponible — ignore */ }
+    };
+  }, []);
 
   const { position } = useGpsPosition();
   const now = new Date();
@@ -103,6 +125,41 @@ export default function DrivePage() {
   // Zone active selon l'index swipé
   const activeZone = topZones[zoneIndex] ?? top;
 
+  // ────────────────────────────────────────────────────────────────────
+  // Levier 6 — Calcul des 3 infos HERO XXL (Zone / Distance / €/h attendu)
+  // ────────────────────────────────────────────────────────────────────
+  //   • Zone     : nom de la zone active
+  //   • Distance : "X.X km · Y min" (distance GPS haversine + ETA backend/fallback 30 km/h)
+  //   • €/h      : revenu horaire attendu = gain brut estimé / durée course + trajet à vide
+  const heroZoneName = activeZone?.zone?.name ?? (isLoading ? "Chargement…" : "—");
+
+  const heroDistanceKm = activeZone?.zone
+    ? haversineKm(position.lat, position.lng, activeZone.zone.lat, activeZone.zone.lng)
+    : null;
+  // ETA : priorité au backend, sinon estimation 30 km/h moyenne urbaine.
+  const heroEtaMin = activeZone
+    ? Math.round(
+        (activeZone.eta_to_zone ?? activeZone.etaToZone) != null
+          ? (activeZone.eta_to_zone ?? activeZone.etaToZone)
+          : (heroDistanceKm ?? 0) / 30 * 60,
+      )
+    : null;
+  const heroDistanceLabel =
+    heroDistanceKm != null ? `${heroDistanceKm.toFixed(1)} km · ${heroEtaMin} min` : "—";
+
+  // €/h attendu : gain brut d'une course / (temps course estimé + trajet à vide vers zone).
+  // Hypothèses : 30 km/h urbain → temps = km / 30 * 60. Plancher 15 min pour éviter
+  // les ratios aberrants sur les micro-courses.
+  let heroEurPerHour: number | null = null;
+  if (activeZone) {
+    const avgDist = activeZone.avg_distance_km ?? activeZone.avgDistanceKm ?? 8;
+    const surge   = activeZone.surge_multiplier ?? activeZone.surgeMultiplier ?? 1;
+    const longRide = activeZone.long_ride_probability ?? activeZone.longRideProbability ?? 0;
+    const rideGain = estimateRideGain({ avgDistanceKm: avgDist, surge, longRideProbability: longRide });
+    const rideMinutes = Math.max(15, (avgDist / 30) * 60 + (heroEtaMin ?? 0));
+    heroEurPerHour = Math.round((rideGain / rideMinutes) * 60);
+  }
+
   return (
     // ─── DrivePage — plein écran avec safe-area (notch / Dynamic Island) ────────
     <div
@@ -111,9 +168,18 @@ export default function DrivePage() {
       data-testid="drive-mode"
       style={{ fontFamily: "Inter, system-ui, sans-serif" }}
     >
-      {/* Header minimal — logo + horloge + sortie */}
+      {/* Header minimal — retour (←) + libellé + horloge + sortie */}
       <div className="flex items-center justify-between px-6 py-3 border-b border-white/10">
         <div className="flex items-center gap-2">
+          {/* Levier 6 — Bouton retour visible top-left */}
+          <Link
+            href="/"
+            className="flex items-center justify-center rounded-full text-white hover:bg-white/10 active:bg-white/20 p-1.5 -ml-1.5 transition-colors"
+            data-testid="button-back-drive"
+            aria-label="Retour"
+          >
+            <ArrowLeft size={22} />
+          </Link>
           <span className="text-[10px] uppercase tracking-widest text-emerald-400 font-bold">
             Mode conduite
           </span>
@@ -136,6 +202,37 @@ export default function DrivePage() {
         <FatigueBanner />
       </div>
 
+      {/* Levier 6 — HERO XXL : 3 infos essentielles (Zone / Distance / €/h)
+           Lisibles en un coup d'œil au volant. Le reste (blocs historiques)
+           demeure accessible en zone secondaire scrollable ci-dessous. */}
+      <div
+        className="flex flex-col items-center justify-center text-center px-4 py-6 gap-3 shrink-0"
+        data-testid="drive-hero"
+      >
+        {/* Zone active */}
+        <div
+          className="text-[56px] leading-none font-bold text-white truncate max-w-full"
+          data-testid="drive-hero-zone"
+        >
+          {heroZoneName}
+        </div>
+        {/* Distance + ETA */}
+        <div
+          className="text-[36px] font-semibold text-gray-300 leading-none tabular-nums"
+          data-testid="drive-hero-distance"
+        >
+          {heroDistanceLabel}
+        </div>
+        {/* €/h attendu */}
+        <div
+          className="text-[36px] font-bold text-green-400 leading-none tabular-nums"
+          data-testid="drive-hero-eur-per-hour"
+        >
+          {heroEurPerHour != null ? `${heroEurPerHour} €/h` : "—"}
+        </div>
+      </div>
+
+      {/* Zone secondaire scrollable — blocs XXL détaillés (existants) conservés */}
       {/* Corps — 4 grandes zones info — mobile : auto rows pour tenir sur 375px */}
       <div className="flex-1 grid grid-rows-[auto_1fr_1fr_1fr_1fr] sm:grid-rows-4 gap-3 sm:gap-4 p-3 sm:p-4 md:p-6 min-h-0 overflow-y-auto">
         {/* Bloc 1 — Où aller (zone active selon swipe ← →) */}

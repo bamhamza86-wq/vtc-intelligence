@@ -23,6 +23,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { haversineKm, estimateRideGain, estimateNetGain, computeConfidence } from "@/lib/geoDistance";
 import { useNextPeakHour } from "@/hooks/useNextPeakHour";
 import { useDriverState } from "@/hooks/useDriverState";
+import { useGpsPosition, GPS_FALLBACK } from "@/hooks/useGpsPosition";
 import { DriverStateToggle } from "@/components/DriverStateToggle";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -89,6 +90,15 @@ export function RecoWhereToGo({ position, topZones, onFocusZone }: RecoWhereToGo
   const nextPeak                = useNextPeakHour();
   const { state: driverState }  = useDriverState();
 
+  // ─── Levier 8 : Distance GPS pondérée ──────────────────────────────
+  // Origine chauffeur = position GPS temps réel (hook global). En fallback GPS
+  // (isFallback), on force explicitement Bd Ney { 48.8976, 2.3299 }. La prop
+  // `position` reste supportée en secours si le hook n'a rien (rétro-compat).
+  const { position: gpsPosition, isFallback } = useGpsPosition();
+  const origin = isFallback
+    ? GPS_FALLBACK
+    : (gpsPosition ?? position);
+
   // Profil chauffeur — migration vers useSmartQueryRefresh (pulse 30s + auto-pause)
   const { data: driverProfile } = useSmartQueryRefresh<DriverProfile>(
     ["/api/driver-profile"],
@@ -96,7 +106,23 @@ export function RecoWhereToGo({ position, topZones, onFocusZone }: RecoWhereToGo
     { staleTime: 5 * 60_000 },
   );
 
-  const top = topZones?.[0];
+  // Levier 8 — Tri par score effectif = score × exp(-distance_km / 10).
+  // Pénalise les zones lointaines : une zone un peu moins rentable mais proche
+  // peut passer devant. On ne mute pas le tableau d'origine (copie via slice).
+  const rankedZones = (topZones ?? [])
+    .filter((z) => z && z.zone)
+    .slice()
+    .sort((a, b) => {
+      const sa = a.profitability_index ?? a.profitabilityIndex ?? 0;
+      const sb = b.profitability_index ?? b.profitabilityIndex ?? 0;
+      const da = haversineKm(origin.lat, origin.lng, a.zone.lat, a.zone.lng);
+      const db = haversineKm(origin.lat, origin.lng, b.zone.lat, b.zone.lng);
+      const effA = sa * Math.exp(-da / 10);
+      const effB = sb * Math.exp(-db / 10);
+      return effB - effA;
+    });
+
+  const top = rankedZones[0] ?? topZones?.[0];
   if (!top || !top.zone) return null;
 
   const zone     = top.zone;
@@ -112,7 +138,10 @@ export function RecoWhereToGo({ position, topZones, onFocusZone }: RecoWhereToGo
   const sigConv  = top.signal_convergence  ?? top.signalConvergence   ?? 0.6;
   const histVar  = top.historical_variance ?? top.historicalVariance  ?? 10;
 
-  const distKm = haversineKm(position.lat, position.lng, zone.lat, zone.lng);
+  // Distance GPS à vol d'oiseau depuis l'origine chauffeur (Levier 8).
+  const distKm = haversineKm(origin.lat, origin.lng, zone.lat, zone.lng);
+  // "X min de toi" : hypothèse 30 km/h moyenne urbaine (distance_km / 30 * 60).
+  const minutesFromYou = Math.round((distKm / 30) * 60);
 
   // Gain net avec coûts carburant/usure depuis le profil chauffeur
   const netGainResult = estimateNetGain({
@@ -249,6 +278,20 @@ export function RecoWhereToGo({ position, topZones, onFocusZone }: RecoWhereToGo
                     >
                       {distKm.toFixed(1)} km
                     </strong>
+                  </span>
+
+                  {/* Levier 8 — "X min de toi" (30 km/h moyenne urbaine) */}
+                  <span
+                    className="flex items-center gap-1"
+                    data-testid="reco-minutes-from-you"
+                  >
+                    <Clock size={11} />
+                    <strong
+                      className={`tabular-nums ${isOnRide ? "text-blue-100" : "text-emerald-100"}`}
+                    >
+                      {minutesFromYou} min
+                    </strong>
+                    <span className="opacity-70">de toi</span>
                   </span>
 
                   {etaMin != null && (
