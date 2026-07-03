@@ -54,22 +54,37 @@ HTTP_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
+# URLs des release notes / changelogs — vérifiées HTTP 200 le 03/07/2026.
+# TomTom ne publie pas de flux JSON/RSS : chaque produit a sa propre page HTML.
+# Cf. rapport /home/user/workspace/tomtom_api_research.md
 CHANGELOGS = {
     "predicthq": [
         "https://docs.predicthq.com/changelog",
-        "https://www.predicthq.com/blog",
     ],
     "tomtom": [
-        "https://developer.tomtom.com/changelog",
+        # Routing v1 (le plus pertinent VTC) — URL 2026 avec segments plateforme/version
+        "https://developer.tomtom.com/routing-api/documentation/tomtom-maps/product-information/release-notes",
+        # Traffic API v1 — flow/incidents temps réel
+        "https://developer.tomtom.com/traffic-api/documentation/tomtom-maps/v1/product-information/release-notes",
+        # Search API — géocodage et POI
+        "https://developer.tomtom.com/search-api/documentation/product-information/release-notes",
+        # Politique de dépréciation — signale les versions obsolètes
+        "https://developer.tomtom.com/deprecation-policy/api-sdk-version-status",
     ],
-    "uber_fleet": [
-        "https://developer.uber.com/docs/businesses/changelog",
-        "https://developer.uber.com/docs/riders/changelog",
+    "tomtom_health": [
+        # Ping des vrais endpoints API — 401 attendu (pas 404) sans clé valide
+        # C'est le signal fiable de disponibilité de la plateforme.
+        "https://api.tomtom.com/routing/1/calculateRoute/48.8976,2.3299:48.8566,2.3522/json",
+        "https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?point=48.8976,2.3299",
     ],
     "drivee": [
         "https://www.drivee.fr",  # surveiller toute nouveauté API
     ],
 }
+
+# Codes HTTP considérés comme « plateforme joignable » pour tomtom_health.
+# TomTom renvoie 401 sans clé valide — c'est un OK fonctionnel.
+HEALTH_OK_CODES = {200, 401, 403}
 
 # Mots-clés indiquant un changement pertinent pour VTC
 KEYWORDS = [
@@ -174,15 +189,50 @@ def _regex_strip(html):
     return html
 
 
-def fetch_page(session, url):
-    """Fetch une URL. Retourne le texte extrait ou None si erreur/timeout."""
+def fetch_page(session, url, health_check=False):
+    """Fetch une URL. Retourne le texte extrait ou None si erreur/timeout.
+
+    health_check=True : mode ping (accepte 401/403 comme signal de vie),
+    retourne une string synthétique "HEALTH_OK:<code>" au lieu du corps.
+    Ne fait qu'un HEAD-like GET, ne parse pas le HTML.
+
+    Skip gracieux sur 404/410/301/302/timeout — le cron ne plante jamais.
+    """
     try:
-        r = session.get(url, headers=HTTP_HEADERS, timeout=URL_TIMEOUT)
-        if r.status_code == 200:
+        r = session.get(
+            url,
+            headers=HTTP_HEADERS,
+            timeout=URL_TIMEOUT,
+            allow_redirects=not health_check,  # détecter les migrations pour changelogs
+        )
+        code = r.status_code
+
+        if health_check:
+            if code in HEALTH_OK_CODES:
+                print(f"    [{url}] HTTP {code} — plateforme joignable")
+                return f"HEALTH_OK:{code}"
+            print(f"    [{url}] HTTP {code} — plateforme injoignable, skip")
+            return None
+
+        if code == 200:
             return extract_text(r.text)
-        print(f"    [{url}] HTTP {r.status_code} — skip")
+
+        # Ressource déplacée/supprimée — skip gracieux avec message explicite
+        if code in (301, 302, 307, 308):
+            loc = r.headers.get("Location", "?")
+            print(f"    [{url}] HTTP {code} redirect → {loc} — skip (vérifier URL cible manuellement)")
+        elif code in (404, 410):
+            print(f"    [{url}] HTTP {code} ressource introuvable/supprimée — skip")
+        elif code == 403:
+            print(f"    [{url}] HTTP {code} accès refusé — skip")
+        else:
+            print(f"    [{url}] HTTP {code} — skip")
     except (requests.exceptions.ReadTimeout, requests.exceptions.Timeout):
         print(f"    [{url}] timeout {URL_TIMEOUT}s — skip")
+    except requests.exceptions.SSLError as e:
+        print(f"    [{url}] SSL error: {e} — skip")
+    except requests.exceptions.ConnectionError as e:
+        print(f"    [{url}] connexion échouée: {type(e).__name__} — skip")
     except requests.exceptions.RequestException as e:
         print(f"    [{url}] {type(e).__name__}: {e} — skip")
     except Exception as e:
@@ -294,15 +344,17 @@ def run():
 
     for platform, urls in CHANGELOGS.items():
         print(f"\n  === {platform} ===")
+        is_health = platform.endswith("_health")
         texts = []
         ok_urls = []
         all_keywords = set()
         for url in urls:
-            text = fetch_page(session, url)
+            text = fetch_page(session, url, health_check=is_health)
             if text:
                 texts.append(text)
                 ok_urls.append(url)
-                all_keywords.update(find_keywords(text))
+                if not is_health:
+                    all_keywords.update(find_keywords(text))
 
         if not texts:
             print(f"    aucune page accessible — skip {platform}")
