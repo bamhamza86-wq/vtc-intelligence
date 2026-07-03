@@ -753,7 +753,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   });
 
   // ─── Levier 9 : Signalement communautaire ─────────────────────────────────────
-  // POST /api/zones/:id/signal — remontée terrain 1-tap (positif/négatif), validité 2h.
+  // POST /api/zones/:id/signal — remontée terrain 1-tap (positif/négatif), validité 30 min.
   app.post("/api/zones/:id/signal", requireAuth, (req, res) => {
     const zoneId = String(req.params.id);
     const { type } = req.body ?? {};

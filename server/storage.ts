@@ -237,7 +237,7 @@ sqlite.exec(`
 
 // ─── Levier 9 : Signalement communautaire 1-tap ──────────────────────────────
 // Table des signalements terrain remontés par les chauffeurs (positif / négatif).
-// Chaque signalement a une validité de 2h (expires_at) pour pondérer le score
+// Chaque signalement a une validité de 30 min (expires_at) pour pondérer le score
 // de rentabilité d'une zone en temps quasi-réel (±8% max).
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS community_signals (
@@ -4143,9 +4143,9 @@ export const storage: IStorage = {
   },
 
   // ─── Levier 9 : Signalement communautaire 1-tap ────────────────────────────
-  // Enregistre un signalement terrain (positif/négatif) avec validité de 2h.
+  // Enregistre un signalement terrain (positif/négatif) avec validité de 30 min.
   recordCommunitySignal(zoneId: string, type: "positive" | "negative", userId: string = "anon"): void {
-    const expires = new Date(Date.now() + 2 * 3600 * 1000).toISOString(); // 2h validité
+    const expires = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 min validité
     sqlite.prepare(
       `INSERT INTO community_signals (zone_id, signal_type, user_id, expires_at) VALUES (?, ?, ?, ?)`
     ).run(zoneId, type, userId, expires);
