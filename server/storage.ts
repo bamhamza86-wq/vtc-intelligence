@@ -128,6 +128,22 @@ sqlite.exec("INSERT OR IGNORE INTO platform_credentials (platform, api_key, stat
   }
 }
 
+// Injection automatique de la clé TomTom (parité avec PredictHQ).
+// Priorité : env var TOMTOM_API_KEY, puis fallback hardcodé (clé du compte bamhamza86@gmail.com).
+// Nécessaire sur le serveur déployé où la DB SQLite est vierge à chaque redeploy — sinon
+// getTomTomKey() renvoie null et les appels TomTom (routing, traffic, ETA temps réel)
+// tombent en "erreur de connexion TomTom" côté UI.
+{
+  const TOMTOM_KEY_FALLBACK = 'IhXIyKS836BLvY1uQEXOPmkldXEJtQF3';
+  const envTomTomKey = (process.env.TOMTOM_API_KEY ?? '').trim();
+  const tomtomKeyToUse = envTomTomKey.length > 10 ? envTomTomKey : TOMTOM_KEY_FALLBACK;
+  const existingTomTom = sqlite.prepare("SELECT api_key, status FROM platform_credentials WHERE platform='tomtom'").get() as any;
+  if (!existingTomTom?.api_key || existingTomTom.api_key.length < 10 || existingTomTom.status !== 'connected') {
+    sqlite.prepare("UPDATE platform_credentials SET api_key=?, status='connected', last_tested=?, error_msg='' WHERE platform='tomtom'").run(tomtomKeyToUse, Date.now());
+    console.log('[Storage] TomTom API key injected (source:', envTomTomKey.length > 10 ? 'TOMTOM_API_KEY env' : 'fallback hardcode', ')');
+  }
+}
+
 // ─── Table PredictHQ events ────────────────────────────────────────────────────
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS predicthq_events (
