@@ -15,6 +15,7 @@ import {
   TrendingUp, Clock, Route as RouteIcon, Gauge, Info, Zap, Plane,
 } from "lucide-react";
 import { PredictHQBadge } from "@/components/PredictHQBadge";
+import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SimulatorPage — Simulateur de trajet temps réel (TomTom / OSRM)

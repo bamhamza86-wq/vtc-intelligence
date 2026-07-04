@@ -170,32 +170,34 @@ export default function DrivePage() {
       data-testid="drive-mode"
       style={{ fontFamily: "Inter, system-ui, sans-serif" }}
     >
-      {/* Header minimal — retour (←) + libellé + horloge + sortie */}
-      <div className="flex items-center justify-between px-6 py-3 border-b border-white/10">
-        <div className="flex items-center gap-2">
-          {/* Levier 6 — Bouton retour visible top-left */}
-          <Link
-            href="/"
-            className="flex items-center justify-center rounded-full text-white hover:bg-white/10 active:bg-white/20 p-1.5 -ml-1.5 transition-colors"
-            data-testid="button-back-drive"
-            aria-label="Retour"
-          >
-            <ArrowLeft size={22} />
-          </Link>
-          <span className="text-[10px] uppercase tracking-widest text-emerald-400 font-bold">
+      {/* Header minimal — retour (←) + libellé + horloge + sortie (tap-targets ≥ 44px) */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-white/10 gap-2">
+        <Link
+          href="/"
+          className="flex items-center justify-center rounded-full text-white hover:bg-white/10 active:bg-white/20 transition-colors shrink-0"
+          style={{ minWidth: 44, minHeight: 44 }}
+          data-testid="button-back-drive"
+          aria-label="Retour"
+        >
+          <ArrowLeft size={24} />
+        </Link>
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+          <span className="text-[10px] uppercase tracking-widest text-emerald-400 font-bold truncate">
             Mode conduite
           </span>
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
         </div>
-        <div className="text-2xl font-mono tabular-nums font-bold text-white/90">
+        <div className="text-xl font-mono tabular-nums font-bold text-white/90 shrink-0">
           {now.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
         </div>
         <Link
           href="/"
-          className="flex items-center gap-2 rounded-full border border-white/20 hover:bg-white/10 active:bg-white/20 px-4 py-2 text-sm font-medium transition-colors"
+          className="flex items-center gap-1.5 rounded-full border border-white/20 hover:bg-white/10 active:bg-white/20 px-3 text-sm font-medium transition-colors shrink-0"
+          style={{ minHeight: 44 }}
           data-testid="button-exit-drive"
+          aria-label="Sortir du mode conduite"
         >
-          <X size={16} /> Sortir
+          <X size={16} /> <span>Sortir</span>
         </Link>
       </div>
 
@@ -204,82 +206,58 @@ export default function DrivePage() {
         <FatigueBanner />
       </div>
 
-      {/* Levier 6 — HERO XXL : 3 infos essentielles (Zone / Distance / €/h)
-           Lisibles en un coup d'œil au volant. Le reste (blocs historiques)
-           demeure accessible en zone secondaire scrollable ci-dessous. */}
-      <div
-        className="flex flex-col items-center justify-center text-center px-4 py-6 gap-3 shrink-0"
-        data-testid="drive-hero"
-      >
-        {/* Zone active */}
-        <div
-          className="text-[56px] leading-none font-bold text-white truncate max-w-full"
-          data-testid="drive-hero-zone"
-        >
-          {heroZoneName}
-        </div>
-        {/* Distance + ETA */}
-        <div
-          className="text-[36px] font-semibold text-gray-300 leading-none tabular-nums"
-          data-testid="drive-hero-distance"
-        >
-          {heroDistanceLabel}
-        </div>
-        {/* Badge source distance/ETA de la zone active : TomTom primaire, sinon OSRM/Calibré */}
-        <span className="text-[11px] opacity-60" data-testid="drive-hero-distance-source">
-          <RouteSourceBadge source={activeZone?.distance_source ?? "calibrated"} size="xs" />
-        </span>
-        {/* €/h attendu */}
-        <div
-          className="text-[36px] font-bold text-green-400 leading-none tabular-nums"
-          data-testid="drive-hero-eur-per-hour"
-        >
-          {heroEurPerHour != null ? `${heroEurPerHour} €/h` : "—"}
-        </div>
-      </div>
+      {/* ─── Corps scrollable — flex-col (fini la grille rigide) ────────────────
+           Chaque bloc prend sa hauteur naturelle. Le HERO XXL redondant est
+           supprimé : la zone active est déjà en tête du bloc 1. Sur 375px on
+           lit tout en scrollant, sans overlap. */}
+      <div className="flex-1 flex flex-col gap-3 p-3 sm:p-4 md:p-6 min-h-0 overflow-y-auto">
 
-      {/* Zone secondaire scrollable — blocs XXL détaillés (existants) conservés */}
-      {/* Corps — 4 grandes zones info — mobile : auto rows pour tenir sur 375px */}
-      <div className="flex-1 grid grid-rows-[auto_1fr_1fr_1fr_1fr] sm:grid-rows-4 gap-3 sm:gap-4 p-3 sm:p-4 md:p-6 min-h-0 overflow-y-auto">
         {/* Bloc 1 — Où aller (zone active selon swipe ← →) */}
-        <div className="rounded-3xl bg-emerald-500/10 border-2 border-emerald-500/40 flex items-center gap-4 md:gap-8 px-6 md:px-10 py-4 min-h-0">
-          <Navigation size={64} className="text-emerald-400 shrink-0" strokeWidth={2.5} />
+        <div className="rounded-2xl bg-emerald-500/10 border-2 border-emerald-500/40 flex items-start gap-3 md:gap-6 px-4 md:px-10 py-4">
+          <Navigation size={44} className="text-emerald-400 shrink-0 mt-1 md:size-16" strokeWidth={2.5} />
           <div className="flex-1 min-w-0">
-            <div className="text-[11px] uppercase tracking-widest text-emerald-300/80 font-bold mb-1">
-              Aller maintenant
-              {/* Indicateur de position si plusieurs zones disponibles */}
+            <div className="flex items-center gap-2 text-[11px] uppercase tracking-widest text-emerald-300/80 font-bold mb-1">
+              <span>Aller maintenant</span>
               {topZones.length > 1 && (
-                <span className="ml-2 opacity-60">
-                  {zoneIndex + 1}/{topZones.length}
-                </span>
+                <span className="opacity-60">{zoneIndex + 1}/{topZones.length}</span>
               )}
+              <span className="ml-auto">
+                <RouteSourceBadge source={activeZone?.distance_source ?? "calibrated"} size="xs" />
+              </span>
             </div>
             {activeZone?.zone ? (
               <>
-                <div className="text-2xl sm:text-3xl md:text-5xl font-black text-emerald-100 leading-tight truncate">
+                <div className="text-2xl sm:text-3xl md:text-5xl font-black text-emerald-100 leading-tight break-words">
                   {activeZone.zone.name}
                 </div>
-                <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 mt-2 text-emerald-200/90">
-                  <span className="text-2xl md:text-4xl font-bold tabular-nums">
-                    {haversineKm(position.lat, position.lng, activeZone.zone.lat, activeZone.zone.lng).toFixed(1)}
-                    <span className="text-lg font-medium text-emerald-300/70 ml-1">km</span>
-                  </span>
-                  {(activeZone.eta_to_zone ?? activeZone.etaToZone) != null && (
-                    <span className="text-xl md:text-2xl tabular-nums">
-                      ETA {Math.round(activeZone.eta_to_zone ?? activeZone.etaToZone)}
-                      <span className="text-sm text-emerald-300/70 ml-1">min</span>
+                <div className="mt-2 space-y-0.5 text-emerald-200/90">
+                  <div className="flex items-baseline gap-3 text-lg md:text-2xl tabular-nums">
+                    <span className="font-bold">
+                      {haversineKm(position.lat, position.lng, activeZone.zone.lat, activeZone.zone.lng).toFixed(1)}
+                      <span className="text-sm font-medium text-emerald-300/70 ml-1">km</span>
                     </span>
-                  )}
-                  <span className="text-lg md:text-xl">
+                    {(activeZone.eta_to_zone ?? activeZone.etaToZone) != null && (
+                      <span>
+                        ETA {Math.round(activeZone.eta_to_zone ?? activeZone.etaToZone)}
+                        <span className="text-sm text-emerald-300/70 ml-1">min</span>
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-sm md:text-base">
                     Score{" "}
                     <strong className="tabular-nums text-white">
                       {Math.round(activeZone.profitability_index ?? activeZone.profitabilityIndex ?? 0)}/100
                     </strong>
-                  </span>
+                    {heroEurPerHour != null && (
+                      <span className="ml-3 text-green-300 font-semibold">
+                        · ~{heroEurPerHour} €/h
+                      </span>
+                    )}
+                  </div>
                 </div>
               </>
             ) : (
-              <div className="text-2xl text-emerald-300/60">
+              <div className="text-xl text-emerald-300/60">
                 {isLoading ? "Chargement…" : "Aucune donnée"}
               </div>
             )}
@@ -287,52 +265,52 @@ export default function DrivePage() {
         </div>
 
         {/* Bloc 2 — Gain estimé (suit la zone active) */}
-        <div className="rounded-3xl bg-amber-500/10 border-2 border-amber-500/40 flex items-center gap-4 md:gap-8 px-6 md:px-10 py-4 min-h-0">
-          <div className="shrink-0 text-5xl md:text-6xl">💶</div>
+        <div className="rounded-2xl bg-amber-500/10 border-2 border-amber-500/40 flex items-start gap-3 md:gap-6 px-4 md:px-10 py-4">
+          <div className="shrink-0 text-3xl md:text-6xl mt-1">💶</div>
           <div className="flex-1 min-w-0">
             <div className="text-[11px] uppercase tracking-widest text-amber-300/80 font-bold mb-1">
               Gain estimé
             </div>
             {activeZone ? (
               <>
-                <div className="text-4xl sm:text-5xl md:text-7xl font-black text-amber-100 leading-none tabular-nums">
+                <div className="text-3xl sm:text-4xl md:text-6xl font-black text-amber-100 leading-none tabular-nums">
                   ~
                   {estimateRideGain({
                     avgDistanceKm: activeZone.avg_distance_km ?? activeZone.avgDistanceKm ?? 8,
                     surge: activeZone.surge_multiplier ?? activeZone.surgeMultiplier ?? 1,
                     longRideProbability: activeZone.long_ride_probability ?? activeZone.longRideProbability ?? 0,
                   })}
-                  <span className="text-3xl md:text-4xl text-amber-300/80 ml-2">€</span>
+                  <span className="text-xl md:text-3xl text-amber-300/80 ml-1">€</span>
                 </div>
-                <div className="flex flex-wrap items-baseline gap-x-4 mt-2 text-amber-200/85 text-lg md:text-xl">
-                  <span>
-                    Distance moy.{" "}
+                <div className="mt-2 text-sm md:text-base text-amber-200/85 space-y-0.5">
+                  <div>
+                    Dist. moy.{" "}
                     <strong className="tabular-nums text-white">
                       {(activeZone.avg_distance_km ?? activeZone.avgDistanceKm ?? 0).toFixed(1)} km
                     </strong>
-                  </span>
-                  {(activeZone.surge_multiplier ?? activeZone.surgeMultiplier ?? 1) > 1.1 && (
-                    <span className="font-bold text-amber-300">
-                      ⚡ Surge ×{(activeZone.surge_multiplier ?? activeZone.surgeMultiplier).toFixed(2)}
+                    <span className="ml-3">
+                      Longue{" "}
+                      <strong className="tabular-nums text-white">
+                        {Math.round((activeZone.long_ride_probability ?? activeZone.longRideProbability ?? 0) * 100)}%
+                      </strong>
                     </span>
+                  </div>
+                  {(activeZone.surge_multiplier ?? activeZone.surgeMultiplier ?? 1) > 1.1 && (
+                    <div className="font-bold text-amber-300">
+                      ⚡ Surge ×{(activeZone.surge_multiplier ?? activeZone.surgeMultiplier).toFixed(2)}
+                    </div>
                   )}
-                  <span>
-                    Longue{" "}
-                    <strong className="tabular-nums text-white">
-                      {Math.round((activeZone.long_ride_probability ?? activeZone.longRideProbability ?? 0) * 100)}%
-                    </strong>
-                  </span>
                 </div>
               </>
             ) : (
-              <div className="text-2xl text-amber-300/60">—</div>
+              <div className="text-xl text-amber-300/60">—</div>
             )}
           </div>
         </div>
 
         {/* Bloc 3 — Countdown prochain pic */}
         <div
-          className={`rounded-3xl border-2 flex items-center gap-4 md:gap-8 px-6 md:px-10 py-4 min-h-0 ${
+          className={`rounded-2xl border-2 flex items-start gap-3 md:gap-6 px-4 md:px-10 py-4 ${
             nextPeak.imminent
               ? "bg-red-500/10 border-red-500/60"
               : nextPeak.hour != null
@@ -341,8 +319,8 @@ export default function DrivePage() {
           }`}
         >
           <TrendingUp
-            size={64}
-            className={`shrink-0 ${nextPeak.imminent ? "text-red-400 animate-pulse" : nextPeak.hour != null ? "text-sky-400" : "text-white/40"}`}
+            size={44}
+            className={`shrink-0 mt-1 md:size-16 ${nextPeak.imminent ? "text-red-400 animate-pulse" : nextPeak.hour != null ? "text-sky-400" : "text-white/40"}`}
             strokeWidth={2.5}
           />
           <div className="flex-1 min-w-0">
@@ -356,37 +334,38 @@ export default function DrivePage() {
             {nextPeak.hour != null ? (
               <>
                 <div
-                  className={`text-4xl sm:text-6xl md:text-8xl font-black leading-none tabular-nums ${
+                  className={`text-3xl sm:text-5xl md:text-7xl font-black leading-none tabular-nums ${
                     nextPeak.imminent ? "text-red-100" : "text-sky-100"
                   }`}
                 >
                   {fmtCountdown(nextPeak.minutesUntil)}
                 </div>
                 <div
-                  className={`flex flex-wrap items-baseline gap-x-4 mt-2 text-lg md:text-xl ${
+                  className={`mt-2 text-sm md:text-base space-y-0.5 ${
                     nextPeak.imminent ? "text-red-200/85" : "text-sky-200/85"
                   }`}
                 >
-                  <span>
-                    Score attendu <strong className="tabular-nums text-white">{nextPeak.score}/100</strong>
-                  </span>
-                  {nextPeak.zoneName && (
-                    <span className="truncate">
-                      → <strong className="text-white">{nextPeak.zoneName}</strong>
+                  <div>
+                    Score <strong className="tabular-nums text-white">{nextPeak.score}/100</strong>
+                    <span className="text-white/60 ml-2">
+                      à {String(nextPeak.hour).padStart(2, "0")}:00
                     </span>
+                  </div>
+                  {nextPeak.zoneName && (
+                    <div className="truncate">
+                      → <strong className="text-white">{nextPeak.zoneName}</strong>
+                    </div>
                   )}
-                  <span className="text-white/60">
-                    à {String(nextPeak.hour).padStart(2, "0")}:00
-                  </span>
                 </div>
               </>
             ) : (
-              <div className="text-3xl md:text-4xl text-white/50 font-semibold">
+              <div className="text-lg md:text-3xl text-white/50 font-semibold">
                 Aucun pic prévu dans les 6h
               </div>
             )}
           </div>
         </div>
+
         {/* Bloc 4 — Objectif journalier */}
         <DailyGoalBar variant="xxl" />
       </div>
