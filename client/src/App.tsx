@@ -17,8 +17,11 @@ import ReturnJourneyPage from "./pages/ReturnJourneyPage";
 import SmartPlanPage from "./pages/SmartPlanPage";
 import DrivePage from "./pages/DrivePage";
 import EconomicsDashboard from "./pages/EconomicsDashboard";
+import FocusPage from "./pages/FocusPage";
+import TaxJournalPage from "./pages/TaxJournalPage";
 import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/not-found";
+import { registerServiceWorker } from "./lib/pwa";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // AuthGuard — checks /api/auth/me on mount, shows LoginPage if not authenticated
@@ -98,6 +101,11 @@ function RoutingOriginSync() {
 // App
 // ──────────────────────────────────────────────────────────────────────────────
 export default function App() {
+  useEffect(() => {
+    // Enregistrement du service worker PWA (Lot A)
+    registerServiceWorker();
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
@@ -111,6 +119,8 @@ export default function App() {
                 <Route path="/return-journey" component={ReturnJourneyPage} />
                 <Route path="/smart-plan" component={SmartPlanPage} />
                 <Route path="/drive" component={DrivePage} />
+                <Route path="/focus" component={FocusPage} />
+                <Route path="/tax" component={TaxJournalPage} />
                 <Route path="/simulator" component={SimulatorPage} />
                 <Route path="/alerts" component={AlertsPage} />
                 <Route path="/economics" component={EconomicsDashboard} />

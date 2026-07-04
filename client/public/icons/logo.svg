@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Fond bleu nuit pleine surface (safe-zone maskable) -->
+  <rect x="0" y="0" width="512" height="512" fill="#0f172a"/>
+
+  <!-- Pictogramme voiture stylisée, centré dans la zone sûre (~80% pour maskable) -->
+  <g transform="translate(256,270)">
+    <!-- Corps de la voiture -->
+    <path d="M -150 20
+             L -128 -34
+             C -120 -54 -102 -66 -80 -66
+             L 80 -66
+             C 102 -66 120 -54 128 -34
+             L 150 20
+             L 150 64
+             C 150 76 140 86 128 86
+             L 108 86
+             C 96 86 86 76 86 64
+             L 86 54
+             L -86 54
+             L -86 64
+             C -86 76 -96 86 -108 86
+             L -128 86
+             C -140 86 -150 76 -150 64
+             Z"
+          fill="#ff6b2b"/>
+    <!-- Pare-brise / vitres (découpe bleu nuit) -->
+    <path d="M -96 -34 L -78 -8 L 78 -8 L 96 -34
+             C 92 -46 82 -54 70 -54 L -70 -54
+             C -82 -54 -92 -46 -96 -34 Z"
+          fill="#0f172a"/>
+    <!-- Roues -->
+    <circle cx="-96" cy="66" r="30" fill="#0f172a"/>
+    <circle cx="-96" cy="66" r="13" fill="#ff6b2b"/>
+    <circle cx="96" cy="66" r="30" fill="#0f172a"/>
+    <circle cx="96" cy="66" r="13" fill="#ff6b2b"/>
+    <!-- Phare -->
+    <rect x="128" y="-6" width="22" height="14" rx="6" fill="#ffe3cf"/>
+  </g>
+
+  <!-- Monogramme V1 discret en bas -->
+  <text x="256" y="446" font-family="Arial, Helvetica, sans-serif" font-weight="700"
+        font-size="54" fill="#ffffff" text-anchor="middle" letter-spacing="2">V1</text>
+</svg>

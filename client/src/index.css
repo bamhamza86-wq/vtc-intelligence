@@ -109,3 +109,218 @@
 @media (min-width: 641px) {
   .mobile-only { display: none !important; }
 }
+
+/* ═════════════════════════════════════════════════════════════════════════
+ * MODE NUIT AMBRE — Agent B (Lot B)
+ * ─────────────────────────────────────────────────────────────────────────
+ * Mode "conduite nuit" façon cockpit avion, distinct du dark mode existant
+ * (ThemeProvider / .dark). Objectif : préserver la vision nocturne du
+ * chauffeur avec une palette rouge/ambre <2700K (aucune lumière bleue).
+ *
+ * Activation : classe `amber-night` sur <html> (voir useAmberNight.ts).
+ * Test rapide en dev (console navigateur) :
+ *   document.documentElement.classList.add('amber-night')
+ *   document.documentElement.classList.remove('amber-night')
+ *
+ * Palette :
+ *   Fond global      #0a0500  (quasi noir, teinte ambre très sombre)
+ *   Texte ambre pâle #ffb27a  (contraste ~13.9:1 sur #0a0500 → WCAG AAA)
+ *   Accent primaire  #ff6b2b  (ambre saturé, contraste ~8.2:1 sur #0a0500)
+ *   Toute couleur vive (bleus/violets/verts) est désaturée vers un gris ambré
+ *   pour ne pas casser l'adaptation à l'obscurité de l'œil.
+ * ═════════════════════════════════════════════════════════════════════════ */
+
+:root.amber-night {
+  /* Tokens de base réécrits en HSL pour rester compatibles avec les
+     composants shadcn qui consomment ces variables (hsl(var(--x))). */
+  --background: 20 100% 2%;           /* #0a0500 */
+  --foreground: 24 100% 76%;          /* #ffb27a */
+  --border: 20 60% 18%;
+  --card: 20 70% 5%;
+  --card-foreground: 24 100% 76%;
+  --card-border: 20 60% 16%;
+  --sidebar: 20 90% 3%;
+  --sidebar-foreground: 24 100% 76%;
+  --sidebar-border: 20 60% 14%;
+  --sidebar-primary: 17 100% 56%;     /* #ff6b2b */
+  --sidebar-primary-foreground: 20 100% 4%;
+  --sidebar-accent: 20 60% 10%;
+  --sidebar-accent-foreground: 24 100% 76%;
+  --sidebar-ring: 17 100% 56%;
+  --popover: 20 80% 4%;
+  --popover-foreground: 24 100% 76%;
+  --popover-border: 20 60% 16%;
+  --primary: 17 100% 56%;             /* #ff6b2b */
+  --primary-foreground: 20 100% 4%;
+  --secondary: 20 55% 10%;
+  --secondary-foreground: 24 100% 76%;
+  --muted: 20 55% 8%;
+  --muted-foreground: 24 60% 55%;
+  --accent: 20 55% 10%;
+  --accent-foreground: 24 100% 76%;
+  /* Danger/destructif : reste dans la famille rouge/ambre (pas de rouge pur
+     froid) pour ne pas introduire de teinte étrangère à la palette nuit. */
+  --destructive: 10 90% 45%;
+  --destructive-foreground: 24 100% 90%;
+  --input: 20 50% 16%;
+  --ring: 17 100% 56%;
+  /* Graphiques : désaturés et recentrés sur la gamme ambre/rouge pour éviter
+     tout flash bleu/violet/vert qui casserait la vision nocturne. */
+  --chart-1: 17 100% 56%;
+  --chart-2: 24 60% 50%;
+  --chart-3: 30 70% 45%;
+  --chart-4: 12 70% 45%;
+  --chart-5: 20 30% 40%;
+  --button-outline: rgba(255, 178, 122, 0.12);
+  --badge-outline: rgba(255, 178, 122, 0.08);
+  --elevate-1: rgba(255, 178, 122, 0.04);
+  --elevate-2: rgba(255, 178, 122, 0.08);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.6);
+  --shadow: 0 4px 12px rgba(0, 0, 0, 0.65);
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.7);
+}
+
+/* Corps de page : fond quasi noir, texte ambre pâle (contraste ≥ 4.5:1) */
+:root.amber-night body {
+  background: #0a0500;
+  color: #ffb27a;
+}
+
+/* Éléments marqués comme couleur primaire explicite (data-attribute utilisé
+   par les nouveaux composants des autres agents pour forcer l'accent). */
+:root.amber-night [data-primary] {
+  color: #ff6b2b;
+}
+
+/* Cartes / conteneurs : fond légèrement plus clair que le body pour garder
+   une hiérarchie visuelle sans jamais sortir de la gamme ambre. */
+:root.amber-night .bg-card,
+:root.amber-night [class*="bg-card"] {
+  background-color: #140a02 !important;
+}
+
+/* Boutons pleins (primary) : ambre saturé, texte quasi noir pour un contraste
+   fort (≥ 4.5:1) sans éblouissement. */
+:root.amber-night button[class*="bg-primary"],
+:root.amber-night .bg-primary {
+  background-color: #ff6b2b !important;
+  color: #150a02 !important;
+}
+
+/* Titres : ambre pâle, légèrement plus lumineux que le texte courant */
+:root.amber-night h1,
+:root.amber-night h2,
+:root.amber-night h3,
+:root.amber-night h4 {
+  color: #ffc79a;
+}
+
+/* Liens et éléments interactifs : ambre saturé */
+:root.amber-night a,
+:root.amber-night [role="link"] {
+  color: #ff8a4d;
+}
+
+/* Désaturation des couleurs vives : bleus, violets, verts, cyans deviennent
+   un gris ambré neutre pour ne pas produire de lumière froide parasite.
+   Cible large via filtres sur classes Tailwind connues du projet. */
+:root.amber-night .text-blue-300,
+:root.amber-night .text-blue-400,
+:root.amber-night .text-blue-500,
+:root.amber-night .bg-blue-500\/20,
+:root.amber-night .border-blue-500\/60,
+:root.amber-night .text-emerald-300,
+:root.amber-night .text-emerald-400,
+:root.amber-night .text-emerald-500,
+:root.amber-night .bg-emerald-500\/20,
+:root.amber-night .border-emerald-500\/60,
+:root.amber-night .text-purple-300,
+:root.amber-night .text-purple-400,
+:root.amber-night .text-violet-300,
+:root.amber-night .text-violet-400,
+:root.amber-night .text-cyan-300,
+:root.amber-night .text-cyan-400 {
+  color: #b08a6a !important;
+  filter: saturate(0.35) sepia(0.25);
+}
+
+/* Cartographie Leaflet : assombrir et teinter le fond de tuiles pour éviter
+   l'éblouissement (les tuiles elles-mêmes ne peuvent pas être reteintées
+   sans traitement image, on agit sur le conteneur). */
+:root.amber-night .leaflet-container {
+  background: #0a0500 !important;
+  filter: brightness(0.55) sepia(0.4) hue-rotate(-25deg) saturate(1.1);
+}
+
+:root.amber-night .leaflet-control-zoom a {
+  background-color: #140a02 !important;
+  color: #ffb27a !important;
+  border-color: #3a1e08 !important;
+}
+:root.amber-night .leaflet-control-zoom a:hover {
+  background-color: #26130a !important;
+}
+
+/* Icônes lucide utilisant currentColor héritent naturellement de la teinte
+   ambre via `color`; on force cependant les SVG à trait explicite. */
+:root.amber-night svg[stroke="currentColor"] {
+  color: inherit;
+}
+
+/* Bordures génériques adoucies pour rester lisibles sans éblouir */
+:root.amber-night .border,
+:root.amber-night [class*="border-border"] {
+  border-color: rgba(255, 178, 122, 0.18) !important;
+}
+
+
+/* ═════════════════════════════════════════════════════════════════════════
+ * PAYSAGE SUPPORTÉ (opt-in par page) — Agent B (Lot B)
+ * ─────────────────────────────────────────────────────────────────────────
+ * Bottom-nav → rail vertical à gauche en paysage, padding haut réduit.
+ * Le viewport meta `viewport-fit=cover` reste géré par Agent A (index.html).
+ * Ces règles ne s'appliquent qu'aux éléments marqués explicitement pour ne
+ * pas casser les pages qui n'ont pas encore été adaptées au paysage par les
+ * autres agents (opt-in via classes `.landscape-rail` / `.landscape-pad-sm`).
+ * ═════════════════════════════════════════════════════════════════════════ */
+
+@media (orientation: landscape) {
+  /* Bottom-nav devient un rail vertical à gauche, largeur 60px */
+  .landscape-rail {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 60px;
+    height: 100%;
+    flex-direction: column;
+    padding-top: max(env(safe-area-inset-top), 8px);
+    padding-bottom: max(env(safe-area-inset-bottom), 8px);
+    padding-left: env(safe-area-inset-left);
+    border-top: none;
+    border-right: 1px solid hsl(var(--border));
+  }
+
+  /* Contenu principal doit laisser la place au rail gauche */
+  .landscape-content-offset {
+    padding-left: calc(60px + env(safe-area-inset-left));
+  }
+
+  /* Padding supérieur réduit en paysage (moins de hauteur disponible),
+     tout en préservant la zone d'encoche/caméra (safe-area). */
+  .landscape-pad-sm {
+    padding-top: max(env(safe-area-inset-top), 4px) !important;
+  }
+}
+
+
+/* ═════════════════════════════════════════════════════════════════════════
+ * CIBLES TACTILES ≥ 56PX — Agent B (Lot B)
+ * ─────────────────────────────────────────────────────────────────────────
+ * Utility disponible pour les nouveaux composants des autres agents.
+ * Pas de refonte massive de l'existant, juste l'utilitaire prêt à l'emploi.
+ * ═════════════════════════════════════════════════════════════════════════ */
+.tap-target {
+  min-width: 56px;
+  min-height: 56px;
+}

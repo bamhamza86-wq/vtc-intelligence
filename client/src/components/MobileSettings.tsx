@@ -31,8 +31,13 @@ import { useState, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
-import { Smartphone, Volume2, Monitor, Car } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Smartphone, Volume2, Monitor, Car, MoonStar, Mic } from "lucide-react";
 import { setSoundEnabled } from "@/lib/audio";
+// ── Lot B : mode nuit ambre, vibrations enrichies, voix française ───────────
+import { AmberNightToggle } from "@/components/AmberNightToggle";
+import { hapticsEnabled, setHapticsEnabled } from "@/lib/haptics";
+import { useVoice } from "@/hooks/useVoice";
 
 // ── Clés localStorage ─────────────────────────────────────────────────────────
 const KEYS = {
@@ -84,6 +89,19 @@ export function MobileSettings() {
     // autodrive_off = "1" désactive l'auto-drive → inverser la valeur du toggle
     setFlag(KEYS.autoDrive, !val);
   }, []);
+
+  // ── Lot B : vibrations enrichies + voix française ────────────────────────
+  const [enrichedHapticsOn, setEnrichedHapticsOn] = useState(() => hapticsEnabled());
+  const { speak, isEnabled: voiceEnabled, setEnabled: setVoiceEnabled } = useVoice();
+
+  const handleEnrichedHaptics = useCallback((val: boolean) => {
+    setEnrichedHapticsOn(val);
+    setHapticsEnabled(val);
+  }, []);
+
+  const handleTestVoice = useCallback(() => {
+    speak("Test de la voix. Roissy dans 14 minutes.", { priority: "high" });
+  }, [speak]);
 
   return (
     <Card data-testid="mobile-settings" className="border-primary/20">
@@ -172,6 +190,76 @@ export function MobileSettings() {
             data-testid="toggle-autodrive"
             aria-label="Activer la bascule automatique vers le mode conduite"
           />
+        </div>
+
+        <Separator />
+
+        {/* ── Lot B : Mode nuit ambre ────────────────────────────────── */}
+        <div className="flex items-center justify-between py-3 gap-3">
+          <div className="flex items-start gap-2.5">
+            <MoonStar size={16} className="text-muted-foreground mt-0.5 shrink-0" />
+            <div>
+              <p className="text-sm font-medium">Mode nuit ambre</p>
+              <p className="text-xs text-muted-foreground">
+                Palette ambre basse lumière pour la conduite de nuit (Off / Auto 21h–6h / On)
+              </p>
+            </div>
+          </div>
+          <AmberNightToggle />
+        </div>
+
+        <Separator />
+
+        {/* ── Lot B : Vibrations enrichies ──────────────────────────── */}
+        <div className="flex items-center justify-between py-3">
+          <div className="flex items-start gap-2.5">
+            <Smartphone size={16} className="text-muted-foreground mt-0.5 shrink-0" />
+            <div>
+              <p className="text-sm font-medium">Vibrations enrichies</p>
+              <p className="text-xs text-muted-foreground">
+                Vocabulaire haptique différencié (opportunité, alerte, fatigue, arrivée)
+              </p>
+            </div>
+          </div>
+          <Switch
+            checked={enrichedHapticsOn}
+            onCheckedChange={handleEnrichedHaptics}
+            data-testid="toggle-haptics-enriched"
+            aria-label="Activer les vibrations enrichies"
+          />
+        </div>
+
+        <Separator />
+
+        {/* ── Lot B : Voix française ─────────────────────────────── */}
+        <div className="flex items-center justify-between py-3 gap-3">
+          <div className="flex items-start gap-2.5">
+            <Mic size={16} className="text-muted-foreground mt-0.5 shrink-0" />
+            <div>
+              <p className="text-sm font-medium">Voix française</p>
+              <p className="text-xs text-muted-foreground">
+                Annonces vocales (ex. prochaine zone, temps d'attente)
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleTestVoice}
+              data-testid="button-test-voice"
+              aria-label="Tester la voix française"
+            >
+              Tester
+            </Button>
+            <Switch
+              checked={voiceEnabled}
+              onCheckedChange={setVoiceEnabled}
+              data-testid="toggle-voice"
+              aria-label="Activer la voix française"
+            />
+          </div>
         </div>
 
       </CardContent>

@@ -35,6 +35,7 @@ import {
   MoreHorizontal,
   Cpu,
   Database,
+  FileText,
 } from "lucide-react";
 import { DaySignalBadge } from "@/components/DaySignalBadge";
 import { LiveIndicator } from "@/components/LiveIndicator";
@@ -44,16 +45,20 @@ import { useSSE } from "@/hooks/useSSE";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
 
 // ─── Onglets principaux (barre de navigation) ──────────────────────────────────
+// Refonte mobile : Focus prend la place de Carte (recommandation unique en zone du pouce)
 const primaryNavItems = [
-  { path: "/",          label: "Carte",   icon: Map      },
-  { path: "/alerts",   label: "Alertes", icon: Bell     },
-  { path: "/economics", label: "Éco",    icon: BarChart2 },
+  { path: "/focus",     label: "Focus",   icon: Target    },
+  { path: "/alerts",    label: "Alertes", icon: Bell      },
+  { path: "/economics", label: "Éco",     icon: BarChart2 },
 ];
 
 // ─── Entrées du menu « Plus » ──────────────────────────────────────────────────
+// Carte déplacée dans Plus (accessible en 1 tap), Fiscal ajouté (Lot D).
 const moreMenuItems = [
+  { path: "/",            label: "Carte",     icon: Map        },
   { path: "/best-route",  label: "Trajet",    icon: Navigation },
   { path: "/smart-plan",  label: "Planning",  icon: Target     },
+  { path: "/tax",         label: "Fiscal",    icon: FileText   },
   { path: "/simulator",   label: "Simulator", icon: Cpu        },
   { path: "/sources",     label: "Sources",   icon: Database   },
   { path: "/profile",     label: "Profil",    icon: User       },

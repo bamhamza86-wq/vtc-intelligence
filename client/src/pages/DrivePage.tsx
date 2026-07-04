@@ -22,6 +22,7 @@ import { useNextPeakHour } from "@/hooks/useNextPeakHour";
 import { useWakeLock } from "@/hooks/useWakeLock";
 import { haversineKm, estimateRideGain } from "@/lib/geoDistance";
 import { FatigueBanner } from "@/components/FatigueBanner";
+import FatigueCoachBanner from "@/components/FatigueCoachBanner";
 import { DailyGoalBar } from "@/components/DailyGoalBar";
 import { FuelAutonomyBadge } from "@/components/FuelAutonomyBadge";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
@@ -406,6 +407,7 @@ export default function DrivePage() {
         <span>vtc-one · mode conduite</span>
         <FuelAutonomyBadge />
       </div>
+      <FatigueCoachBanner />
     </div>
   );
 }

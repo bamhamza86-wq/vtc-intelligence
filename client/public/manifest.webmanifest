@@ -1,0 +1,62 @@
+{
+  "name": "VTC Intelligence",
+  "short_name": "VTC One",
+  "description": "Aide à la décision temps réel pour chauffeurs VTC en Île-de-France : carte de rentabilité, alertes, éco, mode conduite.",
+  "lang": "fr",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#0f172a",
+  "background_color": "#0f172a",
+  "start_url": "/",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Focus",
+      "short_name": "Focus",
+      "description": "Ouvrir le mode Focus",
+      "url": "/#/focus",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Mode Conduite",
+      "short_name": "Conduite",
+      "description": "Passer en mode conduite plein écran",
+      "url": "/#/drive",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Alertes",
+      "short_name": "Alertes",
+      "description": "Voir les alertes en cours",
+      "url": "/#/alerts",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Éco",
+      "short_name": "Éco",
+      "description": "Tableau de bord économique",
+      "url": "/#/economics",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

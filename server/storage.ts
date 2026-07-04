@@ -4256,3 +4256,157 @@ export function getNextPeakCountdown(): { next_peak_hour: number | null; minutes
   }
   return { next_peak_hour: null, minutes_until: -1, expected_score: 0, _ts: Date.now() };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ─── LOT D : Wow features ───────────────────────────────────────────────────
+// Photo réservoir → coût réel/km. Patch strictement additif (Agent D).
+// ═══════════════════════════════════════════════════════════════════════════
+
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS fuel_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    price_per_liter REAL NOT NULL,
+    liters REAL NOT NULL,
+    total_eur REAL NOT NULL,
+    odometer_km INTEGER,
+    station_name TEXT DEFAULT '',
+    photo_ref TEXT DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS idx_fuel_ts ON fuel_receipts(ts DESC);
+`);
+
+export interface FuelReceiptInput {
+  pricePerLiter: number;
+  liters: number;
+  totalEur: number;
+  odometerKm?: number | null;
+  stationName?: string;
+  photoRef?: string;
+}
+
+export interface FuelReceiptRow {
+  id: number;
+  ts: number;
+  price_per_liter: number;
+  liters: number;
+  total_eur: number;
+  odometer_km: number | null;
+  station_name: string;
+  photo_ref: string;
+}
+
+const stmtInsertFuelReceipt = sqlite.prepare(`
+  INSERT INTO fuel_receipts (ts, price_per_liter, liters, total_eur, odometer_km, station_name, photo_ref)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+`);
+
+const stmtListFuelReceipts = sqlite.prepare(`
+  SELECT * FROM fuel_receipts ORDER BY ts DESC LIMIT ?
+`);
+
+const stmtLastFuelReceipts = sqlite.prepare(`
+  SELECT * FROM fuel_receipts ORDER BY ts DESC LIMIT 5
+`);
+
+/**
+ * addFuelReceipt — enregistre un ticket carburant (photo + saisie rapide).
+ * Retourne la ligne insérée.
+ */
+export function addFuelReceipt(input: FuelReceiptInput): FuelReceiptRow {
+  const ts = Date.now();
+  const info = stmtInsertFuelReceipt.run(
+    ts,
+    input.pricePerLiter,
+    input.liters,
+    input.totalEur,
+    input.odometerKm ?? null,
+    input.stationName ?? "",
+    input.photoRef ?? "",
+  );
+  return sqlite.prepare(`SELECT * FROM fuel_receipts WHERE id = ?`).get(info.lastInsertRowid) as FuelReceiptRow;
+}
+
+/**
+ * listFuelReceipts — historique des N derniers pleins (défaut 10).
+ */
+export function listFuelReceipts(limit = 10): FuelReceiptRow[] {
+  return stmtListFuelReceipts.all(limit) as FuelReceiptRow[];
+}
+
+/**
+ * computeRealCostPerKm — calcule le €/km réel carburant à partir des 5 derniers
+ * pleins, croisé avec la consommation véhicule (L/100km) du profil chauffeur.
+ * Priorité aux odomètres si ≥2 relevés disponibles (delta km réel / delta litres),
+ * sinon fallback sur prix moyen pondéré × consommation déclarée du profil.
+ */
+export function computeRealCostPerKm(): {
+  realCostPerKm: number;
+  sampleSize: number;
+  lastUpdated: number | null;
+  method: "odometer" | "profile_consumption" | "none";
+} {
+  const receipts = stmtLastFuelReceipts.all() as FuelReceiptRow[];
+  if (!receipts.length) {
+    return { realCostPerKm: 0, sampleSize: 0, lastUpdated: null, method: "none" };
+  }
+
+  const lastUpdated = receipts[0].ts;
+
+  // ─── Méthode 1 : odomètre réel (si ≥2 relevés avec odometer_km renseigné) ──
+  const withOdo = receipts
+    .filter((r) => r.odometer_km != null)
+    .sort((a, b) => (a.odometer_km as number) - (b.odometer_km as number));
+
+  if (withOdo.length >= 2) {
+    const first = withOdo[0];
+    const last = withOdo[withOdo.length - 1];
+    const deltaKm = (last.odometer_km as number) - (first.odometer_km as number);
+    // Litres consommés entre les deux relevés = somme des pleins sauf le premier
+    // (le premier plein sert de référence de départ, pas de consommation mesurée)
+    const litersConsumed = withOdo.slice(1).reduce((sum, r) => sum + r.liters, 0);
+    const totalCost = withOdo.slice(1).reduce((sum, r) => sum + r.total_eur, 0);
+    if (deltaKm > 0 && litersConsumed > 0) {
+      return {
+        realCostPerKm: Math.round((totalCost / deltaKm) * 1000) / 1000,
+        sampleSize: receipts.length,
+        lastUpdated,
+        method: "odometer",
+      };
+    }
+  }
+
+  // ─── Méthode 2 : fallback — prix moyen pondéré × consommation profil ───────
+  const profile = storage.getDriverProfile() as any;
+  const consumptionPer100km = profile?.fuel_consumption_per100km ?? 7.5;
+  const totalLiters = receipts.reduce((sum, r) => sum + r.liters, 0);
+  const totalCost = receipts.reduce((sum, r) => sum + r.total_eur, 0);
+  const avgPricePerLiter = totalLiters > 0 ? totalCost / totalLiters : receipts[0].price_per_liter;
+  const realCostPerKm = (avgPricePerLiter * consumptionPer100km) / 100;
+
+  return {
+    realCostPerKm: Math.round(realCostPerKm * 1000) / 1000,
+    sampleSize: receipts.length,
+    lastUpdated,
+    method: "profile_consumption",
+  };
+}
+
+/**
+ * getRidesForMonth — courses enregistrées pour un mois donné (format "YYYY-MM").
+ * Utilisé par le journal fiscal PDF (LOT D). Filtre sur le préfixe ISO du timestamp.
+ */
+export function getRidesForMonth(month: string): any[] {
+  return sqlite
+    .prepare(`SELECT * FROM rides WHERE substr(timestamp, 1, 7) = ? ORDER BY timestamp ASC`)
+    .all(month) as any[];
+}
+
+/**
+ * getFuelReceiptsForMonth — tickets carburant du mois (format "YYYY-MM").
+ * ts est un epoch ms ; on convertit en ISO pour filtrer sur le préfixe YYYY-MM.
+ */
+export function getFuelReceiptsForMonth(month: string): FuelReceiptRow[] {
+  const all = sqlite.prepare(`SELECT * FROM fuel_receipts ORDER BY ts ASC`).all() as FuelReceiptRow[];
+  return all.filter((r) => new Date(r.ts).toISOString().slice(0, 7) === month);
+}

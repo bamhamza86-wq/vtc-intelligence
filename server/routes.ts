@@ -3086,4 +3086,224 @@ export function registerRoutes(httpServer: Server, app: Express): void {
 
     req.on("close", () => { clearInterval(hb); sseService.removeClient(res); });
   });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ─── LOT C : Focus & Station (recommandation unique + géofencing) ─────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // Import dynamique du moteur pour éviter dépendance circulaire au chargement
+  const focusEngineModule = require("./focusEngine") as typeof import("./focusEngine");
+
+  // GET /api/focus/recommendation?lat=&lng= → recommandation unique actionnable
+  app.get("/api/focus/recommendation", requireAuth, (req, res) => {
+    try {
+      const lat = Number(req.query.lat) || 48.8566;
+      const lng = Number(req.query.lng) || 2.3522;
+      const reco = focusEngineModule.computeFocusRecommendation({ lat, lng });
+      res.set("Cache-Control", "private, max-age=25");
+      res.json(reco);
+    } catch (e: any) {
+      res.status(500).json({ error: "focus_engine_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // GET /api/focus/rhythm → rythme du shift (durée, gains, objectif)
+  app.get("/api/focus/rhythm", requireAuth, (_req, res) => {
+    try {
+      const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+      const startIso = startOfDay.toISOString();
+      const rides = (sseService as any); // placeholder pour éviter warning inutile
+      // Utilise storage direct (better-sqlite3)
+      const { storage: st } = require("./storage") as typeof import("./storage");
+      const profile: any = st.getDriverProfile();
+      const targetEur = Number(profile?.hourly_target_income ?? 35) * 8; // objectif 8h
+      // Compte rides depuis minuit
+      const todayRides: any[] = (st as any).getRides ? (st as any).getRides(50) : [];
+      const dayRides = todayRides.filter((r: any) => r.timestamp && r.timestamp >= startIso);
+      const earningsEur = dayRides.reduce((s: number, r: any) => s + (r.net_profit || 0), 0);
+      const activeMin = dayRides.reduce((s: number, r: any) => s + (r.duration_min || 0), 0);
+      const nowMs = Date.now();
+      const elapsedMin = Math.round((nowMs - startOfDay.getTime()) / 60000);
+      const hourlyRate = activeMin > 0 ? (earningsEur / (activeMin / 60)) : 0;
+      const targetPct = targetEur > 0 ? (earningsEur / targetEur) * 100 : 0;
+
+      // Suggestion fin de shift : si hourlyRate < 60% du best hour restant sur les 3 prochaines heures
+      // Approximation simple : si activeMin > 6h et hourlyRate baisse, suggère fin dans 30-60 min
+      let endShiftSuggestionMin: number | null = null;
+      if (activeMin > 360 && targetPct >= 80) {
+        endShiftSuggestionMin = Math.max(15, Math.min(60, Math.round((targetEur - earningsEur) / Math.max(hourlyRate, 15) * 60)));
+      }
+
+      res.json({
+        elapsedMin,
+        activeMin: Math.round(activeMin),
+        earningsEur: Math.round(earningsEur * 100) / 100,
+        targetEur: Math.round(targetEur),
+        targetPct: Math.round(targetPct * 10) / 10,
+        rideCount: dayRides.length,
+        hourlyRate: Math.round(hourlyRate * 10) / 10,
+        endShiftSuggestionMin,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: "rhythm_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // GET /api/station/context?lat=&lng= → contexte gare/aéroport si dans un géofence
+  app.get("/api/station/context", requireAuth, async (req, res) => {
+    try {
+      const lat = Number(req.query.lat);
+      const lng = Number(req.query.lng);
+      if (!isFinite(lat) || !isFinite(lng)) {
+        return res.json({ station: null });
+      }
+      // Table dur géofences (miroir client)
+      const zones = [
+        { id: "CDG-T2", label: "CDG Terminal 2",    lat: 49.0097, lng: 2.5479, radiusM: 3000, kind: "airport" as const },
+        { id: "ORY",    label: "Orly",              lat: 48.7233, lng: 2.3794, radiusM: 2000, kind: "airport" as const },
+        { id: "GDN",    label: "Gare du Nord",      lat: 48.8809, lng: 2.3553, radiusM: 400,  kind: "train"   as const },
+        { id: "GDL",    label: "Gare de Lyon",      lat: 48.8443, lng: 2.3739, radiusM: 400,  kind: "train"   as const },
+        { id: "GSL",    label: "Gare Saint-Lazare", lat: 48.8756, lng: 2.3252, radiusM: 300,  kind: "train"   as const },
+        { id: "GMP",    label: "Gare Montparnasse", lat: 48.8407, lng: 2.3200, radiusM: 300,  kind: "train"   as const },
+      ];
+      const R = 6371000;
+      const inside = zones.find((z) => {
+        const dLat = (z.lat - lat) * Math.PI / 180;
+        const dLng = (z.lng - lng) * Math.PI / 180;
+        const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat * Math.PI / 180) * Math.cos(z.lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+        const d = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return d <= z.radiusM;
+      });
+      if (!inside) return res.json({ station: null });
+
+      // Prochaines arrivées
+      const nextArrivals: { time: string; source: "flight" | "train"; label: string }[] = [];
+      try {
+        if (inside.kind === "airport") {
+          const { getFlightData } = require("./flightService") as typeof import("./flightService");
+          const fd = await getFlightData();
+          const arr = fd?.arrivals ?? [];
+          const now = Date.now();
+          arr.slice(0, 5).forEach((f: any) => {
+            const arrivalTime = f.estArrivalTime ? new Date(f.estArrivalTime * 1000) : null;
+            if (arrivalTime) {
+              const minsUntil = Math.round((arrivalTime.getTime() - now) / 60000);
+              if (minsUntil > -10 && minsUntil < 120) {
+                nextArrivals.push({
+                  time: minsUntil <= 0 ? "arrivé" : `${minsUntil} min`,
+                  source: "flight",
+                  label: f.callsign || f.icao24 || "vol",
+                });
+              }
+            }
+          });
+        } else {
+          const { getSncfSignalsSync } = require("./sncfService") as typeof import("./sncfService");
+          const now = new Date();
+          const stats = getSncfSignalsSync(now.getHours());
+          const signals = stats?.signals ?? [];
+          signals.slice(0, 5).forEach((s: any) => {
+            nextArrivals.push({
+              time: s.arrival_time || `${now.getHours()}h${String(now.getMinutes()).padStart(2, "0")}`,
+              source: "train",
+              label: s.origin || s.label || "train",
+            });
+          });
+        }
+      } catch { /* silencieux */ }
+
+      // Zones de récupération recommandées (top 3 zones scored ≠ aéroport/gare de départ)
+      const dropoffs: string[] = [];
+      try {
+        const { storage: st } = require("./storage") as typeof import("./storage");
+        const nowD = new Date();
+        const hour = (nowD.getUTCHours() + 2) % 24;
+        const dayType = [0, 6].includes(nowD.getDay()) ? "weekend" : "weekday";
+        const rows: any[] = (st.getProfitabilityByHour(hour, dayType) as any[]) || [];
+        rows.filter((r) => r.zone_id !== inside.id && r.name).sort((a, b) => (b.profitability_index || 0) - (a.profitability_index || 0)).slice(0, 4).forEach((r) => dropoffs.push(r.name));
+      } catch { /* silencieux */ }
+
+      res.json({
+        station: inside.id,
+        label: inside.label,
+        queueEstimate: undefined, // pas de source fiable — omis
+        nextArrivals: nextArrivals.slice(0, 3),
+        recommendedDropoffZones: dropoffs.slice(0, 4),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: "station_context_error", message: e?.message || "unknown" });
+    }
+  });
+  // ─── /LOT C ───────────────────────────────────────────────────────────────
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ─── LOT D : Wow features (journal fiscal PDF) ────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // GET /api/tax/journal-data?month=YYYY-MM → agrège les rides du mois pour PDF client
+  app.get("/api/tax/journal-data", requireAuth, (req, res) => {
+    try {
+      const month = String(req.query.month || "");
+      const m = /^(\d{4})-(\d{2})$/.exec(month);
+      if (!m) return res.status(400).json({ error: "month_required_YYYY_MM" });
+      const year = Number(m[1]);
+      const mon = Number(m[2]);
+      const start = new Date(year, mon - 1, 1).toISOString();
+      const end = new Date(year, mon, 1).toISOString();
+
+      const { storage: st } = require("./storage") as typeof import("./storage");
+      const allRides: any[] = (st as any).getRides ? (st as any).getRides(5000) : [];
+      const monthRides = allRides.filter((r) => r.timestamp && r.timestamp >= start && r.timestamp < end);
+
+      const profile: any = st.getDriverProfile();
+
+      const byDay: Record<string, { date: string; km: number; fare: number; commission: number; fuel: number; net: number; rides: number }> = {};
+      let totalKm = 0, totalFare = 0, totalCommission = 0, totalFuel = 0, totalNet = 0;
+
+      monthRides.forEach((r) => {
+        const d = (r.timestamp as string).slice(0, 10);
+        if (!byDay[d]) byDay[d] = { date: d, km: 0, fare: 0, commission: 0, fuel: 0, net: 0, rides: 0 };
+        byDay[d].km += r.distance_km || 0;
+        byDay[d].fare += r.fare || 0;
+        byDay[d].commission += r.commission || 0;
+        byDay[d].fuel += r.fuel_cost || 0;
+        byDay[d].net += r.net_profit || 0;
+        byDay[d].rides += 1;
+        totalKm += r.distance_km || 0;
+        totalFare += r.fare || 0;
+        totalCommission += r.commission || 0;
+        totalFuel += r.fuel_cost || 0;
+        totalNet += r.net_profit || 0;
+      });
+
+      const days = Object.values(byDay).sort((a, b) => a.date.localeCompare(b.date));
+
+      res.json({
+        month,
+        driver: {
+          vehicleType: profile?.vehicle_type || "berline",
+          commissionPct: profile?.platform_commission_pct ?? 25,
+          fuelConsumption: profile?.fuel_consumption_per100km ?? 7.5,
+        },
+        totals: {
+          km: Math.round(totalKm * 10) / 10,
+          fare: Math.round(totalFare * 100) / 100,
+          commission: Math.round(totalCommission * 100) / 100,
+          fuel: Math.round(totalFuel * 100) / 100,
+          net: Math.round(totalNet * 100) / 100,
+          rides: monthRides.length,
+        },
+        days: days.map((d) => ({
+          ...d,
+          km: Math.round(d.km * 10) / 10,
+          fare: Math.round(d.fare * 100) / 100,
+          commission: Math.round(d.commission * 100) / 100,
+          fuel: Math.round(d.fuel * 100) / 100,
+          net: Math.round(d.net * 100) / 100,
+        })),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: "tax_journal_error", message: e?.message || "unknown" });
+    }
+  });
+  // ─── /LOT D ───────────────────────────────────────────────────────────────
 }

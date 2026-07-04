@@ -26,6 +26,7 @@ import { RoutingSourceBanner } from "@/components/RoutingSourceBanner";
 import { RecommendationBanner } from "@/components/RecommendationBanner";
 import { DataFreshnessBadge } from "@/components/DataFreshnessBadge";
 import { ZoneSignalPanel } from "@/components/ZoneSignalPanel";
+import StationOverlay from "@/components/StationOverlay";
 
 const COLORS = { ultraHigh: "#22c55e", high: "#86efac", medium: "#fbbf24", low: "#f97316", veryLow: "#ef4444" };
 
@@ -1099,6 +1100,7 @@ export default function MapPage() {
         </div>
       </div>
     </div>
+    <StationOverlay />
     </PullToRefresh>
   );
 }
