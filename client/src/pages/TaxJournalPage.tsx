@@ -360,6 +360,17 @@ export default function TaxJournalPage() {
           )}
         </div>
 
+        {/* Couche Économie & Fiscalité (additif) : jauge TVA + IK + simulateur */}
+        {urssaf && <TvaGauge summary={urssaf} />}
+        <button
+          onClick={() => setSimulatorOpen(true)}
+          className="w-full min-h-[48px] rounded-lg border border-primary/40 bg-primary/10 text-primary font-medium text-sm flex items-center justify-center gap-2"
+          data-testid="button-open-status-simulator"
+        >
+          <Calculator size={16} /> Simuler un changement de statut
+        </button>
+        <StatusSimulatorDialog open={simulatorOpen} onClose={() => setSimulatorOpen(false)} currentCa={urssaf?.total_ca ?? 0} />
+
         {/* ── Récap dernier téléchargement ─────────────────────────────── */}
         {lastData && (
           <div className="bg-card border border-border rounded-xl p-4 space-y-3">

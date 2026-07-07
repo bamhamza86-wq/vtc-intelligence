@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Link } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
+import { useQuery } from "@tanstack/react-query";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
 import { GpsFreshness } from "@/components/GpsFreshness";
 import { Badge } from "@/components/ui/badge";
@@ -259,11 +260,18 @@ function GpsWaitMap({ pos }: { pos: { lat: number; lng: number } | null }) {
 
 // ─── Carte zone verticale (sous la map principale) ───────────────────────────
 
-function ZoneCardVertical({ zone, rank, isSelected, onClick, userPos }: {
+function ZoneCardVertical({ zone, rank, isSelected, onClick, userPos, costPerKm }: {
   zone: ZoneResult; rank: number; isSelected: boolean; onClick: () => void;
   userPos: { lat: number; lng: number };
+  costPerKm?: number; // Couche Économie & Fiscalité — coût réel/km (additif)
 }) {
   const color = getScoreColor(zone.globalScore);
+  // ── Couche Économie & Fiscalité (additif) : rentabilité prévue de la course ──
+  // Marge estimée = tarif prévu - (distance × coût réel/km). Affichée en badge.
+  const estimatedMargin = costPerKm != null
+    ? zone.estimatedRevenue - zone.distanceKm * costPerKm
+    : null;
+  const marginColor = estimatedMargin == null ? "#94a3b8" : estimatedMargin >= 5 ? "#22c55e" : estimatedMargin >= 0 ? "#f59e0b" : "#ef4444";
   return (
     <div
       onClick={onClick}
@@ -335,6 +343,16 @@ function ZoneCardVertical({ zone, rank, isSelected, onClick, userPos }: {
           />
         </div>
       </div>
+
+      {/* Badge Rentabilité prévue — Couche Économie & Fiscalité (additif) */}
+      {estimatedMargin != null && (
+        <div className="mb-3 flex items-center justify-between rounded-lg px-2.5 py-1.5" style={{ background: `${marginColor}15`, border: `1px solid ${marginColor}40` }}>
+          <span className="text-[10px] font-medium" style={{ color: marginColor }}>Rentabilité prévue</span>
+          <span className="text-xs font-bold tabular-nums" style={{ color: marginColor }}>
+            {estimatedMargin >= 0 ? "+" : ""}{estimatedMargin.toFixed(1)} € net
+          </span>
+        </div>
+      )}
 
       {/* Bouton Google Maps (lien externe — pas iframe) */}
       <a
@@ -524,6 +542,13 @@ export default function BestRoutePage() {
   const [expandedEvent, setExpandedEvent] = useState<string | number | null>(null);
   const lastComputeRef = useRef<number>(0);
   const lastEventRef = useRef<number>(0);
+
+  // ── Couche Économie & Fiscalité (additif) : coût réel/km pour le badge « Rentabilité prévue »
+  const { data: costPerKmData } = useQuery<{ total_per_km: number }>({
+    queryKey: ["/api/economics/cost-per-km"],
+    queryFn: () => apiRequest("GET", "/api/economics/cost-per-km").then(r => r.json()),
+    staleTime: 60_000,
+  });
 
   // Relance une lecture GPS (utilisé par le bouton "Réessayer" si refusé)
   const startGeolocation = useCallback(() => {
@@ -730,6 +755,7 @@ export default function BestRoutePage() {
                 isSelected={selectedIdx === i}
                 onClick={() => setSelectedIdx(i)}
                 userPos={data.userPosition}
+                costPerKm={costPerKmData?.total_per_km}
               />
             ))}
           </div>
