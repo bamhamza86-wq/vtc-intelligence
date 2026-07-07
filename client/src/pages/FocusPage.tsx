@@ -18,6 +18,11 @@ import { useGpsPosition } from "@/hooks/useGpsPosition";
 import { useSwipe } from "@/hooks/useSwipe";
 import { API_BASE, getAuthToken } from "@/lib/queryClient";
 import * as haptics from "@/lib/haptics";
+import { ZoneEmptyingToast } from "@/components/ZoneEmptyingToast";
+import { AvoidZonesCard } from "@/components/AvoidZonesCard";
+import { SimulateRideDialog } from "@/components/SimulateRideDialog";
+import { FocusAIBanner } from "@/components/FocusAIBanner";
+import { isAiDisabledToday } from "@/lib/aiToggle";
 
 // Voice module (Lot B) — import défensif, peut ne pas être présent en dev
 async function tryVoice(text: string) {
@@ -81,6 +86,16 @@ export default function FocusPage() {
   const { position } = useGpsPosition();
   const [, setLocation] = useLocation();
   const [showAlts, setShowAlts] = useState(false);
+  const [aiDisabled, setAiDisabled] = useState(isAiDisabledToday());
+  useEffect(() => {
+    const check = () => setAiDisabled(isAiDisabledToday());
+    window.addEventListener("storage", check);
+    const interval = setInterval(check, 60_000);
+    return () => {
+      window.removeEventListener("storage", check);
+      clearInterval(interval);
+    };
+  }, []);
   // Index de rotation : 0 = recommandation principale, 1..N = alternatives[i-1]
   const [altIndex, setAltIndex] = useState(0);
   const [isRotating, setIsRotating] = useState(false);
@@ -234,6 +249,9 @@ export default function FocusPage() {
       ref={swipeRef}
       className="min-h-[calc(100vh-140px)] px-3 pt-3 pb-6 flex flex-col gap-3 select-none"
     >
+      {/* ─── Couche ML Personnel : bannière « pas d'IA aujourd'hui » ─── */}
+      <FocusAIBanner />
+
       {/* Rythme du shift en haut */}
       <ShiftRhythm />
 
@@ -345,12 +363,19 @@ export default function FocusPage() {
         </div>
       )}
 
+      {/* ─── Couche ML Personnel : simulateur de course (masqué en mode sans IA) ─── */}
+      {!aiDisabled && <SimulateRideDialog />}
+
       {/* Overlay gare/aéroport auto */}
       <div className="space-y-3">
         <WeatherAlert />
         <AirportWaitCard />
+        {/* ─── Couche Communautaire : carte "À éviter" ─── */}
+        <AvoidZonesCard />
       </div>
       <StationOverlay />
+      {/* ─── Couche Communautaire : toast "zone en train de se vider" ─── */}
+      <ZoneEmptyingToast />
     </div>
   );
 }

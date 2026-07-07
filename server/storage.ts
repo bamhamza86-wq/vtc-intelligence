@@ -6,7 +6,7 @@ import { refreshWeather, getWeatherBoost, getCachedWeather } from "./weatherServ
 // ─── Levier 1 SSE : push temps réel des mises à jour de zones ─────────────────
 import { sseService } from "./sseService";
 
-const sqlite = new Database("data.db");
+export const sqlite = new Database("data.db"); // exporté additivement (Couche Communautaire) pour communityEngine.ts
 // ← audit G: pragmas SQLite production (WAL + cache + synchronous NORMAL)
 sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('synchronous = NORMAL');
@@ -266,6 +266,101 @@ sqlite.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_community_signals_zone ON community_signals(zone_id, expires_at);
 `);
+
+// ─── Couche Communautaire (musclée) : migration additive community_signals ──
+// Ajoute intensity / context / comment_short SANS casser les lignes existantes
+// (type CHECK positive/negative conservé, nouvelles colonnes nullable).
+const communitySignalsMigrations: string[] = [
+  "ALTER TABLE community_signals ADD COLUMN intensity INTEGER DEFAULT 2",
+  "ALTER TABLE community_signals ADD COLUMN context TEXT DEFAULT ''",
+  "ALTER TABLE community_signals ADD COLUMN comment_short TEXT DEFAULT ''",
+];
+for (const mig of communitySignalsMigrations) {
+  try { sqlite.exec(mig); } catch { /* colonne déjà présente */ }
+}
+
+// ─── Couche Communautaire : réputation contributeur ────────────────────────
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS community_reputation (
+    user_id TEXT PRIMARY KEY,
+    karma_score INTEGER NOT NULL DEFAULT 0,
+    signals_correct INTEGER NOT NULL DEFAULT 0,
+    signals_wrong INTEGER NOT NULL DEFAULT 0,
+    trust_level TEXT NOT NULL DEFAULT 'novice' CHECK(trust_level IN ('novice','trusted','veteran')),
+    last_active_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS community_alerts_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    zone_id TEXT NOT NULL,
+    alert_type TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_community_alerts_log_zone ON community_alerts_log(zone_id, created_at);
+`);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Couche Économie & Fiscalité (additif) : coût réel véhicule, multi-plateforme
+// ─────────────────────────────────────────────────────────────────────────────
+// Migration additive driver_profile : charges fixes annuelles + régime fiscal +
+// mode électrique. SQLite ne supporte pas ADD COLUMN IF NOT EXISTS -> try/catch.
+const economieFiscaleMigrations: string[] = [
+  "ALTER TABLE driver_profile ADD COLUMN insurance_annual_eur REAL DEFAULT 1800",
+  "ALTER TABLE driver_profile ADD COLUMN maintenance_yearly_eur REAL DEFAULT 1200",
+  "ALTER TABLE driver_profile ADD COLUMN vehicle_amortization_yearly_eur REAL DEFAULT 4800",
+  "ALTER TABLE driver_profile ADD COLUMN tire_yearly_eur REAL DEFAULT 600",
+  "ALTER TABLE driver_profile ADD COLUMN cvo_urssaf_pct REAL DEFAULT 21.2",
+  "ALTER TABLE driver_profile ADD COLUMN tva_regime TEXT DEFAULT 'franchise'",
+  "ALTER TABLE driver_profile ADD COLUMN electric_mode INTEGER DEFAULT 0",
+  "ALTER TABLE driver_profile ADD COLUMN kwh_per_100km REAL DEFAULT 18",
+  "ALTER TABLE driver_profile ADD COLUMN kwh_price REAL DEFAULT 0.25",
+  "ALTER TABLE driver_profile ADD COLUMN vehicle_cv_fiscaux INTEGER DEFAULT 5",
+];
+for (const mig of economieFiscaleMigrations) {
+  try { sqlite.exec(mig); } catch { /* colonne déjà présente */ }
+}
+
+// Migration additive rides : détail marge nette (URSSAF/TVA/usure/assurance)
+// calculé en direct par /api/rides/complete, sans casser le schéma existant.
+const ridesEconomieMigrations: string[] = [
+  "ALTER TABLE rides ADD COLUMN insurance_cost REAL DEFAULT 0",
+  "ALTER TABLE rides ADD COLUMN urssaf_cost REAL DEFAULT 0",
+  "ALTER TABLE rides ADD COLUMN tva_cost REAL DEFAULT 0",
+  "ALTER TABLE rides ADD COLUMN margin_pct REAL DEFAULT 0",
+  "ALTER TABLE rides ADD COLUMN platform TEXT DEFAULT ''",
+];
+for (const mig of ridesEconomieMigrations) {
+  try { sqlite.exec(mig); } catch { /* colonne déjà présente */ }
+}
+
+// ─── Multi-plateforme : KPI comparatifs + règles maison ────────────────────
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS platform_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL DEFAULT 'default',
+    platform TEXT NOT NULL CHECK(platform IN ('uber','bolt','heetch','freenow','autre')),
+    period TEXT NOT NULL,
+    hours REAL NOT NULL DEFAULT 0,
+    ca REAL NOT NULL DEFAULT 0,
+    rides INTEGER NOT NULL DEFAULT 0,
+    avg_fare REAL NOT NULL DEFAULT 0,
+    commission_pct REAL NOT NULL DEFAULT 25,
+    net_hourly REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_platform_stats_period ON platform_stats(user_id, platform, period);
+
+  CREATE TABLE IF NOT EXISTS platform_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL DEFAULT 'default',
+    platform TEXT NOT NULL,
+    rule_key TEXT NOT NULL CHECK(rule_key IN ('min_km','min_fare','max_pickup_km','blacklist_zone','blackout_hours')),
+    value_json TEXT NOT NULL DEFAULT '{}',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_platform_rules_user ON platform_rules(user_id, platform, active);
+`);
+// ─── /Couche Économie & Fiscalité ──────────────────────────────────────────
 
 // ─── Prepared statements globaux — compilés une seule fois à l'init ───────────────────
 // Bench: alerts/events étaient recompilés à chaque requête HTTP (−64-197% latence sous 50 req. simult.)
@@ -3024,6 +3119,18 @@ export interface IStorage {
     mae: number; rmse: number; bias: number;
     score_0_100: number; last_updated: string; _ts: number;
   };
+
+  // ── Couche Économie & Fiscalité (additif) ──
+  getRidesInRange(isoStart: string, isoEnd: string): any[];
+  getPlatformStats(userId?: string, sinceIso?: string): any[];
+  upsertPlatformStats(row: {
+    userId?: string; platform: string; period: string; hours: number; ca: number;
+    rides: number; avgFare: number; commissionPct: number; netHourly: number;
+  }): any;
+  getPlatformRules(userId?: string): any[];
+  createPlatformRule(rule: { userId?: string; platform: string; ruleKey: string; valueJson: string; active?: boolean }): any;
+  updatePlatformRule(id: number, patch: { valueJson?: string; active?: boolean }): any;
+  deletePlatformRule(id: number): boolean;
 }
 
 // Type structurel local (évite l'import circulaire avec predictHQService.ts)
@@ -3531,10 +3638,23 @@ export const storage: IStorage = {
     const vehicleBrand = profile.vehicleBrand ?? existing?.vehicle_brand ?? "";
     const vehicleModel = profile.vehicleModel ?? existing?.vehicle_model ?? "";
     const vehicleYear = profile.vehicleYear ?? existing?.vehicle_year ?? 2020;
+    // ── Couche Économie & Fiscalité (additif) : coût réel véhicule + régime fiscal ──
+    const insuranceAnnualEur = profile.insuranceAnnualEur ?? existing?.insurance_annual_eur ?? 1800;
+    const maintenanceYearlyEur = profile.maintenanceYearlyEur ?? existing?.maintenance_yearly_eur ?? 1200;
+    const vehicleAmortizationYearlyEur = profile.vehicleAmortizationYearlyEur ?? existing?.vehicle_amortization_yearly_eur ?? 4800;
+    const tireYearlyEur = profile.tireYearlyEur ?? existing?.tire_yearly_eur ?? 600;
+    const cvoUrssafPct = profile.cvoUrssafPct ?? existing?.cvo_urssaf_pct ?? 21.2;
+    const tvaRegime = profile.tvaRegime ?? existing?.tva_regime ?? "franchise";
+    const electricMode = (profile.electricMode ?? Boolean(existing?.electric_mode)) ? 1 : 0;
+    const kwhPer100km = profile.kwhPer100km ?? existing?.kwh_per_100km ?? 18;
+    const kwhPrice = profile.kwhPrice ?? existing?.kwh_price ?? 0.25;
+    const vehicleCvFiscaux = profile.vehicleCvFiscaux ?? existing?.vehicle_cv_fiscaux ?? 5;
     if (existing) {
       sqlite.prepare(`UPDATE driver_profile SET
         fuel_consumption_per100km=?,fuel_price_per_liter=?,platform_commission_pct=?,hourly_target_income=?,wear_cost_per_km=?,vehicle_type=?,prefer_long_rides=?,
-        preferred_zones=?,work_hours_start=?,work_hours_end=?,avoid_highway=?,vehicle_brand=?,vehicle_model=?,vehicle_year=?
+        preferred_zones=?,work_hours_start=?,work_hours_end=?,avoid_highway=?,vehicle_brand=?,vehicle_model=?,vehicle_year=?,
+        insurance_annual_eur=?,maintenance_yearly_eur=?,vehicle_amortization_yearly_eur=?,tire_yearly_eur=?,
+        cvo_urssaf_pct=?,tva_regime=?,electric_mode=?,kwh_per_100km=?,kwh_price=?,vehicle_cv_fiscaux=?
         WHERE id=?`)
         .run(
           profile.fuelConsumptionPer100km ?? existing.fuel_consumption_per100km ?? 7.5,
@@ -3545,18 +3665,24 @@ export const storage: IStorage = {
           profile.vehicleType ?? existing.vehicle_type ?? "berline",
           (profile.preferLongRides ?? Boolean(existing.prefer_long_rides)) ? 1 : 0,
           preferredZones, workStart, workEnd, avoidHighway, vehicleBrand, vehicleModel, vehicleYear,
+          insuranceAnnualEur, maintenanceYearlyEur, vehicleAmortizationYearlyEur, tireYearlyEur,
+          cvoUrssafPct, tvaRegime, electricMode, kwhPer100km, kwhPrice, vehicleCvFiscaux,
           existing.id
         );
     } else {
       sqlite.prepare(`INSERT INTO driver_profile
         (fuel_consumption_per100km,fuel_price_per_liter,platform_commission_pct,hourly_target_income,wear_cost_per_km,vehicle_type,prefer_long_rides,
-         preferred_zones,work_hours_start,work_hours_end,avoid_highway,vehicle_brand,vehicle_model,vehicle_year)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+         preferred_zones,work_hours_start,work_hours_end,avoid_highway,vehicle_brand,vehicle_model,vehicle_year,
+         insurance_annual_eur,maintenance_yearly_eur,vehicle_amortization_yearly_eur,tire_yearly_eur,
+         cvo_urssaf_pct,tva_regime,electric_mode,kwh_per_100km,kwh_price,vehicle_cv_fiscaux)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run(
           profile.fuelConsumptionPer100km ?? 7.5, profile.fuelPricePerLiter ?? 1.92, profile.platformCommissionPct ?? 25,
           profile.hourlyTargetIncome ?? 35, profile.wearCostPerKm ?? 0.08, profile.vehicleType ?? "berline",
           profile.preferLongRides ? 1 : 0,
-          preferredZones, workStart, workEnd, avoidHighway, vehicleBrand, vehicleModel, vehicleYear
+          preferredZones, workStart, workEnd, avoidHighway, vehicleBrand, vehicleModel, vehicleYear,
+          insuranceAnnualEur, maintenanceYearlyEur, vehicleAmortizationYearlyEur, tireYearlyEur,
+          cvoUrssafPct, tvaRegime, electricMode, kwhPer100km, kwhPrice, vehicleCvFiscaux
         );
     }
     return sqlite.prepare("SELECT * FROM driver_profile LIMIT 1").get();
@@ -4194,6 +4320,68 @@ export const storage: IStorage = {
 
   // Levier 7 : Fiabilité du modèle J-7 — délègue à la fonction standalone.
   getModelReliability,
+
+  // ── Couche Économie & Fiscalité — accès DB pour economicsEngine.ts (additif) ──
+
+  // Rides sur une plage de dates (pour analyse rétrospective 30j / bilan shift).
+  // isoStart inclus, isoEnd exclu. Tri chronologique croissant.
+  getRidesInRange(isoStart: string, isoEnd: string): any[] {
+    return sqlite.prepare(
+      `SELECT * FROM rides WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp ASC`
+    ).all(isoStart, isoEnd) as any[];
+  },
+
+  // platform_stats : KPI multi-plateforme (Uber/Bolt/Heetch/FreeNow)
+  getPlatformStats(userId = "default", sinceIso?: string): any[] {
+    if (sinceIso) {
+      return sqlite.prepare(
+        `SELECT * FROM platform_stats WHERE user_id = ? AND created_at >= ? ORDER BY created_at DESC`
+      ).all(userId, sinceIso) as any[];
+    }
+    return sqlite.prepare(
+      `SELECT * FROM platform_stats WHERE user_id = ? ORDER BY created_at DESC`
+    ).all(userId) as any[];
+  },
+
+  upsertPlatformStats(row: {
+    userId?: string; platform: string; period: string; hours: number; ca: number;
+    rides: number; avgFare: number; commissionPct: number; netHourly: number;
+  }): any {
+    return sqlite.prepare(
+      `INSERT INTO platform_stats (user_id, platform, period, hours, ca, rides, avg_fare, commission_pct, net_hourly)
+       VALUES (?,?,?,?,?,?,?,?,?) RETURNING *`
+    ).get(
+      row.userId ?? "default", row.platform, row.period, row.hours, row.ca,
+      row.rides, row.avgFare, row.commissionPct, row.netHourly
+    );
+  },
+
+  // platform_rules : règles maison CRUD
+  getPlatformRules(userId = "default"): any[] {
+    return sqlite.prepare(
+      `SELECT * FROM platform_rules WHERE user_id = ? ORDER BY platform, rule_key`
+    ).all(userId) as any[];
+  },
+
+  createPlatformRule(rule: { userId?: string; platform: string; ruleKey: string; valueJson: string; active?: boolean }): any {
+    return sqlite.prepare(
+      `INSERT INTO platform_rules (user_id, platform, rule_key, value_json, active) VALUES (?,?,?,?,?) RETURNING *`
+    ).get(rule.userId ?? "default", rule.platform, rule.ruleKey, rule.valueJson, rule.active === false ? 0 : 1);
+  },
+
+  updatePlatformRule(id: number, patch: { valueJson?: string; active?: boolean }): any {
+    const existing = sqlite.prepare(`SELECT * FROM platform_rules WHERE id = ?`).get(id) as any;
+    if (!existing) return null;
+    const valueJson = patch.valueJson ?? existing.value_json;
+    const active = patch.active === undefined ? existing.active : (patch.active ? 1 : 0);
+    sqlite.prepare(`UPDATE platform_rules SET value_json = ?, active = ? WHERE id = ?`).run(valueJson, active, id);
+    return sqlite.prepare(`SELECT * FROM platform_rules WHERE id = ?`).get(id);
+  },
+
+  deletePlatformRule(id: number): boolean {
+    const info = sqlite.prepare(`DELETE FROM platform_rules WHERE id = ?`).run(id);
+    return info.changes > 0;
+  },
 };
 
 // ─── Levier 2 : Meilleure zone maintenant (score × distance) ─────────

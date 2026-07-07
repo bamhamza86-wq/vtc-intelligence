@@ -12,6 +12,7 @@ import SimulatorPage from "./pages/SimulatorPage";
 import AlertsPage from "./pages/AlertsPage";
 import DataSourcesPage from "./pages/DataSourcesPage";
 import ProfilePage from "./pages/ProfilePage";
+import MLInsightsPage from "./pages/MLInsightsPage";
 import BestRoutePage from "./pages/BestRoutePage";
 import ReturnJourneyPage from "./pages/ReturnJourneyPage";
 import SmartPlanPage from "./pages/SmartPlanPage";
@@ -156,6 +157,7 @@ export default function App() {
                 <Route path="/economics" component={EconomicsDashboard} />
                 <Route path="/sources" component={DataSourcesPage} />
                 <Route path="/profile" component={ProfilePage} />
+                <Route path="/ml-insights" component={MLInsightsPage} />
                 <Route component={NotFound} />
               </Switch>
             </Layout>

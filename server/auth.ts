@@ -69,6 +69,23 @@ export function revokeAllSessions(): void {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Identite courante — extrait le username depuis le token Bearer deja valide,
+// pour servir d'identifiant stable (ML personnel, reputation, etc.).
+// Ajout additif non-breaking (fallback "anon" si pas de token valide).
+// ──────────────────────────────────────────────────────────────────────────────
+export function getCurrentUsername(req: Request): string {
+  const authHeader = (req.headers["authorization"] as string) || "";
+  const headerToken = req.headers["x-auth-token"] as string | undefined;
+  let token: string | null = null;
+
+  if (authHeader.startsWith("Bearer ")) token = authHeader.slice(7).trim();
+  else if (headerToken) token = headerToken.trim();
+
+  const entry = token ? isValidToken(token) : null;
+  return entry?.username ?? "anon";
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Middleware — protect API routes
 // ──────────────────────────────────────────────────────────────────────────────
 export const requireAuth: RequestHandler = (req, res, next) => {

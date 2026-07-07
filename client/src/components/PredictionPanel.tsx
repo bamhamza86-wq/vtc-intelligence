@@ -3,7 +3,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Brain, TrendingUp } from "lucide-react";
+import { Brain, TrendingUp, Lightbulb } from "lucide-react";
 
 interface PredictionHour {
   hour: number;
@@ -16,6 +16,28 @@ interface ZonePrediction {
   zone_id: string;
   zone_name: string;
   hours: PredictionHour[];
+}
+
+// ─── Couche ML Personnel : explicabilité inline (XAI) pour la zone top-1 ───
+interface AcceptanceExplanation {
+  p_accept: number;
+  expected_gain: number;
+  explanation: { feature: string; weight: number; label_fr: string }[];
+  model: "cold_start" | "personal";
+  ride_count: number;
+}
+
+function shortFeatureLabel(feature: string): string {
+  const map: Record<string, string> = {
+    fare: "tarif",
+    distance_km: "distance",
+    duration_min: "durée",
+    hour_sin: "météo",
+    hour_cos: "horaire",
+    zone_known: "historique",
+    fleet_avg: "moyenne flotte",
+  };
+  return map[feature] ?? feature;
 }
 
 function scoreColor(score: number): string {
@@ -100,6 +122,22 @@ export default function PredictionPanel() {
     .sort((a, b) => b.avg - a.avg)
     .slice(0, 6);
 
+  const topZone = ranked[0];
+  const nowHour = new Date().getHours();
+  const { data: xai } = useQuery<AcceptanceExplanation>({
+    queryKey: ["/api/ml/predict-acceptance", topZone?.zone_id, nowHour],
+    queryFn: () =>
+      apiRequest("POST", "/api/ml/predict-acceptance", {
+        zone_id: topZone?.zone_id ?? "unknown",
+        distance_km: 8,
+        duration_min: 18,
+        fare: 16,
+        hour: nowHour,
+      }).then(r => r.json()),
+    enabled: !!topZone,
+    staleTime: 30_000,
+  });
+
   return (
     <Card className="border-cyan-500/20">
       <CardHeader className="pb-2">
@@ -113,6 +151,21 @@ export default function PredictionPanel() {
       <CardContent className="space-y-3 px-3 pb-4">
         {ranked.length === 0 && (
           <p className="text-xs text-muted-foreground py-2">Prédictions en cours de calcul…</p>
+        )}
+        {xai && xai.explanation.length > 0 && (
+          <div
+            className="flex items-start gap-1.5 rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-2.5 py-1.5"
+            data-testid="prediction-xai-inline"
+          >
+            <Lightbulb size={12} className="text-cyan-400 mt-0.5 shrink-0" />
+            <p className="text-[10.5px] text-muted-foreground leading-snug">
+              <span className="font-medium text-foreground">Pourquoi : </span>
+              {xai.explanation
+                .map(e => `${e.weight >= 0 ? "+" : ""}${shortFeatureLabel(e.feature)}`)
+                .join(", ")}
+              {xai.model === "cold_start" ? " (démarrage, moyenne flotte)" : ""}
+            </p>
+          </div>
         )}
         {ranked.map(zone => (
           <div key={zone.zone_id} className="space-y-1.5">

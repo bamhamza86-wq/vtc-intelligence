@@ -8,12 +8,16 @@
 import { createContext, useContext, useEffect, useState, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
 import { Undo2, X } from "lucide-react";
+import { shouldSuppressToast, type ToastKind } from "@/lib/silentMode";
 
 interface ToastPayload {
   id: number;
   msg: string;
   onUndo?: () => void;
   durationMs?: number;
+  /** Catégorie du toast — utilisée par le mode "silence total" pour filtrer
+   *  tout sauf sos / fatigue_red / unprofitable_red (défaut : "generic"). */
+  kind?: ToastKind;
 }
 
 type ToastFn = (p: Omit<ToastPayload, "id">) => void;
@@ -31,6 +35,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const timerRef = useRef<any>(null);
 
   const show = useCallback<ToastFn>((p) => {
+    // Mode "silence total" — filtre tout toast non-critique (garde SOS,
+    // fatigue rouge, course non-rentable rouge).
+    if (shouldSuppressToast(p.kind)) return;
     if (timerRef.current) clearTimeout(timerRef.current);
     const t: ToastPayload = { id: Date.now(), ...p };
     setCurrent(t);

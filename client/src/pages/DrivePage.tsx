@@ -27,7 +27,12 @@ import { DailyGoalBar } from "@/components/DailyGoalBar";
 import { FuelAutonomyBadge } from "@/components/FuelAutonomyBadge";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 import { useSwipe } from "@/hooks/useSwipe";
-import { haptic } from "@/lib/haptics";
+import { haptic, haptics } from "@/lib/haptics";
+import { ZoneEmptyingToast } from "@/components/ZoneEmptyingToast";
+import { DriveTimer } from "@/components/DriveTimer";
+import { EmergencyButton } from "@/components/EmergencyButton";
+import { useSwipeAcceptRefuse } from "@/hooks/useSwipeAcceptRefuse";
+import { Check, XCircle } from "lucide-react";
 
 function fmtCountdown(minutes: number): string {
   if (minutes < 60) return `${minutes} min`;
@@ -127,6 +132,27 @@ export default function DrivePage() {
   // Zone active selon l'index swipé
   const activeZone = topZones[zoneIndex] ?? top;
 
+  // ── Geste accepter/refuser sur la carte de recommandation (pointer events) ──
+  // Swipe droite = j'accepte cette zone (confirmation + haptique positif).
+  // Swipe gauche = je refuse → passe à l'alternative suivante (haptique alerte).
+  const [lastAction, setLastAction] = useState<"accept" | "refuse" | null>(null);
+  const { dragX, dragging, handlers: recoDragHandlers } = useSwipeAcceptRefuse({
+    threshold: 80,
+    onAccept: () => {
+      haptics.opportunity();
+      setLastAction("accept");
+      window.setTimeout(() => setLastAction(null), 1200);
+    },
+    onRefuse: () => {
+      haptics.alert();
+      setLastAction("refuse");
+      if (topZones.length > 1) {
+        setZoneIndex((i) => (i + 1) % topZones.length);
+      }
+      window.setTimeout(() => setLastAction(null), 1200);
+    },
+  });
+
   // ────────────────────────────────────────────────────────────────────
   // Levier 6 — Calcul des 3 infos HERO XXL (Zone / Distance / €/h attendu)
   // ────────────────────────────────────────────────────────────────────
@@ -201,6 +227,9 @@ export default function DrivePage() {
         </Link>
       </div>
 
+      {/* ── Levier sécurité — Timer conduite continue (seuil légal indicatif) ── */}
+      <DriveTimer />
+
       {/* ── Bandeau fatigue (au-dessus des blocs XXL) ─────────────────────── */}
       <div className="px-4 pt-2">
         <FatigueBanner />
@@ -212,8 +241,33 @@ export default function DrivePage() {
            lit tout en scrollant, sans overlap. */}
       <div className="flex-1 flex flex-col gap-3 p-3 sm:p-4 md:p-6 min-h-0 overflow-y-auto">
 
-        {/* Bloc 1 — Où aller (zone active selon swipe ← →) */}
-        <div className="rounded-2xl bg-emerald-500/10 border-2 border-emerald-500/40 flex items-start gap-3 md:gap-6 px-4 md:px-10 py-4">
+        {/* Bloc 1 — Où aller (zone active selon swipe ← →) — draggable accepter/refuser */}
+        <div
+          {...recoDragHandlers}
+          className="relative rounded-2xl bg-emerald-500/10 border-2 border-emerald-500/40 flex items-start gap-3 md:gap-6 px-4 md:px-10 py-4 touch-pan-y"
+          style={{
+            transform: `translateX(${dragX}px) rotate(${dragX / 30}deg)`,
+            transition: dragging ? "none" : "transform 0.25s ease-out",
+            cursor: dragging ? "grabbing" : "grab",
+          }}
+          data-testid="reco-swipe-card"
+        >
+          {dragX > 20 && (
+            <div
+              className="absolute top-2 right-2 flex items-center gap-1 rounded-full bg-emerald-500 text-black px-3 py-1 font-black text-xs z-10"
+              style={{ opacity: Math.min(1, dragX / 80) }}
+            >
+              <Check size={14} /> J'ACCEPTE
+            </div>
+          )}
+          {dragX < -20 && (
+            <div
+              className="absolute top-2 left-2 flex items-center gap-1 rounded-full bg-rose-500 text-white px-3 py-1 font-black text-xs z-10"
+              style={{ opacity: Math.min(1, -dragX / 80) }}
+            >
+              <XCircle size={14} /> JE REFUSE
+            </div>
+          )}
           <Navigation size={44} className="text-emerald-400 shrink-0 mt-1 md:size-16" strokeWidth={2.5} />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 text-[11px] uppercase tracking-widest text-emerald-300/80 font-bold mb-1">
@@ -374,7 +428,7 @@ export default function DrivePage() {
            Rappel discret des gestes disponibles en mode conduite          */}
       <div className="sm:hidden text-center pb-1">
         <span className="text-[10px] text-muted-foreground opacity-40">
-          ← → zones · ↓ retour · ↑ alertes
+          ← → zones · ↓ retour · ↑ alertes · glisser la reco pour accepter/refuser
         </span>
       </div>
 
@@ -387,6 +441,10 @@ export default function DrivePage() {
         <FuelAutonomyBadge />
       </div>
       <FatigueCoachBanner />
+      {/* ─── Couche Communautaire : toast "zone en train de se vider" ─── */}
+      <ZoneEmptyingToast />
+      {/* ─── Couche Sécurité : bouton SOS flottant (appui long 800ms) ─── */}
+      <EmergencyButton />
     </div>
   );
 }

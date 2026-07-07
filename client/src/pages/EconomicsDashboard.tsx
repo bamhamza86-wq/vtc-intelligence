@@ -1,4 +1,4 @@
-import { useMemo, useCallback } from "react";
+import { useMemo, useCallback, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient, API_BASE, getAuthToken } from "@/lib/queryClient";
 // ── Pull-to-refresh : wrapper tactile + retour haptique ──────────────────────
@@ -20,6 +20,7 @@ import {
 import {
   TrendingUp, Euro, Fuel, Wrench, Target, ChevronRight,
   AlertTriangle, CheckCircle, Clock, Zap, Car, BarChart2, Settings,
+  Wallet, ShieldAlert, Flag, Sparkles,
 } from "lucide-react";
 import { DailyGoalBar } from "@/components/DailyGoalBar";
 
@@ -211,6 +212,35 @@ function useEcoMetrics() {
   });
 }
 
+// ── Couche Économie & Fiscalité (additif) — types des nouveaux endpoints ──
+interface CostPerKmBreakdown {
+  fuel_per_km: number; wear_per_km: number; insurance_per_km: number;
+  maintenance_per_km: number; amortization_per_km: number; tire_per_km: number;
+  total_per_km: number; break_even_hourly: number; break_even_per_km: number;
+}
+interface BreakEvenStatus {
+  min_hourly_to_profit: number; current_hourly_this_shift: number;
+  delta: number; status: "ok" | "warning" | "red";
+}
+interface ToxicPattern {
+  pattern_desc_fr: string; occurrences: number; total_loss: number; suggested_avoidance: string;
+}
+interface EndShiftSummary {
+  total_gross: number; total_net: number; avg_hourly: number;
+  best_hour: number; worst_hour: number; unprofitable_count: number;
+  top_zone: string; message_fr_narratif: string;
+}
+
+function useCostPerKm() {
+  return useQuery<CostPerKmBreakdown>({ queryKey: ["/api/economics/cost-per-km"], refetchInterval: 15_000 });
+}
+function useBreakEven() {
+  return useQuery<BreakEvenStatus>({ queryKey: ["/api/economics/break-even"], refetchInterval: 10_000 });
+}
+function useToxicPatterns() {
+  return useQuery<{ patterns: ToxicPattern[] }>({ queryKey: ["/api/economics/toxic-patterns"], refetchInterval: 60_000 });
+}
+
 // Agrégats journaliers calculés depuis les courses + le profil
 interface DailyAgg {
   dailyRealized: number;
@@ -292,6 +322,219 @@ function KpiCard({ icon, label, value, sub, color }: {
         {sub && <p className="text-[11px] text-muted-foreground mt-0.5">{sub}</p>}
       </CardContent>
     </Card>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────
+// SECTION « Coût réel du véhicule & seuil de rentabilité » — additif
+// Couche Économie & Fiscalité : /api/economics/cost-per-km + break-even
+// ────────────────────────────────────────────────────────────────
+function CostPerKmSection({ data, loading }: { data?: CostPerKmBreakdown; loading: boolean }) {
+  if (loading || !data) {
+    return (
+      <section>
+        <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
+          <Wallet size={13} className="text-primary" /> Coût réel du véhicule (tout inclus)
+        </p>
+        <Skeleton className="h-28 w-full" />
+      </section>
+    );
+  }
+  const rows: { label: string; value: number }[] = [
+    { label: "Carburant / élec.", value: data.fuel_per_km },
+    { label: "Usure véhicule", value: data.wear_per_km },
+    { label: "Assurance", value: data.insurance_per_km },
+    { label: "Entretien", value: data.maintenance_per_km },
+    { label: "Amortissement", value: data.amortization_per_km },
+    { label: "Pneus", value: data.tire_per_km },
+  ];
+  return (
+    <section>
+      <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
+        <Wallet size={13} className="text-primary" /> Coût réel du véhicule (tout inclus)
+      </p>
+      <Card className="bg-card border-border">
+        <CardContent className="py-3 px-4">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs text-muted-foreground">Coût total au km</span>
+            <span className="text-xl font-bold tabular-nums text-amber-400">{data.total_per_km.toFixed(3).replace(".", ",")} €/km</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
+            {rows.map((r) => (
+              <div key={r.label} className="bg-background/60 rounded-lg px-2.5 py-2">
+                <p className="text-[10px] text-muted-foreground">{r.label}</p>
+                <p className="text-sm font-semibold tabular-nums">{r.value.toFixed(3).replace(".", ",")} €/km</p>
+              </div>
+            ))}
+          </div>
+          <Separator className="my-2" />
+          <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+            <span>Seuil horaire de rentabilité : <strong className="text-foreground">{data.break_even_hourly.toFixed(0)} €/h</strong></span>
+            <span>Seuil au km : <strong className="text-foreground">{data.break_even_per_km.toFixed(2).replace(".", ",")} €/km</strong></span>
+          </div>
+        </CardContent>
+      </Card>
+    </section>
+  );
+}
+
+function BreakEvenBar({ data, loading }: { data?: BreakEvenStatus; loading: boolean }) {
+  if (loading || !data) return <Skeleton className="h-16 w-full" />;
+  const cfg = {
+    ok: { color: "#22c55e", label: "Au-dessus du seuil" },
+    warning: { color: "#f59e0b", label: "Proche du seuil" },
+    red: { color: "#ef4444", label: "Sous le seuil de rentabilité" },
+  }[data.status];
+  return (
+    <Card className="bg-card border-border" style={{ borderColor: `${cfg.color}55` }}>
+      <CardContent className="py-3 px-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Target size={14} style={{ color: cfg.color }} /> Seuil de rentabilité horaire
+          </div>
+          <Badge variant="outline" className="text-[10px]" style={{ borderColor: `${cfg.color}66`, color: cfg.color }}>
+            {cfg.label}
+          </Badge>
+        </div>
+        <div className="flex items-baseline gap-3 mt-2">
+          <span className="text-xl font-bold tabular-nums" style={{ color: cfg.color }}>
+            {data.current_hourly_this_shift.toFixed(0)} €/h
+          </span>
+          <span className="text-xs text-muted-foreground">
+            mini {data.min_hourly_to_profit.toFixed(0)} €/h · {data.delta >= 0 ? "+" : ""}{data.delta.toFixed(0)} €/h
+          </span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ToxicPatternsSection({ patterns, loading }: { patterns: ToxicPattern[]; loading: boolean }) {
+  if (loading) {
+    return (
+      <section>
+        <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
+          <ShieldAlert size={13} className="text-red-400" /> Courses toxiques (30 derniers jours)
+        </p>
+        <Skeleton className="h-20 w-full" />
+      </section>
+    );
+  }
+  if (patterns.length === 0) {
+    return (
+      <section>
+        <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
+          <ShieldAlert size={13} className="text-red-400" /> Courses toxiques (30 derniers jours)
+        </p>
+        <p className="text-xs text-muted-foreground italic">Aucun pattern structurellement non-rentable détecté — bon travail.</p>
+      </section>
+    );
+  }
+  return (
+    <section>
+      <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2 font-medium flex items-center gap-1.5">
+        <ShieldAlert size={13} className="text-red-400" /> Courses toxiques (30 derniers jours)
+      </p>
+      <Card className="bg-card border-border">
+        <CardContent className="py-2 px-4">
+          <ul>
+            {patterns.map((p, i) => (
+              <li key={i} className="flex gap-3 py-2 border-b border-border last:border-0">
+                <AlertTriangle size={15} className="text-red-400 mt-0.5 shrink-0" />
+                <div className="flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-medium">{p.pattern_desc_fr}</p>
+                    <span className="text-xs font-bold text-red-400 tabular-nums whitespace-nowrap">−{p.total_loss.toFixed(0)} €</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">{p.occurrences} occurrence{p.occurrences > 1 ? "s" : ""} · {p.suggested_avoidance}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
+    </section>
+  );
+}
+
+function EndShiftButton() {
+  const [open, setOpen] = useState(false);
+  const [summary, setSummary] = useState<EndShiftSummary | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const runBilan = useCallback(async () => {
+    setLoading(true);
+    setOpen(true);
+    try {
+      const r = await apiRequest("GET", "/api/economics/end-shift");
+      const data = await r.json();
+      setSummary(data);
+      haptic("success");
+    } catch {
+      setSummary(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return (
+    <>
+      <button
+        onClick={runBilan}
+        className="w-full flex items-center justify-center gap-2 rounded-xl border border-primary/40 bg-primary/10 text-primary font-medium py-2.5 text-sm hover:bg-primary/20 transition-colors"
+      >
+        <Flag size={15} /> Bilan de fin de shift
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 p-3" onClick={() => setOpen(false)}>
+          <div className="bg-card border border-border rounded-2xl max-w-md w-full p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2">
+              <Sparkles size={16} className="text-primary" />
+              <h3 className="font-bold text-sm">Bilan de shift</h3>
+            </div>
+            {loading || !summary ? (
+              <Skeleton className="h-32 w-full" />
+            ) : (
+              <>
+                <p className="text-sm text-foreground/90">{summary.message_fr_narratif}</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="bg-background/60 rounded-lg p-2.5">
+                    <p className="text-[10px] text-muted-foreground">CA brut</p>
+                    <p className="text-lg font-bold tabular-nums">{summary.total_gross.toFixed(0)} €</p>
+                  </div>
+                  <div className="bg-background/60 rounded-lg p-2.5">
+                    <p className="text-[10px] text-muted-foreground">Net final</p>
+                    <p className="text-lg font-bold tabular-nums text-emerald-400">{summary.total_net.toFixed(0)} €</p>
+                  </div>
+                  <div className="bg-background/60 rounded-lg p-2.5">
+                    <p className="text-[10px] text-muted-foreground">Taux horaire moyen</p>
+                    <p className="text-sm font-semibold tabular-nums">{summary.avg_hourly.toFixed(0)} €/h</p>
+                  </div>
+                  <div className="bg-background/60 rounded-lg p-2.5">
+                    <p className="text-[10px] text-muted-foreground">Courses non rentables</p>
+                    <p className="text-sm font-semibold tabular-nums text-red-400">{summary.unprofitable_count}</p>
+                  </div>
+                  <div className="bg-background/60 rounded-lg p-2.5">
+                    <p className="text-[10px] text-muted-foreground">Meilleure heure</p>
+                    <p className="text-sm font-semibold tabular-nums">{summary.best_hour}h</p>
+                  </div>
+                  <div className="bg-background/60 rounded-lg p-2.5">
+                    <p className="text-[10px] text-muted-foreground">Zone top</p>
+                    <p className="text-sm font-semibold truncate">{summary.top_zone || "—"}</p>
+                  </div>
+                </div>
+              </>
+            )}
+            <button
+              onClick={() => setOpen(false)}
+              className="w-full text-xs text-muted-foreground hover:text-foreground py-1.5"
+            >
+              Fermer
+            </button>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -550,6 +793,11 @@ export default function EconomicsDashboard() {
   const { boostByZone, activeEventCount } = usePredictHQ();
   const eco = ecoQ.data;
 
+  // ── Couche Économie & Fiscalité (additif) ───────────────────────────────
+  const costPerKmQ = useCostPerKm();
+  const breakEvenQ = useBreakEven();
+  const toxicQ = useToxicPatterns();
+
   // ── Pull-to-refresh : invalide les queries économiques clés + haptic ───────
   const onRefresh = useCallback(async () => {
     await Promise.all([
@@ -755,6 +1003,14 @@ export default function EconomicsDashboard() {
         )}
       </section>
       )}
+
+      {/* SECTION Éco/Fiscal — coût réel véhicule + seuil de rentabilité + bilan shift */}
+      <CostPerKmSection data={costPerKmQ.data} loading={costPerKmQ.isLoading} />
+      <BreakEvenBar data={breakEvenQ.data} loading={breakEvenQ.isLoading} />
+      <EndShiftButton />
+
+      {/* SECTION Éco/Fiscal — courses structurellement non rentables (30j) */}
+      <ToxicPatternsSection patterns={toxicQ.data?.patterns ?? []} loading={toxicQ.isLoading} />
 
       {/* SECTION 3 — Heatmap zones 93 */}
       <section>

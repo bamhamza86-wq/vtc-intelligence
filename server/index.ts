@@ -5,6 +5,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { storage } from "./storage";
 import { registerAuth, requireAuth, revokeAllSessions } from "./auth";
+import { runStreakCron } from "./wowEngine";
 // Note: pas de session middleware — auth par token Bearer en mémoire
 import { createServer } from "node:http";
 
@@ -44,6 +45,27 @@ setInterval(() => {
     console.error("[index] Erreur régénération prédictions:", err);
   }
 }, PREDICTIONS_INTERVAL_MS);
+
+// ── COUCHE WOW FACTOR : cron streaks quotidiens (évaluation à 3h du matin) ──
+// Vérifie toutes les 10 min si l'heure locale Paris (UTC+2 approx., cf storage.ts)
+// vient de franchir 3h — évite la dépendance à un vrai scheduler cron (contrainte
+// « zéro nouvelle dépendance npm »).
+let lastStreakCronDate = "";
+const STREAK_CRON_CHECK_MS = 10 * 60 * 1000; // 10 min
+setInterval(() => {
+  try {
+    const now = new Date();
+    const parisHour = (now.getUTCHours() + 2) % 24;
+    const today = now.toISOString().slice(0, 10);
+    if (parisHour === 3 && lastStreakCronDate !== today) {
+      runStreakCron();
+      lastStreakCronDate = today;
+      console.log("[index] Streak cron exécuté (3h du matin)");
+    }
+  } catch (err) {
+    console.error("[index] Erreur streak cron:", err);
+  }
+}, STREAK_CRON_CHECK_MS);
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {

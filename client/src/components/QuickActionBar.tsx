@@ -8,10 +8,12 @@
  */
 import { useRef, useState } from "react";
 import { useHashLocation } from "wouter/use-hash-location";
-import { Mic, MicOff, MapPin, AlertTriangle, Coffee, X, Zap, Radio } from "lucide-react";
-import { haptic, alert as hapticAlert, fatigue as hapticFatigue, tapLeft as hapticTapLeft, tapRight as hapticTapRight } from "@/lib/haptics";
+import { Mic, MicOff, MapPin, AlertTriangle, Coffee, X, Zap, Radio, BatteryLow, BellOff, Bell } from "lucide-react";
+import { haptic, alert as hapticAlert, fatigue as hapticFatigue, tapLeft as hapticTapLeft, tapRight as hapticTapRight, confirm as hapticConfirm } from "@/lib/haptics";
 import { setVoiceMode, isVoiceEnabled, speak } from "@/lib/voice";
 import { useVoiceCommand } from "@/hooks/useVoiceCommand";
+import { TiredNowDialog } from "@/components/TiredNowDialog";
+import { isSilentModeActive, setSilentModeFor, clearSilentMode } from "@/lib/silentMode";
 
 // ── Levier 8 (Vague 3) — reach hint FAB ────────────────────────────────────
 // Affiché une seule fois par session pour aider à repérer le FAB sans le
@@ -26,6 +28,8 @@ export default function QuickActionBar() {
   const { isSupported: voiceCmdSupported, isListening, start: startListening, stop: stopListening } = useVoiceCommand();
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressTriggeredRef = useRef(false);
+  const [tiredDialogOpen, setTiredDialogOpen] = useState(false);
+  const [silentOn, setSilentOn] = useState(() => isSilentModeActive());
 
   // ── Levier 8 (Vague 3) — reach hint FAB : pulse unique par session ─────────
   const [showFabHint, setShowFabHint] = useState(() => {
@@ -104,6 +108,24 @@ export default function QuickActionBar() {
     speak("Pause enregistrée. Bonne récupération.", { priority: "low" });
     setOpen(false);
   }
+  function openTiredNow() {
+    hapticFatigue();
+    setTiredDialogOpen(true);
+    setOpen(false);
+  }
+  function toggleSilentMode() {
+    hapticConfirm();
+    if (silentOn) {
+      clearSilentMode();
+      setSilentOn(false);
+      speak("Silence total désactivé", { priority: "low" });
+    } else {
+      setSilentModeFor(60);
+      setSilentOn(true);
+      speak("Silence total activé pour 1 heure", { priority: "low" });
+    }
+    setOpen(false);
+  }
 
   const actions = [
     {
@@ -137,6 +159,20 @@ export default function QuickActionBar() {
       icon: Coffee,
       color: "bg-amber-600",
       onClick: takeBreak,
+    },
+    {
+      key: "tired",
+      label: "Fatigué",
+      icon: BatteryLow,
+      color: "bg-orange-600",
+      onClick: openTiredNow,
+    },
+    {
+      key: "silent",
+      label: silentOn ? "Silence ON" : "Silence",
+      icon: silentOn ? BellOff : Bell,
+      color: silentOn ? "bg-purple-700" : "bg-slate-600",
+      onClick: toggleSilentMode,
     },
     ...(voiceCmdSupported
       ? [
@@ -213,6 +249,8 @@ export default function QuickActionBar() {
           </div>
         </>
       )}
+
+      <TiredNowDialog open={tiredDialogOpen} onClose={() => setTiredDialogOpen(false)} />
     </>
   );
 }

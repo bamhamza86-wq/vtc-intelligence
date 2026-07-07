@@ -36,6 +36,7 @@ import {
   Cpu,
   Database,
   FileText,
+  Brain,
 } from "lucide-react";
 import { DaySignalBadge } from "@/components/DaySignalBadge";
 import { LiveIndicator } from "@/components/LiveIndicator";
@@ -61,6 +62,7 @@ const moreMenuItems = [
   { path: "/tax",         label: "Fiscal",    icon: FileText   },
   { path: "/simulator",   label: "Simulator", icon: Cpu        },
   { path: "/sources",     label: "Sources",   icon: Database   },
+  { path: "/ml-insights", label: "Insights IA", icon: Brain    },
   { path: "/profile",     label: "Profil",    icon: User       },
 ];
 

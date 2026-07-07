@@ -3,7 +3,9 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 // ─── Levier 1 SSE : service de push temps réel + middleware auth ──────────────
 import { sseService } from "./sseService";
-import { requireAuth } from "./auth";
+import { requireAuth, getCurrentUsername } from "./auth";
+// ─── Couche ML Personnel Driver (LR online + arbre + bandit + patterns + anomalies + XAI + drift) ───
+import * as mlPersonal from "./mlPersonal";
 // ← H2 : fusion adaptative multi-sources (TomTom + PHQ + vols + seeds)
 import {
   fusionSignals,
@@ -25,8 +27,10 @@ import {
   type Regime,
 } from "./storage";
 import { getFlightData, getFlightBoostForZone } from "./flightService";
+import * as wowEngine from "./wowEngine";
+import * as safetyEngine from "./safetyEngine";
 import { getSncfSignals, getZoneSncfBoost, GARE_ZONE_MAPPING } from "./sncfService";
-import { getCurrentWeather } from "./weatherService";
+import { getCurrentWeather, getCachedWeather } from "./weatherService";
 import {
   testTomTomConnection,
   testGigDataConnection,
@@ -43,6 +47,10 @@ import {
   refreshPredictHQEvents,
   testPredictHQConnection,
 } from "./predictHQService";
+// ─── Couche Économie & Fiscalité (coût réel, marge, URSSAF/TVA, multi-plateforme) ───
+import * as economicsEngine from "./economicsEngine";
+import * as taxConstants from "./taxConstants";
+import * as focusEngineStatic from "./focusEngine";
 
 // Helper boost combiné flight × PredictHQ, plafonné à 2.5× au total.
 function combinePredictHQBoost(flightBoost: number, phqBoost: number): number {
@@ -761,6 +769,8 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     const userId = (req as any).user?.id || "anon";
     storage.recordCommunitySignal(zoneId, type, userId);
     const impact = storage.getCommunityImpact(zoneId);
+    // Wow factor : easter egg « premier signalement communautaire » (couche 15.5)
+    try { wowEngine.unlockFirstCommunitySignalAchievement(); } catch { /* non bloquant */ }
     res.json({ ok: true, impact: impact.get(zoneId) || null, _ts: Date.now() });
   });
 
@@ -2862,13 +2872,194 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       try { storage.incrementProfileKm?.(distance_km); } catch { /* colonne optionnelle */ }
       storage.generateDynamicAlerts();
 
+      // ── Couche Wow Factor : streaks, records, achievements, record-hunt ──
+      try {
+        const profileAfter: any = storage.getDriverProfile() || {};
+        const statsAfter: any = storage.getRideStats();
+        wowEngine.onRideCompleted({
+          netProfit: net_profit,
+          hourlyRate: hourly_rate,
+          durationMin: duration_min,
+          totalKmDriven: profileAfter.total_km_driven ?? 0,
+          totalRides: statsAfter.total ?? 0,
+          timestamp: ride.timestamp,
+        });
+      } catch (wowErr) {
+        console.error("[wowEngine] onRideCompleted error:", wowErr);
+      }
+
+      // ─── Couche ML Personnel : feature store + mise à jour incrémentale LR/bandit ───
+      try {
+        const cachedWeather = getCachedWeather();
+        mlPersonal.recordRideFeatures(
+          {
+            pickup_zone_id: ride.pickup_zone_id,
+            distance_km: ride.distance_km,
+            duration_min: ride.duration_min,
+            fare: ride.fare,
+            net_profit: ride.net_profit,
+            is_profitable: ride.is_profitable,
+            weather: cachedWeather
+              ? { code: cachedWeather.code, temp_c: undefined, precip_mm: cachedWeather.precipitation_mm }
+              : null,
+          },
+          getCurrentUsername(req),
+        );
+      } catch (mlErr) {
+        console.warn("[rides/complete] mlPersonal.recordRideFeatures échoué :", mlErr);
+      }
+
+      // Couche Économie & Fiscalité : marge nette détaillée + alerte course non-rentable
+      let economics: ReturnType<typeof economicsEngine.computeRideMargin> | null = null;
+      try {
+        economics = economicsEngine.computeRideMargin(fare, distance_km);
+        economicsEngine.maybeCreateUnprofitableAlert(economics, ride.pickup_zone_id);
+      } catch (ecoErr) {
+        console.warn("[rides/complete] economicsEngine échoué :", ecoErr);
+      }
+
       res.json({
         success: true,
         ride: { ...ride, wear_cost },
         stats: storage.getRideStats(),
+        ...(economics ? { economics } : {}),
       });
     } catch (err) {
       console.error("[rides/complete] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // COUCHE ML PERSONNEL DRIVER — endpoints
+  // Modèles TypeScript purs (LR online, arbre de régression, bandit epsilon-greedy).
+  // Cold-start automatique si ride_count < 20 (fallback moyenne flotte).
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  // POST /api/ml/predict-acceptance — body { zone_id, distance_km, duration_min, fare, hour }
+  app.post("/api/ml/predict-acceptance", requireAuth, (req, res) => {
+    try {
+      const { zone_id, distance_km, duration_min, fare, hour } = req.body as {
+        zone_id?: string; distance_km?: number; duration_min?: number; fare?: number; hour?: number;
+      };
+      if (
+        typeof distance_km !== "number" || typeof duration_min !== "number" ||
+        typeof fare !== "number"
+      ) {
+        return res.status(400).json({ error: "distance_km, duration_min, fare requis (number)" });
+      }
+      const h = typeof hour === "number" ? hour : (new Date().getUTCHours() + 2) % 24;
+      const result = mlPersonal.predictAcceptance({
+        zone_id: zone_id ?? "unknown",
+        distance_km, duration_min, fare, hour: h,
+      });
+      res.json(result);
+    } catch (err) {
+      console.error("[ml/predict-acceptance] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // GET /api/ml/hourly-rate-forecast?hour=&zone_id=&weather=
+  app.get("/api/ml/hourly-rate-forecast", requireAuth, (req, res) => {
+    try {
+      const hour = parseInt(req.query.hour as string);
+      const zoneId = typeof req.query.zone_id === "string" ? req.query.zone_id : "unknown";
+      const weather = parseInt(req.query.weather as string);
+      const h = isNaN(hour) ? (new Date().getUTCHours() + 2) % 24 : hour;
+      const w = isNaN(weather) ? 0 : weather;
+      res.json(mlPersonal.forecastHourlyRate(h, zoneId, w));
+    } catch (err) {
+      console.error("[ml/hourly-rate-forecast] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // GET /api/ml/next-best-zone?hour=&day_type=
+  app.get("/api/ml/next-best-zone", requireAuth, (req, res) => {
+    try {
+      const now = new Date();
+      const hourRaw = parseInt(req.query.hour as string);
+      const hour = isNaN(hourRaw) ? (now.getUTCHours() + 2) % 24 : hourRaw;
+      const dayType = typeof req.query.day_type === "string" ? req.query.day_type : ([0, 6].includes(now.getDay()) ? "weekend" : "weekday");
+      res.json(mlPersonal.nextBestZone(hour, dayType));
+    } catch (err) {
+      console.error("[ml/next-best-zone] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // GET /api/ml/patterns
+  app.get("/api/ml/patterns", requireAuth, (_req, res) => {
+    try {
+      res.json({ patterns: mlPersonal.detectPatterns() });
+    } catch (err) {
+      console.error("[ml/patterns] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // GET /api/ml/anomalies
+  app.get("/api/ml/anomalies", requireAuth, (_req, res) => {
+    try {
+      res.json({ anomalies: mlPersonal.detectAnomalies() });
+    } catch (err) {
+      console.error("[ml/anomalies] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // GET /api/ml/drift
+  app.get("/api/ml/drift", requireAuth, (_req, res) => {
+    try {
+      res.json(mlPersonal.getDrift());
+    } catch (err) {
+      console.error("[ml/drift] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // GET /api/ml/self-eval
+  app.get("/api/ml/self-eval", requireAuth, (_req, res) => {
+    try {
+      res.json(mlPersonal.getSelfEval());
+    } catch (err) {
+      console.error("[ml/self-eval] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // GET /api/ml/summary — debug/tests (ride_count + modèles persistés)
+  app.get("/api/ml/summary", requireAuth, (_req, res) => {
+    try {
+      res.json(mlPersonal.getMlModelSummary());
+    } catch (err) {
+      console.error("[ml/summary] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // POST /api/ml/ai-disabled-log — enregistre le résultat d'une journée « pas d'IA aujourd'hui »
+  // body { date: 'YYYY-MM-DD', net_profit_that_day: number }
+  app.post("/api/ml/ai-disabled-log", requireAuth, (req, res) => {
+    try {
+      const { date, net_profit_that_day } = req.body as { date?: string; net_profit_that_day?: number };
+      if (!date || typeof net_profit_that_day !== "number") {
+        return res.status(400).json({ error: "date et net_profit_that_day requis" });
+      }
+      res.json(mlPersonal.recordAiDisabledDay(date, net_profit_that_day));
+    } catch (err) {
+      console.error("[ml/ai-disabled-log] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // GET /api/ml/ai-disabled-history
+  app.get("/api/ml/ai-disabled-history", requireAuth, (_req, res) => {
+    try {
+      res.json({ history: mlPersonal.getAiDisabledHistory() });
+    } catch (err) {
+      console.error("[ml/ai-disabled-history] error:", err);
       res.status(500).json({ error: String(err) });
     }
   });
@@ -3090,8 +3281,8 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   // ══════════════════════════════════════════════════════════════════════════
   // ─── LOT C : Focus & Station (recommandation unique + géofencing) ─────────
   // ══════════════════════════════════════════════════════════════════════════
-  // Import dynamique du moteur pour éviter dépendance circulaire au chargement
-  const focusEngineModule = require("./focusEngine") as typeof import("./focusEngine");
+  // Import statique du moteur (ESM — require() indisponible en mode module)
+  const focusEngineModule = focusEngineStatic;
 
   // GET /api/focus/recommendation?lat=&lng= → recommandation unique actionnable
   app.get("/api/focus/recommendation", requireAuth, (req, res) => {
@@ -3306,4 +3497,488 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     }
   });
   // ─── /LOT D ───────────────────────────────────────────────────────────────
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Couche Sécurité & Fatigue (feat/safety)
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    // ── 1. Timer légal de conduite ─────────────────────────────────────────
+    app.post("/api/safety/session/start", requireAuth, (_req, res) => {
+      try {
+        const session = safetyEngine.startSession();
+        res.json({ ok: true, session });
+      } catch (e: any) {
+        res.status(500).json({ error: "safety_session_start_error", message: e?.message });
+      }
+    });
+
+    app.post("/api/safety/session/pause", requireAuth, (_req, res) => {
+      try {
+        const session = safetyEngine.pauseSession();
+        res.json({ ok: true, session });
+      } catch (e: any) {
+        res.status(500).json({ error: "safety_session_pause_error", message: e?.message });
+      }
+    });
+
+    app.post("/api/safety/session/resume", requireAuth, (_req, res) => {
+      try {
+        const session = safetyEngine.resumeSession();
+        res.json({ ok: true, session });
+      } catch (e: any) {
+        res.status(500).json({ error: "safety_session_resume_error", message: e?.message });
+      }
+    });
+
+    app.post("/api/safety/session/end", requireAuth, (_req, res) => {
+      try {
+        const session = safetyEngine.endSession();
+        res.json({ ok: true, session });
+      } catch (e: any) {
+        res.status(500).json({ error: "safety_session_end_error", message: e?.message });
+      }
+    });
+
+    app.get("/api/safety/session/current", requireAuth, (_req, res) => {
+      try {
+        res.json(safetyEngine.getCurrentSession());
+      } catch (e: any) {
+        res.status(500).json({ error: "safety_session_current_error", message: e?.message });
+      }
+    });
+
+    // ── 3. Score fatigue circadien ──────────────────────────────────────────
+    app.get("/api/safety/fatigue-score", requireAuth, (_req, res) => {
+      try {
+        res.json(safetyEngine.computeFatigueScore());
+      } catch (e: any) {
+        res.status(500).json({ error: "safety_fatigue_score_error", message: e?.message });
+      }
+    });
+
+    // ── 4. Mode "je me sens fatigué" 1-tap ──────────────────────────────────
+    app.post("/api/safety/tired-now", requireAuth, (req, res) => {
+      try {
+        const { lat, lng, hourlyTargetIncome } = req.body ?? {};
+        const result = safetyEngine.tiredNow(
+          typeof lat === "number" ? lat : null,
+          typeof lng === "number" ? lng : null,
+          typeof hourlyTargetIncome === "number" ? hourlyTargetIncome : 35,
+        );
+        res.json(result);
+      } catch (e: any) {
+        res.status(500).json({ error: "safety_tired_now_error", message: e?.message });
+      }
+    });
+
+    // ── 5. Détection micro-sommeil par patterns (statistique) ──────────────
+    app.get("/api/safety/microsleep-risk", requireAuth, (_req, res) => {
+      try {
+        res.json(safetyEngine.computeMicrosleepRisk());
+      } catch (e: any) {
+        res.status(500).json({ error: "safety_microsleep_risk_error", message: e?.message });
+      }
+    });
+
+    // Log du temps de réponse à une notification (alimente le proxy micro-sommeil).
+    app.post("/api/safety/notification-response", requireAuth, (req, res) => {
+      try {
+        const { responseMs } = req.body ?? {};
+        if (typeof responseMs !== "number" || responseMs < 0) {
+          return res.status(400).json({ error: "invalid_response_ms" });
+        }
+        safetyEngine.logNotificationResponse(responseMs);
+        res.json({ ok: true });
+      } catch (e: any) {
+        res.status(500).json({ error: "safety_notification_response_error", message: e?.message });
+      }
+    });
+
+    // ── 6. Zones à éviter (sécurité) — combiné couche communauté ────────────
+    app.get("/api/safety/avoid", requireAuth, (_req, res) => {
+      try {
+        res.json({ zones: safetyEngine.getAvoidZones() });
+      } catch (e: any) {
+        res.status(500).json({ error: "safety_avoid_error", message: e?.message });
+      }
+    });
+
+    app.post("/api/safety/report", requireAuth, (req, res) => {
+      try {
+        const { zoneId, lat, lng, category } = req.body ?? {};
+        safetyEngine.reportSafetyIncident(
+          zoneId ?? null,
+          typeof lat === "number" ? lat : null,
+          typeof lng === "number" ? lng : null,
+          category ?? "safety",
+        );
+        res.json({ ok: true });
+      } catch (e: any) {
+        res.status(500).json({ error: "safety_report_error", message: e?.message });
+      }
+    });
+
+    // ── 7. Bouton urgence / SOS ──────────────────────────────────────────────
+    app.post("/api/safety/emergency", requireAuth, (req, res) => {
+      try {
+        const { lat, lng } = req.body ?? {};
+        const result = safetyEngine.triggerEmergency(
+          typeof lat === "number" ? lat : null,
+          typeof lng === "number" ? lng : null,
+        );
+        res.json(result);
+      } catch (e: any) {
+        res.status(500).json({ error: "safety_emergency_error", message: e?.message });
+      }
+    });
+  }
+  // ─── /Couche Sécurité & Fatigue ─────────────────────────────────────────
+
+  // ═══ COUCHE WOW FACTOR + RÉTENTION + BRIEF VOCAL (rapport.md §11, §12, §15) ═══
+  // Toutes les routes /api/* sont déjà protégées par requireAuth globalement
+  // (server/index.ts), sauf /api/auth/*. Pas besoin de middleware supplémentaire ici.
+
+  // 1. Streaks quotidiens
+  app.get("/api/wow/streak", (_req, res) => {
+    try {
+      res.json(wowEngine.getStreakStatus());
+    } catch (err) {
+      console.error("[wow/streak] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 2. Quêtes hebdomadaires non-monétaires
+  app.get("/api/wow/quests", (_req, res) => {
+    try {
+      res.json({ quests: wowEngine.getWeeklyQuests() });
+    } catch (err) {
+      console.error("[wow/quests] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.post("/api/wow/quests/:key/progress", (req, res) => {
+    try {
+      const delta = Number(req.body?.delta ?? 1);
+      const updated = wowEngine.progressQuest(req.params.key, Number.isFinite(delta) ? delta : 1);
+      if (!updated) return res.status(404).json({ error: "quest_not_found" });
+      res.json({ success: true, quest: updated });
+    } catch (err) {
+      console.error("[wow/quests/progress] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 3. Records personnels
+  app.get("/api/wow/records", (_req, res) => {
+    try {
+      res.json({ records: wowEngine.getAllRecords() });
+    } catch (err) {
+      console.error("[wow/records] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 5. Silence radio recommandé
+  app.get("/api/wow/wait-here", (req, res) => {
+    try {
+      const zoneId = String(req.query.zone_id || "");
+      const hour = Number(req.query.hour ?? new Date().getHours());
+      if (!zoneId) return res.status(400).json({ error: "zone_id_requis" });
+      res.json(wowEngine.getWaitHereRecommendation(zoneId, Number.isFinite(hour) ? hour : new Date().getHours()));
+    } catch (err) {
+      console.error("[wow/wait-here] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 6. Refus de course intelligent
+  app.post("/api/wow/should-refuse", (req, res) => {
+    try {
+      const { fare, distance, duration, dropoff_zone } = req.body ?? {};
+      if (typeof fare !== "number" || typeof distance !== "number" || typeof duration !== "number") {
+        return res.status(400).json({ error: "fare, distance, duration requis (number)" });
+      }
+      res.json(wowEngine.evaluateShouldRefuse({ fare, distance, duration, dropoff_zone: String(dropoff_zone ?? "") }));
+    } catch (err) {
+      console.error("[wow/should-refuse] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 7. Détection auto-sabotage
+  app.get("/api/wow/self-sabotage", (_req, res) => {
+    try {
+      res.json(wowEngine.detectSelfSabotage());
+    } catch (err) {
+      console.error("[wow/self-sabotage] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 8. Simulation rétrospective « et si vous aviez suivi l'IA »
+  app.get("/api/wow/what-if-yesterday", (_req, res) => {
+    try {
+      res.json(wowEngine.getWhatIfYesterday());
+    } catch (err) {
+      console.error("[wow/what-if-yesterday] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 9. Brief vocal matinal (template déterministe, zéro appel LLM)
+  app.get("/api/wow/morning-brief", (_req, res) => {
+    try {
+      res.json(wowEngine.getMorningBrief());
+    } catch (err) {
+      console.error("[wow/morning-brief] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 10. Résumé de shift narratif
+  app.post("/api/wow/shift-summary", (req, res) => {
+    try {
+      const { start, end } = req.body ?? {};
+      if (!start || !end) return res.status(400).json({ error: "start_end_requis" });
+      res.json(wowEngine.getShiftSummary(String(start), String(end)));
+    } catch (err) {
+      console.error("[wow/shift-summary] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 11. Achievements / easter eggs métier
+  app.get("/api/wow/achievements", (_req, res) => {
+    try {
+      res.json({ achievements: wowEngine.getAchievements() });
+    } catch (err) {
+      console.error("[wow/achievements] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // Tracking des recommandations émises (nécessaire pour what-if-yesterday) —
+  // appelé côté client quand une reco Focus est affichée ou suivie.
+  app.post("/api/wow/track-reco", (req, res) => {
+    try {
+      const { verb, zone_name, expected_gain_euros, was_followed } = req.body ?? {};
+      wowEngine.trackRecommendation(
+        String(verb ?? "aller"),
+        zone_name ? String(zone_name) : null,
+        typeof expected_gain_euros === "number" ? expected_gain_euros : null,
+        Boolean(was_followed)
+      );
+      res.json({ success: true });
+    } catch (err) {
+      console.error("[wow/track-reco] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+  // ─── /COUCHE WOW FACTOR ───
+
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // COUCHE ÉCONOMIE & FISCALITÉ — coût réel véhicule, marge nette, seuil rentabilité,
+  // bilan de shift, patterns toxiques, URSSAF/TVA, simulateur statut, multi-plateforme.
+  // Barèmes fiscaux 2026 sourcés dans server/taxConstants.ts (URSSAF, TVA, IK).
+  // ═══════════════════════════════════════════════════════════════════════════════
+
+  // 1. Coût réel au km (tous postes : carburant/élec, usure, assurance, entretien, amortissement, pneus)
+  app.get("/api/economics/cost-per-km", requireAuth, (_req, res) => {
+    try {
+      res.json(economicsEngine.computeCostPerKm());
+    } catch (err) {
+      console.error("[economics/cost-per-km] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 2. Seuil de rentabilité horaire (comparaison avec le rythme du shift en cours)
+  app.get("/api/economics/break-even", requireAuth, (_req, res) => {
+    try {
+      res.json(economicsEngine.computeBreakEven());
+    } catch (err) {
+      console.error("[economics/break-even] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 3. Bilan de fin de shift (narratif FR) — ?date=YYYY-MM-DD (défaut: aujourd'hui)
+  app.get("/api/economics/end-shift", requireAuth, (req, res) => {
+    try {
+      const date = typeof req.query.date === "string" ? req.query.date : undefined;
+      res.json(economicsEngine.computeEndShift(date));
+    } catch (err) {
+      console.error("[economics/end-shift] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 4. Détection des patterns de courses structurellement non-rentables (30j glissants)
+  app.get("/api/economics/toxic-patterns", requireAuth, (_req, res) => {
+    try {
+      res.json({ patterns: economicsEngine.computeToxicPatterns() });
+    } catch (err) {
+      console.error("[economics/toxic-patterns] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 5. Résumé fiscal URSSAF/TVA/IK — ?year=2026 (défaut: année courante)
+  app.get("/api/tax/urssaf-summary", requireAuth, (req, res) => {
+    try {
+      const year = req.query.year ? parseInt(String(req.query.year), 10) : new Date().getFullYear();
+      res.json(economicsEngine.computeUrssafSummary(year));
+    } catch (err) {
+      console.error("[tax/urssaf-summary] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 6. Simulateur d'impact d'un changement de statut juridique/fiscal
+  app.post("/api/tax/simulate-status", requireAuth, (req, res) => {
+    try {
+      const { new_regime, annual_ca } = req.body as { new_regime?: string; annual_ca?: number };
+      if (new_regime !== "micro_bnc" && new_regime !== "ei_reel" && new_regime !== "sasu") {
+        return res.status(400).json({ error: "new_regime doit être 'micro_bnc' | 'ei_reel' | 'sasu'" });
+      }
+      const summary = economicsEngine.computeUrssafSummary(new Date().getFullYear());
+      const ca = typeof annual_ca === "number" && annual_ca > 0 ? annual_ca : summary.total_ca;
+      res.json(economicsEngine.simulateStatusChange(new_regime, ca));
+    } catch (err) {
+      console.error("[tax/simulate-status] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 7. Barèmes fiscaux 2026 exposés tels quels (transparence / debug front)
+  app.get("/api/tax/constants", requireAuth, (_req, res) => {
+    try {
+      res.json({
+        version: taxConstants.TAX_CONSTANTS_VERSION,
+        last_checked: taxConstants.TAX_CONSTANTS_LAST_CHECKED,
+        urssaf: taxConstants.URSSAF,
+        tva: taxConstants.TVA,
+        defaults_idf: taxConstants.DEFAULTS_IDF,
+      });
+    } catch (err) {
+      console.error("[tax/constants] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 8. Comparatif KPI multi-plateforme — ?period=30d (7d|30d|90d)
+  app.get("/api/platforms/kpi-comparison", requireAuth, (req, res) => {
+    try {
+      const periodParam = typeof req.query.period === "string" ? req.query.period : "30d";
+      const periodDays = parseInt(periodParam.replace(/[^0-9]/g, ""), 10) || 30;
+      res.json({ platforms: economicsEngine.computePlatformKpiComparison(periodDays) });
+    } catch (err) {
+      console.error("[platforms/kpi-comparison] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 9. Recommandation "quelle appli allumer maintenant" — ?hour=0..23 (défaut: heure courante)
+  app.get("/api/platforms/which-now", requireAuth, (req, res) => {
+    try {
+      const hour = req.query.hour !== undefined ? parseInt(String(req.query.hour), 10) : new Date().getHours();
+      res.json(economicsEngine.computeWhichNow(hour));
+    } catch (err) {
+      console.error("[platforms/which-now] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 10. Statistiques par plateforme — POST pour enregistrer/mettre à jour une période
+  app.post("/api/platforms/stats", requireAuth, (req, res) => {
+    try {
+      const { platform, period, hours, ca, rides, avg_fare, commission_pct, net_hourly } = req.body as {
+        platform?: string; period?: string; hours?: number; ca?: number;
+        rides?: number; avg_fare?: number; commission_pct?: number; net_hourly?: number;
+      };
+      if (!platform || !period || typeof hours !== "number" || typeof ca !== "number") {
+        return res.status(400).json({ error: "platform, period, hours, ca requis" });
+      }
+      const row = storage.upsertPlatformStats({
+        platform, period, hours, ca,
+        rides: rides ?? 0, avgFare: avg_fare ?? (rides ? ca / Math.max(rides, 1) : 0),
+        commissionPct: commission_pct ?? 25, netHourly: net_hourly ?? (hours ? ca / hours : 0),
+      });
+      res.json({ success: true, row });
+    } catch (err) {
+      console.error("[platforms/stats POST] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.get("/api/platforms/stats", requireAuth, (req, res) => {
+    try {
+      const since = typeof req.query.since === "string" ? req.query.since : undefined;
+      res.json({ stats: storage.getPlatformStats(undefined, since) });
+    } catch (err) {
+      console.error("[platforms/stats GET] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // 11. Règles maison — CRUD complet (min_km, min_fare, max_pickup_km, blacklist_zone, blackout_hours)
+  app.get("/api/platforms/rules", requireAuth, (_req, res) => {
+    try {
+      res.json({ rules: storage.getPlatformRules() });
+    } catch (err) {
+      console.error("[platforms/rules GET] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.post("/api/platforms/rules", requireAuth, (req, res) => {
+    try {
+      const { platform, rule_key, value, active } = req.body as {
+        platform?: string; rule_key?: string; value?: unknown; active?: boolean;
+      };
+      const validKeys = ["min_km", "min_fare", "max_pickup_km", "blacklist_zone", "blackout_hours"];
+      if (!platform || !rule_key || !validKeys.includes(rule_key)) {
+        return res.status(400).json({ error: `platform requis, rule_key doit être l'un de: ${validKeys.join(", ")}` });
+      }
+      const rule = storage.createPlatformRule({
+        platform, ruleKey: rule_key, valueJson: JSON.stringify(value ?? null), active: active !== false,
+      });
+      res.json({ success: true, rule });
+    } catch (err) {
+      console.error("[platforms/rules POST] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.put("/api/platforms/rules/:id", requireAuth, (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      const { value, active } = req.body as { value?: unknown; active?: boolean };
+      const patch: { valueJson?: string; active?: boolean } = {};
+      if (value !== undefined) patch.valueJson = JSON.stringify(value);
+      if (active !== undefined) patch.active = active;
+      const updated = storage.updatePlatformRule(id, patch);
+      if (!updated) return res.status(404).json({ error: "règle introuvable" });
+      res.json({ success: true, rule: updated });
+    } catch (err) {
+      console.error("[platforms/rules PUT] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  app.delete("/api/platforms/rules/:id", requireAuth, (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      const ok = storage.deletePlatformRule(id);
+      if (!ok) return res.status(404).json({ error: "règle introuvable" });
+      res.json({ success: true });
+    } catch (err) {
+      console.error("[platforms/rules DELETE] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
+  // ─── /COUCHE ÉCONOMIE & FISCALITÉ ───
+
 }

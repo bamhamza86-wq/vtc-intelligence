@@ -13,10 +13,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { User, BarChart, Wrench, Brain, Gauge, AlertTriangle, Lightbulb, MapPin, Clock, Plug, CheckCircle2, XCircle, AlertCircle, RefreshCw } from "lucide-react";
+import { User, BarChart, Wrench, Brain, Gauge, AlertTriangle, Lightbulb, MapPin, Clock, Plug, CheckCircle2, XCircle, AlertCircle, RefreshCw, Wallet, Zap as ZapIcon, RotateCcw } from "lucide-react";
 import { MobileSettings } from "@/components/MobileSettings";
 import { Flame } from "lucide-react";
 import { getDailyGoalTarget, setDailyGoalTarget, useDailyStreak } from "@/hooks/useDailyStreak";
+import { ReputationBadge } from "@/components/ReputationBadge";
+import { BellOff, ShieldAlert } from "lucide-react";
+import { isSilentModeActive, setSilentModeFor, clearSilentMode, getSilentModeUntil } from "@/lib/silentMode";
+import { AmberNightToggle } from "@/components/AmberNightToggle";
+import { isAiDisabledToday, enableAiDisabledToday, disableAiDisabledToday } from "@/lib/aiToggle";
+import { BrainCircuit } from "lucide-react";
 
 const ZONES_93 = [
   { id: "z_cdg", name: "CDG" }, { id: "z_orly", name: "Orly" },
@@ -46,8 +52,15 @@ export default function ProfilePage() {
   // Vague 2 - Feature 3 : édition de l'objectif journalier + affichage streak
   const { streakDays } = useDailyStreak();
   const [goalTargetInput, setGoalTargetInput] = useState<string>(() => String(getDailyGoalTarget()));
+  // ── Couche Sécurité — mode silence total (feat/safety) ────────────────
+  const [silentModeOn, setSilentModeOn] = useState<boolean>(() => isSilentModeActive());
+  // ── Couche ML Personnel — mode « pas d'IA aujourd'hui » ────────────────
+  const [aiDisabledOn, setAiDisabledOn] = useState<boolean>(() => isAiDisabledToday());
   const [form, setForm] = useState<any>({ fuelConsumptionPer100km: 7, fuelPricePerLiter: 1.85, platformCommissionPct: 25, hourlyTargetIncome: 35, wearCostPerKm: 0.08, vehicleType: "berline", preferLongRides: true,
-    preferredZones: [], workHoursStart: 6, workHoursEnd: 22, avoidHighway: false, vehicleBrand: "", vehicleModel: "", vehicleYear: 2020, totalKmDriven: 0 });
+    preferredZones: [], workHoursStart: 6, workHoursEnd: 22, avoidHighway: false, vehicleBrand: "", vehicleModel: "", vehicleYear: 2020, totalKmDriven: 0,
+    // Couche Économie & Fiscalité (additif) — coût réel du véhicule tout inclus
+    insuranceAnnualEur: 1800, maintenanceYearlyEur: 1200, vehicleAmortizationYearlyEur: 4800, tireYearlyEur: 600,
+    cvoUrssafPct: 21.2, tvaRegime: "franchise", electricMode: false, kwhPer100km: 18, kwhPrice: 0.25, vehicleCvFiscaux: 5 });
   const { data: profile, isLoading } = useQuery({ queryKey: ["/api/driver-profile"], queryFn: () => apiRequest("GET", "/api/driver-profile").then(r => r.json()), refetchInterval: 3_000 });
   const { data: stats } = useQuery({ queryKey: ["/api/rides/stats"], queryFn: () => apiRequest("GET", "/api/rides/stats").then(r => r.json()), refetchInterval: 3_000 });
   const { data: maintenance } = useQuery<{ maintenance: any[] }>({ queryKey: ["/api/maintenance"], queryFn: () => apiRequest("GET", "/api/maintenance").then(r => r.json()), refetchInterval: 3_000 });
@@ -82,6 +95,16 @@ export default function ProfilePage() {
       vehicleModel: p.vehicle_model ?? "",
       vehicleYear: p.vehicle_year ?? 2020,
       totalKmDriven: p.total_km_driven ?? 0,
+      insuranceAnnualEur: p.insurance_annual_eur ?? 1800,
+      maintenanceYearlyEur: p.maintenance_yearly_eur ?? 1200,
+      vehicleAmortizationYearlyEur: p.vehicle_amortization_yearly_eur ?? 4800,
+      tireYearlyEur: p.tire_yearly_eur ?? 600,
+      cvoUrssafPct: p.cvo_urssaf_pct ?? 21.2,
+      tvaRegime: p.tva_regime ?? "franchise",
+      electricMode: Boolean(p.electric_mode ?? false),
+      kwhPer100km: p.kwh_per_100km ?? 18,
+      kwhPrice: p.kwh_price ?? 0.25,
+      vehicleCvFiscaux: p.vehicle_cv_fiscaux ?? 5,
     });
   }, [profile]);
 
@@ -112,7 +135,11 @@ export default function ProfilePage() {
 
   return (
     <div className="p-4 max-w-2xl mx-auto space-y-4">
-      <div><h2 className="font-bold text-lg flex items-center gap-2"><User size={18} className="text-primary" />Profil chauffeur</h2><p className="text-sm text-muted-foreground">Paramètres de calcul personnalisés</p></div>
+      <div className="flex items-start justify-between gap-2 flex-wrap">
+        <div><h2 className="font-bold text-lg flex items-center gap-2"><User size={18} className="text-primary" />Profil chauffeur</h2><p className="text-sm text-muted-foreground">Paramètres de calcul personnalisés</p></div>
+        {/* ─── Couche Communautaire : badge Karma + niveau (Novice/Confirmé/Vétéran) ─── */}
+        <ReputationBadge />
+      </div>
       {stats && stats.totalRides > 0 && (
         <Card className="border-primary/20 bg-primary/5">
           <CardContent className="py-3 px-4">
@@ -172,6 +199,83 @@ export default function ProfilePage() {
             <div><Label className="text-xs">Prix carburant (€/L)</Label><Input type="number" step="0.01" value={form.fuelPricePerLiter} onChange={e => setForm((f: any) => ({ ...f, fuelPricePerLiter: parseFloat(e.target.value) }))} className="h-9 text-sm mt-1" data-testid="input-fuel-price" /></div>
             <div><Label className="text-xs">Usure (€/km)</Label><Input type="number" step="0.01" value={form.wearCostPerKm} onChange={e => setForm((f: any) => ({ ...f, wearCostPerKm: parseFloat(e.target.value) }))} className="h-9 text-sm mt-1" data-testid="input-wear" /></div>
           </div>
+        </CardContent>
+      </Card>
+      {/* ── Couche Économie & Fiscalité (additif) : Coût réel du véhicule ── */}
+      <Card className="border-teal-500/30 bg-teal-500/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Wallet size={14} className="text-teal-400" />
+            Coût réel du véhicule
+          </CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Tous les postes de coût annuels, ramenés au km pour un calcul de marge exact.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4 px-4 pb-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <ZapIcon size={14} className="text-teal-400" />
+              <span className="text-sm font-medium">Véhicule électrique</span>
+            </div>
+            <Switch
+              checked={form.electricMode}
+              onCheckedChange={v => setForm((f: any) => ({ ...f, electricMode: v }))}
+              data-testid="switch-electric-mode"
+            />
+          </div>
+          {form.electricMode ? (
+            <div className="grid grid-cols-2 gap-3">
+              <div><Label className="text-xs">Conso. (kWh/100km)</Label><Input type="number" step="0.5" value={form.kwhPer100km} onChange={e => setForm((f: any) => ({ ...f, kwhPer100km: parseFloat(e.target.value) }))} className="h-9 text-sm mt-1" data-testid="input-kwh-per-100km" /></div>
+              <div><Label className="text-xs">Prix électricité (€/kWh)</Label><Input type="number" step="0.01" value={form.kwhPrice} onChange={e => setForm((f: any) => ({ ...f, kwhPrice: parseFloat(e.target.value) }))} className="h-9 text-sm mt-1" data-testid="input-kwh-price" /></div>
+            </div>
+          ) : null}
+          <div className="grid grid-cols-2 gap-3">
+            <div><Label className="text-xs">Assurance (€/an)</Label><Input type="number" step="50" value={form.insuranceAnnualEur} onChange={e => setForm((f: any) => ({ ...f, insuranceAnnualEur: parseFloat(e.target.value) }))} className="h-9 text-sm mt-1" data-testid="input-insurance-annual" /></div>
+            <div><Label className="text-xs">Entretien (€/an)</Label><Input type="number" step="50" value={form.maintenanceYearlyEur} onChange={e => setForm((f: any) => ({ ...f, maintenanceYearlyEur: parseFloat(e.target.value) }))} className="h-9 text-sm mt-1" data-testid="input-maintenance-yearly" /></div>
+            <div><Label className="text-xs">Amortissement (€/an)</Label><Input type="number" step="100" value={form.vehicleAmortizationYearlyEur} onChange={e => setForm((f: any) => ({ ...f, vehicleAmortizationYearlyEur: parseFloat(e.target.value) }))} className="h-9 text-sm mt-1" data-testid="input-amortization-yearly" /></div>
+            <div><Label className="text-xs">Pneus (€/an)</Label><Input type="number" step="50" value={form.tireYearlyEur} onChange={e => setForm((f: any) => ({ ...f, tireYearlyEur: parseFloat(e.target.value) }))} className="h-9 text-sm mt-1" data-testid="input-tire-yearly" /></div>
+          </div>
+          <Separator />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Régime TVA</Label>
+              <Select value={form.tvaRegime} onValueChange={v => setForm((f: any) => ({ ...f, tvaRegime: v }))}>
+                <SelectTrigger className="mt-1 h-9 text-sm" data-testid="select-tva-regime"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="franchise">Franchise en base</SelectItem>
+                  <SelectItem value="reel">Régime réel</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div><Label className="text-xs">CV fiscaux du véhicule</Label><Input type="number" step="1" min="3" value={form.vehicleCvFiscaux} onChange={e => setForm((f: any) => ({ ...f, vehicleCvFiscaux: parseInt(e.target.value) || 5 }))} className="h-9 text-sm mt-1" data-testid="input-vehicle-cv" /></div>
+          </div>
+          <div>
+            <Label className="text-xs">Taux CVO / URSSAF (%)</Label>
+            <Input type="number" step="0.1" value={form.cvoUrssafPct} onChange={e => setForm((f: any) => ({ ...f, cvoUrssafPct: parseFloat(e.target.value) }))} className="h-9 text-sm mt-1" data-testid="input-cvo-urssaf" />
+            <p className="text-[10px] text-muted-foreground mt-1">
+              Taux 2026 pour VTC (BIC prestations de services) : 21,2 % — <a href="https://www.urssaf.fr" target="_blank" rel="noreferrer" className="text-primary underline">urssaf.fr</a>
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full h-9 text-xs gap-1.5"
+            onClick={() => setForm((f: any) => ({
+              ...f,
+              insuranceAnnualEur: 1800,
+              maintenanceYearlyEur: 1200,
+              vehicleAmortizationYearlyEur: 4800,
+              tireYearlyEur: 600,
+              cvoUrssafPct: 21.2,
+              tvaRegime: "franchise",
+              kwhPer100km: 18,
+              kwhPrice: 0.25,
+            }))}
+            data-testid="button-reset-idf-defaults"
+          >
+            <RotateCcw size={12} /> Réinitialiser avec valeurs par défaut IDF
+          </Button>
         </CardContent>
       </Card>
       <Card>
@@ -521,6 +625,106 @@ export default function ProfilePage() {
               </div>
             );
           })}
+        </CardContent>
+      </Card>
+
+      {/* ── THÈME SÉCURITÉ : Mode silence total ── */}
+      <Card className="border-purple-500/30 bg-purple-500/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <ShieldAlert size={14} className="text-purple-400" />
+            Sécurité &amp; conduite
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 px-4 pb-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <BellOff size={16} className="text-purple-300 shrink-0" />
+              <div className="min-w-0">
+                <div className="text-sm font-medium">Mode silence total</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Coupe les notifications non-critiques (SOS, fatigue et courses non-rentables restent actifs)
+                </div>
+              </div>
+            </div>
+            <Switch
+              checked={silentModeOn}
+              onCheckedChange={(val) => {
+                if (val) {
+                  setSilentModeFor(60);
+                  setSilentModeOn(true);
+                  toast({ title: "Silence total activé", description: "Pendant 1 heure — désactivable à tout moment." });
+                } else {
+                  clearSilentMode();
+                  setSilentModeOn(false);
+                  toast({ title: "Silence total désactivé" });
+                }
+              }}
+              data-testid="switch-silent-mode"
+            />
+          </div>
+          {silentModeOn && getSilentModeUntil() && (
+            <p className="text-[11px] text-purple-300">
+              Actif jusqu'à {getSilentModeUntil()!.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+            </p>
+          )}
+          <Separator />
+          <div>
+            <div className="text-sm font-medium mb-1">Mode nuit ambre</div>
+            <div className="text-[11px] text-muted-foreground mb-2">
+              Réglable aussi dans les paramètres mobiles ci-dessous — bascule automatique au coucher du soleil.
+            </div>
+            <AmberNightToggle />
+          </div>
+          <p className="text-[10px] text-muted-foreground pt-1">
+            Estimations statistiques de fatigue et de risque — ce ne sont pas des diagnostics médicaux.
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* ── Couche ML Personnel : mode « pas d'IA aujourd'hui » ── */}
+      <Card className="border-slate-500/30 bg-slate-500/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <BrainCircuit size={14} className="text-slate-400" />
+            IA &amp; prédictions
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 px-4 pb-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <BrainCircuit size={16} className="text-slate-300 shrink-0" />
+              <div className="min-w-0">
+                <div className="text-sm font-medium">Pas d'IA aujourd'hui</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Désactive les suggestions ML personnalisées (patterns, meilleure zone, simulateur) jusqu'à minuit
+                </div>
+              </div>
+            </div>
+            <Switch
+              checked={aiDisabledOn}
+              onCheckedChange={(val) => {
+                if (val) {
+                  enableAiDisabledToday();
+                  setAiDisabledOn(true);
+                  toast({ title: "Mode sans IA activé", description: "Jusqu'à minuit — réactivable à tout moment depuis Focus." });
+                } else {
+                  disableAiDisabledToday();
+                  setAiDisabledOn(false);
+                  toast({ title: "IA réactivée" });
+                }
+              }}
+              data-testid="switch-ai-disabled-today"
+            />
+          </div>
+          {aiDisabledOn && (
+            <p className="text-[11px] text-slate-400">
+              Actif pour la journée en cours — réinitialisation automatique à minuit.
+            </p>
+          )}
+          <p className="text-[10px] text-muted-foreground pt-1">
+            Le résultat du jour sera comparé a posteriori à votre moyenne habituelle avec IA.
+          </p>
         </CardContent>
       </Card>
     </div>

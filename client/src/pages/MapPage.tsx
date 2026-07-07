@@ -25,6 +25,9 @@ import { RoutingSourceBanner } from "@/components/RoutingSourceBanner";
 // ─── Lot Beta : pastille de fraîcheur (RecommendationBanner retiré, remplacé par RecoWhereToGo) ─
 import { DataFreshnessBadge } from "@/components/DataFreshnessBadge";
 import { ZoneSignalPanel } from "@/components/ZoneSignalPanel";
+import { ZoneChat } from "@/components/ZoneChat";
+import { AvoidZonesCard } from "@/components/AvoidZonesCard";
+import { Flame } from "lucide-react";
 import StationOverlay from "@/components/StationOverlay";
 
 const COLORS = { ultraHigh: "#22c55e", high: "#86efac", medium: "#fbbf24", low: "#f97316", veryLow: "#ef4444" };
@@ -259,6 +262,9 @@ export default function MapPage() {
   const [dayType, setDayType] = useState([0,6].includes(now.getDay()) ? "weekend" : "weekday");
   const [selectedZone, setSelectedZone] = useState<any>(null);
   const [eventsPanelOpen, setEventsPanelOpen] = useState(true);
+  // ─── Couche Communautaire : toggle heatmap H3-like + calque Leaflet dédié ───
+  const [showCommunityHeat, setShowCommunityHeat] = useState(false);
+  const communityHeatLayersRef = useRef<any[]>([]);
   const { boostByZone: phqBoostByZone } = usePredictHQ();
   // Résumé PredictHQ par zone (refetch 30s) — heatmap, panel événements, anticipation.
   const {
@@ -298,6 +304,13 @@ export default function MapPage() {
   // (même donnée temps réel, refetch 3s) qui expose un timestamp `_ts`.
   const { data: topZonesData } = useQuery<{ _ts?: number }>({ queryKey: ["/api/best-zone-now", "freshness", position.lat, position.lng], queryFn: () => apiRequest("GET", `/api/best-zone-now?lat=${position.lat}&lng=${position.lng}`).then(r => r.json()), refetchInterval: 3000 });
   const { data: events = [] } = useQuery({ queryKey: ["/api/events"], queryFn: () => apiRequest("GET", "/api/events").then(r => r.json()), refetchInterval: SLOW_INTERVAL, staleTime: 20_000 });
+  // ─── Couche Communautaire : heatmap H3-like (grille 500m) + zones à éviter ───
+  const { data: communityHeatmap } = useQuery<{ cells: any[] }>({
+    queryKey: ["/api/community/heatmap"],
+    queryFn: () => apiRequest("GET", "/api/community/heatmap").then(r => r.json()),
+    refetchInterval: showCommunityHeat ? 10_000 : false,
+    enabled: showCommunityHeat,
+  });
   // Météo Open-Meteo — refetch toutes les 15min (aligné sur le cache backend TTL 15min)
   const { data: weather } = useQuery<{ condition: { code: number; description: string; precipitation_mm: number; windspeed_kmh: number; demand_boost: number; icon: string; updated_at: string }; zones_impacted: string[] }>({
     queryKey: ["/api/weather/current"],
@@ -475,6 +488,47 @@ export default function MapPage() {
     render();
     // JSON.stringify du boost effectif → re-render heatmap quand le boost PredictHQ change
   }, [zones, profitability, JSON.stringify(effectiveBoostByZone)]);
+
+  // ── Couche Communautaire : heatmap H3-like (cellules 500m teintées) ─────────
+  // Rectangles Leaflet (pas de nouvelle dep) — teinte selon dominant_context,
+  // opacité selon fraîcheur (freshness 0-1), taille selon count (intensité visuelle).
+  useEffect(() => {
+    const CONTEXT_COLOR: Record<string, string> = {
+      surge: "#22c55e", dead: "#6b7280", traffic: "#f97316",
+      event: "#a855f7", safety: "#ef4444", wc: "#38bdf8", charging: "#facc15",
+    };
+    const render = () => {
+      const L = (window as any).L;
+      if (!L || !mapInstance.current) { setTimeout(render, 400); return; }
+      communityHeatLayersRef.current.forEach(r => r.remove());
+      communityHeatLayersRef.current = [];
+      if (!showCommunityHeat) return;
+      const cells = communityHeatmap?.cells ?? [];
+      const CELL_DEG = 500 / 111_320; // ~500m en degrés lat, approximation aussi pour lng
+      cells.forEach((cell: any) => {
+        const color = CONTEXT_COLOR[cell.dominant_context] || "#22c55e";
+        const bounds: [[number, number], [number, number]] = [
+          [cell.lat - CELL_DEG / 2, cell.lng - CELL_DEG / 2],
+          [cell.lat + CELL_DEG / 2, cell.lng + CELL_DEG / 2],
+        ];
+        const rect = L.rectangle(bounds, {
+          color,
+          weight: 1,
+          fillColor: color,
+          // Opacité pondérée par fraîcheur (signal frais = plus visible) et intensité.
+          fillOpacity: Math.max(0.08, Math.min(0.55, cell.freshness * 0.5 * (cell.intensity / 2))),
+          opacity: Math.max(0.2, cell.freshness),
+          interactive: true,
+        }).addTo(mapInstance.current);
+        rect.bindTooltip(
+          `${cell.count} signalement${cell.count > 1 ? "s" : ""} · ${cell.dominant_context} · fraîcheur ${Math.round(cell.freshness * 100)}%`,
+          { direction: "top", sticky: true }
+        );
+        communityHeatLayersRef.current.push(rect);
+      });
+    };
+    render();
+  }, [showCommunityHeat, communityHeatmap]);
 
   // ── Markers événements PredictHQ actifs (rank-based, pulsant) ───────────────
   // Place un marker à la position lat/lng de chaque event actif. Si l'event n'a
@@ -841,6 +895,24 @@ export default function MapPage() {
             <RouteSourceBadge source={etaSource} size="xs" />
           </div>
 
+          {/* ─── Couche Communautaire : toggle "Chaleur communauté" (heatmap H3-like) ─── */}
+          <button
+            type="button"
+            onClick={() => setShowCommunityHeat((v) => !v)}
+            data-testid="button-toggle-community-heat"
+            aria-pressed={showCommunityHeat}
+            className={`absolute top-14 right-3 z-[1000] flex items-center gap-1.5 rounded-lg backdrop-blur px-2.5 py-2 border transition-colors ${showCommunityHeat ? "bg-orange-500/90 border-orange-300/50 text-white" : "bg-black/75 border-white/10 text-white/70"}`}
+            style={{ minHeight: 44 }}
+          >
+            <Flame size={14} />
+            <span className="text-[10px] font-semibold">Chaleur communauté</span>
+          </button>
+
+          {/* ─── Couche Communautaire : carte "À éviter" (coin supérieur gauche, desktop) ─── */}
+          <div className="hidden sm:block absolute top-14 left-3 z-[1000] w-64">
+            <AvoidZonesCard onSelectZone={(zoneId) => focusZone(zoneId)} />
+          </div>
+
           {/* ─── Bouton mode conduite :
                Mobile  → FAB flottant bottom-right (fixed) au-dessus nav bottom
                Desktop → bouton coin supérieur gauche (sticky dans la carte) ─── */}
@@ -978,8 +1050,8 @@ export default function MapPage() {
                       </div>
                     )}
 
-                    {/* ─── Levier 9 : Signalement communautaire zone ────────── */}
-                    <ZoneSignalPanel zoneId={selectedZone.zone.id} />
+                    {/* ─── Couche Communautaire : signalement enrichi + fil des signaux ────────── */}
+                    <ZoneChat zoneId={selectedZone.zone.id} />
 
                     <button className="text-xs text-muted-foreground mt-2 hover:text-foreground" onClick={() => setSelectedZone(null)}>Fermer</button>
                   </CardContent>
