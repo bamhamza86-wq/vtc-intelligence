@@ -31,6 +31,7 @@ import { Flame } from "lucide-react";
 import StationOverlay from "@/components/StationOverlay";
 // ─── Couche UX Avancée (Itération 3) : calque bornes de recharge électrique (§6.4) ───
 import { ChargingStationsMap } from "@/components/ChargingStationsMap";
+import EventEndingBanner from "@/components/EventEndingBanner";
 import { BatteryCharging } from "lucide-react";
 
 const COLORS = { ultraHigh: "#22c55e", high: "#86efac", medium: "#fbbf24", low: "#f97316", veryLow: "#ef4444" };

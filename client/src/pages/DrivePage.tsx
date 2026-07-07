@@ -33,6 +33,7 @@ import { DriveTimer } from "@/components/DriveTimer";
 import { EmergencyButton } from "@/components/EmergencyButton";
 import { useSwipeAcceptRefuse } from "@/hooks/useSwipeAcceptRefuse";
 import { Check, XCircle } from "lucide-react";
+import EventEndingBanner from "@/components/EventEndingBanner";
 
 function fmtCountdown(minutes: number): string {
   if (minutes < 60) return `${minutes} min`;
