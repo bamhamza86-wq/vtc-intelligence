@@ -7,7 +7,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { useRef, useState } from "react";
-import { useLocation } from "wouter";
+import { useHashLocation } from "wouter/use-hash-location";
 import { Mic, MicOff, MapPin, AlertTriangle, Coffee, X, Zap, Radio } from "lucide-react";
 import { haptic, alert as hapticAlert, fatigue as hapticFatigue, tapLeft as hapticTapLeft, tapRight as hapticTapRight } from "@/lib/haptics";
 import { setVoiceMode, isVoiceEnabled, speak } from "@/lib/voice";
@@ -20,7 +20,7 @@ import { useVoiceCommand } from "@/hooks/useVoiceCommand";
 const FAB_HINT_KEY = "vtc.fabHintShown";
 
 export default function QuickActionBar() {
-  const [location, navigate] = useLocation();
+  const [location, navigate] = useHashLocation();
   const [open, setOpen] = useState(false);
   const [voiceOn, setVoiceOn] = useState(isVoiceEnabled());
   const { isSupported: voiceCmdSupported, isListening, start: startListening, stop: stopListening } = useVoiceCommand();

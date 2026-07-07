@@ -15,11 +15,19 @@ import { API_BASE, getAuthToken } from "@/lib/queryClient";
 import { speak } from "@/lib/voice";
 import { opportunity } from "@/lib/haptics";
 
-interface WeatherPayload {
+interface WeatherCondition {
   condition?: string;
   precipitation_mm?: number;
   will_rain_next_hour?: boolean;
   description?: string;
+}
+
+interface WeatherPayload {
+  condition?: WeatherCondition | string;
+  precipitation_mm?: number;
+  will_rain_next_hour?: boolean;
+  description?: string;
+  zones_impacted?: string[];
 }
 
 const LS_LAST_ALERT = "vtc.weather.lastAlert";
@@ -41,10 +49,16 @@ export default function WeatherAlert() {
     },
   });
 
+  // API can return either flat payload or nested { condition: {...}, zones_impacted }
+  const cond =
+    data && typeof data.condition === "object" && data.condition !== null
+      ? (data.condition as WeatherCondition)
+      : (data as WeatherCondition | undefined);
+  const conditionStr = typeof data?.condition === "string" ? data.condition : cond?.condition ?? "";
   const willRain =
-    data?.will_rain_next_hour === true ||
-    (data?.precipitation_mm != null && data.precipitation_mm > 0.5) ||
-    (data?.condition || "").toLowerCase().match(/rain|storm|shower|drizzle|pluie|orage/);
+    cond?.will_rain_next_hour === true ||
+    (cond?.precipitation_mm != null && cond.precipitation_mm > 0.5) ||
+    (typeof conditionStr === "string" && conditionStr.toLowerCase().match(/rain|storm|shower|drizzle|pluie|orage/));
 
   useEffect(() => {
     if (!willRain || announcedRef.current || dismissed) return;

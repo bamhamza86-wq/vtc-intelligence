@@ -8,7 +8,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { useEffect, useState, useRef } from "react";
-import { useLocation } from "wouter";
+import { useHashLocation } from "wouter/use-hash-location";
 import { useQuery } from "@tanstack/react-query";
 import { Target, ChevronRight, Zap, GripVertical } from "lucide-react";
 import { API_BASE, getAuthToken } from "@/lib/queryClient";
@@ -71,7 +71,9 @@ function ConfidenceBar({ confidence, verb }: { confidence?: number; verb: string
 }
 
 export default function FocusBubble() {
-  const [location] = useLocation();
+  // useHashLocation directement — car FocusBubble est monté hors du <Router hook={useHashLocation}>
+  // et useLocation() renverrait le pathname ("/") au lieu du hash-path ("/focus").
+  const [location] = useHashLocation();
   const { position } = useGpsPosition();
   // Vague 2 - Feature 3 : progression objectif journalier (anneau + streak)
   const { progress: dailyProgress, target: dailyTarget, currentEuros: dailyCurrentEuros, streakDays } = useDailyStreak();
@@ -81,9 +83,17 @@ export default function FocusBubble() {
   const { perfMode } = useBatteryStatus();
   const [yPos, setYPos] = useState<number>(() => {
     try {
-      return Number(localStorage.getItem(LS_Y_POS) || 0) || 200;
+      // Position par défaut : bas de l'écran, au-dessus de la nav (env. 260px du bas).
+      // Le user peut déplacer verticalement et la valeur est persistée en LS.
+      const vh = typeof window !== "undefined" ? window.innerHeight : 812;
+      const defaultY = Math.max(120, vh - 260);
+      const stored = Number(localStorage.getItem(LS_Y_POS) || 0);
+      // On accepte la valeur stockée uniquement si elle reste dans les bornes utiles
+      // (évite le hoisting sur les vieux LS qui pointaient au milieu du contenu).
+      if (stored >= 80 && stored <= vh - 120) return stored;
+      return defaultY;
     } catch {
-      return 200;
+      return 500;
     }
   });
   const [dismissed, setDismissed] = useState<boolean>(() => {
