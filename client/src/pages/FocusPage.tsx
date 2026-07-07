@@ -23,6 +23,9 @@ import { AvoidZonesCard } from "@/components/AvoidZonesCard";
 import { SimulateRideDialog } from "@/components/SimulateRideDialog";
 import { FocusAIBanner } from "@/components/FocusAIBanner";
 import { isAiDisabledToday } from "@/lib/aiToggle";
+import { MorningBriefPlayer } from "@/components/MorningBriefPlayer";
+import { SilenceRadioBadge } from "@/components/SilenceRadioBadge";
+import { RefuseSuggestionCard } from "@/components/RefuseSuggestionCard";
 
 // Voice module (Lot B) — import défensif, peut ne pas être présent en dev
 async function tryVoice(text: string) {
@@ -252,8 +255,14 @@ export default function FocusPage() {
       {/* ─── Couche ML Personnel : bannière « pas d'IA aujourd'hui » ─── */}
       <FocusAIBanner />
 
+      {/* ─── Couche Wow Factor : brief vocal matinal ─── */}
+      <MorningBriefPlayer />
+
       {/* Rythme du shift en haut */}
       <ShiftRhythm />
+
+      {/* ─── Couche Wow Factor : silence radio recommandé ─── */}
+      <SilenceRadioBadge zoneId={reco.zoneId} hour={new Date().getHours()} />
 
       {/* Carte de mission — centre visuel */}
       <div className={`flex-1 rounded-3xl border border-white/10 bg-gradient-to-br ${gradient} p-5 text-white shadow-xl flex flex-col`}>
@@ -376,6 +385,9 @@ export default function FocusPage() {
       <StationOverlay />
       {/* ─── Couche Communautaire : toast "zone en train de se vider" ─── */}
       <ZoneEmptyingToast />
+
+      {/* ─── Couche Wow Factor : refus de course intelligent ─── */}
+      <RefuseSuggestionCard />
     </div>
   );
 }

@@ -29,7 +29,7 @@ import {
 import { getFlightData, getFlightBoostForZone } from "./flightService";
 import * as wowEngine from "./wowEngine";
 import * as safetyEngine from "./safetyEngine";
-import { getSncfSignals, getZoneSncfBoost, GARE_ZONE_MAPPING } from "./sncfService";
+import { getSncfSignals, getZoneSncfBoost, GARE_ZONE_MAPPING, getSncfSignalsSync } from "./sncfService";
 import { getCurrentWeather, getCachedWeather } from "./weatherService";
 import {
   testTomTomConnection,
@@ -51,6 +51,18 @@ import {
 import * as economicsEngine from "./economicsEngine";
 import * as taxConstants from "./taxConstants";
 import * as focusEngineStatic from "./focusEngine";
+// ─── Couche Communauté (réputation, anti-troll, signaux enrichis, heatmap, avoid-zones, convergence) ───
+import {
+  recordEnrichedSignal,
+  computeImpactForZone,
+  computeFreshRatio,
+  getReputationSummary,
+  getHeatmap,
+  getAvoidZones,
+  getRecentSignals,
+  requestConvergenceSlot,
+  type SignalContext,
+} from "./communityEngine";
 
 // Helper boost combiné flight × PredictHQ, plafonné à 2.5× au total.
 function combinePredictHQBoost(flightBoost: number, phqBoost: number): number {
@@ -760,24 +772,95 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     res.json({ zone_ids: Array.from(ids) });
   });
 
-  // ─── Levier 9 : Signalement communautaire ─────────────────────────────────────
-  // POST /api/zones/:id/signal — remontée terrain 1-tap (positif/négatif), validité 30 min.
+  // ─── Levier 9 + Couche Communautaire : Signalement communautaire enrichi ─────
+  // POST /api/zones/:id/signal — remontée terrain (type + intensité + contexte + commentaire court)
+  const VALID_CONTEXTS = new Set(["surge", "dead", "traffic", "event", "safety", "wc", "charging"]);
   app.post("/api/zones/:id/signal", requireAuth, (req, res) => {
     const zoneId = String(req.params.id);
-    const { type } = req.body ?? {};
+    const { type, intensity, context, comment } = req.body ?? {};
     if (type !== "positive" && type !== "negative") return res.status(400).json({ error: "invalid_type" });
-    const userId = (req as any).user?.id || "anon";
-    storage.recordCommunitySignal(zoneId, type, userId);
-    const impact = storage.getCommunityImpact(zoneId);
+    if (context !== undefined && context !== null && !VALID_CONTEXTS.has(String(context))) {
+      return res.status(400).json({ error: "invalid_context" });
+    }
+    const userId = getCurrentUsername(req);
+    const result = recordEnrichedSignal({
+      zoneId,
+      userId,
+      type,
+      intensity: typeof intensity === "number" ? intensity : undefined,
+      context: context as SignalContext | undefined,
+      commentShort: typeof comment === "string" ? comment : undefined,
+    });
+    if (!result.ok) {
+      return res.status(result.status).json({ error: result.error, retry_after_sec: result.retryAfterSec });
+    }
+    // NB : recordEnrichedSignal() écrit déjà dans community_signals (table unique,
+    // partagée avec l'ancien format) — pas de double écriture ici pour éviter les doublons.
     // Wow factor : easter egg « premier signalement communautaire » (couche 15.5)
     try { wowEngine.unlockFirstCommunitySignalAchievement(); } catch { /* non bloquant */ }
-    res.json({ ok: true, impact: impact.get(zoneId) || null, _ts: Date.now() });
+    res.json({ ok: true, impact: result.impact, fresh_ratio: result.fresh_ratio, reputation: result.reputation, _ts: Date.now() });
   });
 
   // GET /api/community/impact — map de tous les impacts communautaires actifs.
   app.get("/api/community/impact", requireAuth, (_req, res) => {
     const map = storage.getCommunityImpact();
     res.json({ impacts: Object.fromEntries(map), _ts: Date.now() });
+  });
+
+  // GET /api/community/me/reputation — karma, trust_level, stats du contributeur courant.
+  app.get("/api/community/me/reputation", requireAuth, (req, res) => {
+    const userId = getCurrentUsername(req);
+    res.json(getReputationSummary(userId));
+  });
+
+  // GET /api/community/heatmap?bbox=latMin,latMax,lngMin,lngMax — grille 500m communautaire.
+  app.get("/api/community/heatmap", requireAuth, (req, res) => {
+    try {
+      let bbox: { latMin: number; latMax: number; lngMin: number; lngMax: number } | undefined;
+      const raw = req.query.bbox;
+      if (typeof raw === "string") {
+        const parts = raw.split(",").map(Number);
+        if (parts.length === 4 && parts.every((n) => Number.isFinite(n))) {
+          bbox = { latMin: parts[0], latMax: parts[1], lngMin: parts[2], lngMax: parts[3] };
+        }
+      }
+      const cells = getHeatmap(bbox);
+      res.json({ cells, _ts: Date.now() });
+    } catch (e: any) {
+      res.status(500).json({ error: "heatmap_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // GET /api/community/avoid-zones?limit=N — top zones à éviter (safety + dead agrégés).
+  app.get("/api/community/avoid-zones", requireAuth, (req, res) => {
+    try {
+      const limit = Math.max(1, Math.min(20, Number(req.query.limit) || 5));
+      res.json({ zones: getAvoidZones(limit), _ts: Date.now() });
+    } catch (e: any) {
+      res.status(500).json({ error: "avoid_zones_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // GET /api/community/zones/:id/recent?limit=N — 5 derniers signaux d'une zone (ZoneChat).
+  app.get("/api/community/zones/:id/recent", requireAuth, (req, res) => {
+    try {
+      const zoneId = String(req.params.id);
+      const limit = Math.max(1, Math.min(20, Number(req.query.limit) || 5));
+      res.json({ signals: getRecentSignals(zoneId, limit), _ts: Date.now() });
+    } catch (e: any) {
+      res.status(500).json({ error: "recent_signals_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // POST /api/community/zones/:id/convergence — anti-cannibalisation (plafond 8 chauffeurs/zone).
+  app.post("/api/community/zones/:id/convergence", requireAuth, (req, res) => {
+    try {
+      const zoneId = String(req.params.id);
+      const userId = getCurrentUsername(req);
+      res.json(requestConvergenceSlot(zoneId, userId));
+    } catch (e: any) {
+      res.status(500).json({ error: "convergence_error", message: e?.message || "unknown" });
+    }
   });
 
   // ─── Levier 7 : Fiabilité du modèle sur J-7 (MAE/RMSE/biais + score 0-100) ───
@@ -965,6 +1048,20 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   app.get("/api/driver-profile", (_req, res) => { res.json(storage.getDriverProfile() || null); });
 
   app.put("/api/driver-profile", (req, res) => { res.json(storage.updateDriverProfile(req.body)); });
+
+  // ─── Couche Wow Factor : toggle gamification isolé (RGPD ─ 100% facultatif) ───
+  // Endpoint dédié (plutôt que d'étendre updateDriverProfile) pour ne pas toucher
+  // au whitelist de colonnes existant dans storage.ts.
+  app.put("/api/wow/gamification-toggle", (req, res) => {
+    try {
+      const enabled = Boolean(req.body?.enabled);
+      wowEngine.setGamificationEnabled(enabled);
+      res.json({ success: true, enabled });
+    } catch (err) {
+      console.error("[wow/gamification-toggle] error:", err);
+      res.status(500).json({ error: String(err) });
+    }
+  });
 
   // ─── Platform credentials ────────────────────────────────────────────────────
   app.get("/api/platforms/credentials", (_req, res) => {
@@ -3304,7 +3401,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       const startIso = startOfDay.toISOString();
       const rides = (sseService as any); // placeholder pour éviter warning inutile
       // Utilise storage direct (better-sqlite3)
-      const { storage: st } = require("./storage") as typeof import("./storage");
+      const st = storage;
       const profile: any = st.getDriverProfile();
       const targetEur = Number(profile?.hourly_target_income ?? 35) * 8; // objectif 8h
       // Compte rides depuis minuit
@@ -3370,7 +3467,6 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       const nextArrivals: { time: string; source: "flight" | "train"; label: string }[] = [];
       try {
         if (inside.kind === "airport") {
-          const { getFlightData } = require("./flightService") as typeof import("./flightService");
           const fd = await getFlightData();
           const arr = fd?.arrivals ?? [];
           const now = Date.now();
@@ -3388,7 +3484,6 @@ export function registerRoutes(httpServer: Server, app: Express): void {
             }
           });
         } else {
-          const { getSncfSignalsSync } = require("./sncfService") as typeof import("./sncfService");
           const now = new Date();
           const stats = getSncfSignalsSync(now.getHours());
           const signals = stats?.signals ?? [];
@@ -3405,7 +3500,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       // Zones de récupération recommandées (top 3 zones scored ≠ aéroport/gare de départ)
       const dropoffs: string[] = [];
       try {
-        const { storage: st } = require("./storage") as typeof import("./storage");
+        const st = storage;
         const nowD = new Date();
         const hour = (nowD.getUTCHours() + 2) % 24;
         const dayType = [0, 6].includes(nowD.getDay()) ? "weekend" : "weekday";
@@ -3441,7 +3536,7 @@ export function registerRoutes(httpServer: Server, app: Express): void {
       const start = new Date(year, mon - 1, 1).toISOString();
       const end = new Date(year, mon, 1).toISOString();
 
-      const { storage: st } = require("./storage") as typeof import("./storage");
+      const st = storage;
       const allRides: any[] = (st as any).getRides ? (st as any).getRides(5000) : [];
       const monthRides = allRides.filter((r) => r.timestamp && r.timestamp >= start && r.timestamp < end);
 

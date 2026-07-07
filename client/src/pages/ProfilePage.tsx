@@ -23,6 +23,9 @@ import { isSilentModeActive, setSilentModeFor, clearSilentMode, getSilentModeUnt
 import { AmberNightToggle } from "@/components/AmberNightToggle";
 import { isAiDisabledToday, enableAiDisabledToday, disableAiDisabledToday } from "@/lib/aiToggle";
 import { BrainCircuit } from "lucide-react";
+import { StreakBadge } from "@/components/StreakBadge";
+import { QuestsCard } from "@/components/QuestsCard";
+import { Gamepad2 } from "lucide-react";
 
 const ZONES_93 = [
   { id: "z_cdg", name: "CDG" }, { id: "z_orly", name: "Orly" },
@@ -56,6 +59,8 @@ export default function ProfilePage() {
   const [silentModeOn, setSilentModeOn] = useState<boolean>(() => isSilentModeActive());
   // ── Couche ML Personnel — mode « pas d'IA aujourd'hui » ────────────────
   const [aiDisabledOn, setAiDisabledOn] = useState<boolean>(() => isAiDisabledToday());
+  // Couche Wow Factor — toggle gamification (RGPD, 100% facultatif)
+  const [gamificationOn, setGamificationOn] = useState<boolean>(true);
   const [form, setForm] = useState<any>({ fuelConsumptionPer100km: 7, fuelPricePerLiter: 1.85, platformCommissionPct: 25, hourlyTargetIncome: 35, wearCostPerKm: 0.08, vehicleType: "berline", preferLongRides: true,
     preferredZones: [], workHoursStart: 6, workHoursEnd: 22, avoidHighway: false, vehicleBrand: "", vehicleModel: "", vehicleYear: 2020, totalKmDriven: 0,
     // Couche Économie & Fiscalité (additif) — coût réel du véhicule tout inclus
@@ -77,6 +82,7 @@ export default function ProfilePage() {
   useEffect(() => {
     if (!profile) return;
     const p: any = profile;
+    setGamificationOn(p.gamification_enabled === undefined ? true : Boolean(p.gamification_enabled));
     let pref: string[] = [];
     try { pref = Array.isArray(p.preferred_zones) ? p.preferred_zones : JSON.parse(p.preferred_zones ?? "[]"); } catch { pref = []; }
     setForm({
@@ -534,6 +540,46 @@ export default function ProfilePage() {
           <p className="text-[10px] text-muted-foreground">
             Visible sous forme d'anneau de progression autour de la bulle Focus.
           </p>
+        </CardContent>
+      </Card>
+
+      {/* Couche Wow Factor : série active + quêtes de la semaine */}
+      {gamificationOn && (
+        <div className="space-y-4">
+          <StreakBadge />
+          <QuestsCard />
+        </div>
+      )}
+
+      {/* Couche Wow Factor : toggle gamification (RGPD — 100% facultatif) */}
+      <Card className="border-slate-500/30 bg-slate-500/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Gamepad2 size={14} className="text-slate-400" />
+            Gamification
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 px-4 pb-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <Gamepad2 size={16} className="text-slate-300 shrink-0" />
+              <div className="min-w-0">
+                <div className="text-sm font-medium">Désactiver gamification</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Masque séries, quêtes, records et succès. Aucune récompense monétaire n'est jamais impliquée.
+                </div>
+              </div>
+            </div>
+            <Switch
+              checked={gamificationOn}
+              onCheckedChange={(val) => {
+                setGamificationOn(val);
+                apiRequest("PUT", "/api/wow/gamification-toggle", { enabled: val });
+                toast({ title: val ? "Gamification activée" : "Gamification désactivée" });
+              }}
+              data-testid="switch-gamification-enabled"
+            />
+          </div>
         </CardContent>
       </Card>
 

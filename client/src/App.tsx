@@ -20,6 +20,7 @@ import DrivePage from "./pages/DrivePage";
 import EconomicsDashboard from "./pages/EconomicsDashboard";
 import FocusPage from "./pages/FocusPage";
 import TaxJournalPage from "./pages/TaxJournalPage";
+import PlatformsPage from "./pages/PlatformsPage";
 import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/not-found";
 import { registerServiceWorker } from "./lib/pwa";
@@ -33,6 +34,8 @@ import OfflineBanner from "./components/OfflineBanner";
 import EcoScoreTracker from "./components/EcoScoreTracker";
 import DeadZoneAlert from "./components/DeadZoneAlert";
 import EndOfShiftModal from "./components/EndOfShiftModal";
+import AchievementsPage from "./pages/AchievementsPage";
+import RecordAlertToast from "./components/RecordAlertToast";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // AuthGuard — checks /api/auth/me on mount, shows LoginPage if not authenticated
@@ -156,8 +159,10 @@ export default function App() {
                 <Route path="/alerts" component={AlertsPage} />
                 <Route path="/economics" component={EconomicsDashboard} />
                 <Route path="/sources" component={DataSourcesPage} />
+                <Route path="/platforms" component={PlatformsPage} />
                 <Route path="/profile" component={ProfilePage} />
                 <Route path="/ml-insights" component={MLInsightsPage} />
+                <Route path="/achievements" component={AchievementsPage} />
                 <Route component={NotFound} />
               </Switch>
             </Layout>
@@ -168,6 +173,8 @@ export default function App() {
           <EcoScoreTracker />
           <DeadZoneAlert />
           <EndOfShiftModal />
+          {/* ─── Couche Wow Factor : alerte "proche du record" (type=record_hunt) ─── */}
+          <RecordAlertToast />
           <BatteryAwareMode />
           <AutoSunsetTheme />
         </AuthGuard>

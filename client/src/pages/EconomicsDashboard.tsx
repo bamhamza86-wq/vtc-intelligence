@@ -23,6 +23,7 @@ import {
   Wallet, ShieldAlert, Flag, Sparkles,
 } from "lucide-react";
 import { DailyGoalBar } from "@/components/DailyGoalBar";
+import { WhatIfYesterday } from "@/components/WhatIfYesterday";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Types — l'API SQLite renvoie majoritairement du snake_case.
@@ -878,6 +879,9 @@ export default function EconomicsDashboard() {
       <div className="flex justify-end">
         <TomTomStatusPill />
       </div>
+
+      {/* ─── Couche Wow Factor : simulation rétrospective "et si vous aviez suivi l'IA" ─── */}
+      <WhatIfYesterday />
 
       {/* Header — mobile : stack vertical */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">

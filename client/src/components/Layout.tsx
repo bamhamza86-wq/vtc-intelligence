@@ -37,8 +37,11 @@ import {
   Database,
   FileText,
   Brain,
+  Layers,
+  Trophy,
 } from "lucide-react";
 import { DaySignalBadge } from "@/components/DaySignalBadge";
+import { StreakBadge } from "@/components/StreakBadge";
 import { LiveIndicator } from "@/components/LiveIndicator";
 import { TomTomStatusPill } from "@/components/TomTomStatusPill";
 import { useLiveRefresh } from "@/hooks/useLiveRefresh";
@@ -60,9 +63,11 @@ const moreMenuItems = [
   { path: "/best-route",  label: "Trajet",    icon: Navigation },
   { path: "/smart-plan",  label: "Planning",  icon: Target     },
   { path: "/tax",         label: "Fiscal",    icon: FileText   },
+  { path: "/platforms",   label: "Plateformes", icon: Layers   },
   { path: "/simulator",   label: "Simulator", icon: Cpu        },
   { path: "/sources",     label: "Sources",   icon: Database   },
   { path: "/ml-insights", label: "Insights IA", icon: Brain    },
+  { path: "/achievements", label: "Succès",    icon: Trophy     },
   { path: "/profile",     label: "Profil",    icon: User       },
 ];
 
@@ -217,6 +222,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <div className="flex sm:hidden">
               <TomTomStatusPill compact />
             </div>
+            {/* Couche Wow Factor : série quotidienne (streak) compacte dans le header */}
+            <StreakBadge compact />
             {/* Indicateur LIVE/STALE fraîcheur GPS */}
             <div className="hidden sm:flex">
               <LiveIndicator />

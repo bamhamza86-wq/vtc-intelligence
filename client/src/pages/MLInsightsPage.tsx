@@ -15,6 +15,7 @@ import {
   Brain, Sparkles, TrendingUp, TrendingDown, AlertTriangle, MapPin,
   CheckCircle2, XCircle, Gauge, CloudRain, CalendarClock,
 } from "lucide-react";
+import { SelfSabotageInsight } from "@/components/SelfSabotageInsight";
 
 interface PatternResult {
   pattern_type: "weekday_hour_hotspot" | "weather_boost" | "event_hotspot";
@@ -237,6 +238,11 @@ export default function MLInsightsPage() {
             </CardContent>
           </Card>
         )}
+      </section>
+
+      {/* ─── Couche Wow Factor : détection auto-sabotage économique ─── */}
+      <section className="px-4 mt-5">
+        <SelfSabotageInsight />
       </section>
 
       {/* ─── Section : Prochaine meilleure zone selon IA ─────────────────── */}

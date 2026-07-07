@@ -36,6 +36,11 @@ const DEFAULT_USER_ID = "driver_default";
 // SQLite ne supporte pas ADD COLUMN IF NOT EXISTS → try/catch, motif déjà utilisé ailleurs dans storage.ts.
 try { sqlite.exec("ALTER TABLE driver_profile ADD COLUMN gamification_enabled INTEGER DEFAULT 1"); } catch { /* colonne déjà présente */ }
 
+/** Bascule le toggle RGPD « Désactiver gamification » (100% facultatif, jamais bloquant). */
+export function setGamificationEnabled(enabled: boolean): void {
+  sqlite.prepare("UPDATE driver_profile SET gamification_enabled=? WHERE id=(SELECT id FROM driver_profile LIMIT 1)").run(enabled ? 1 : 0);
+}
+
 // ─── Schéma DB ──────────────────────────────────────────────────────────────
 
 sqlite.exec(`
