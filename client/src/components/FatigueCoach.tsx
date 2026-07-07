@@ -18,6 +18,7 @@ import { useHashLocation } from "wouter/use-hash-location";
 import { useQuery } from "@tanstack/react-query";
 import { Moon, X, Coffee } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
+import { ls } from "@/lib/storage";
 
 interface MicrosleepRisk {
   risk: number;
@@ -44,7 +45,7 @@ const URGENCY_STYLE: Record<CoachMessage["urgency"], { bg: string; border: strin
 
 function getDismissTs(): number {
   try {
-    return Number(localStorage.getItem(LS_DISMISS_TS) || 0);
+    return Number(ls.getItem(LS_DISMISS_TS) || 0);
   } catch {
     return 0;
   }
@@ -52,7 +53,7 @@ function getDismissTs(): number {
 
 function setDismissTs(ts: number) {
   try {
-    localStorage.setItem(LS_DISMISS_TS, String(ts));
+    ls.setItem(LS_DISMISS_TS, String(ts));
   } catch {
     // ignore
   }

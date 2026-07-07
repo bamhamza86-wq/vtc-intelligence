@@ -39,6 +39,18 @@ import DeadZoneAlert from "./components/DeadZoneAlert";
 import EndOfShiftModal from "./components/EndOfShiftModal";
 import AchievementsPage from "./pages/AchievementsPage";
 import RecordAlertToast from "./components/RecordAlertToast";
+import FatiguePage from "./pages/FatiguePage";
+import FatigueCoach from "./components/FatigueCoach";
+import { useTelemetry } from "./hooks/useTelemetry";
+
+// ──────────────────────────────────────────────────────────────────────────────
+// FatigueTelemetryCollector — wrapper invisible autour de useTelemetry()
+// Capture passive des proxys comportementaux pour le Fatigue Coach (aucun rendu).
+// ──────────────────────────────────────────────────────────────────────────────
+function FatigueTelemetryCollector() {
+  useTelemetry(true);
+  return null;
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // AuthGuard — checks /api/auth/me on mount, shows LoginPage if not authenticated

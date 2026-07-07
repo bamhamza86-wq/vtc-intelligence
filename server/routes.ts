@@ -8,6 +8,8 @@ import { requireAuth, getCurrentUsername } from "./auth";
 import * as mlPersonal from "./mlPersonal";
 // ─── Couche RL (bandit Thompson) + Federated Learning-lite (Itération 3) ───
 import { mlAdvancedRouter } from "./mlAdvanced";
+// ─── Couche Fatigue Coach avancé + détection micro-sommeil sans caméra (rapport.md §5, §2) ───
+import * as fatigueCoach from "./fatigueCoach";
 // ← H2 : fusion adaptative multi-sources (TomTom + PHQ + vols + seeds)
 import {
   fusionSignals,
@@ -4160,6 +4162,124 @@ export function registerRoutes(httpServer: Server, app: Express): void {
     }
   });
   // ─── /COUCHE ÉCONOMIE & FISCALITÉ ───
+  // ─── COUCHE FATIGUE COACH AVANCÉ + DÉTECTION MICRO-SOMMEIL (rapport.md §5, §2) ───
+  // Aucune caméra, aucune nouvelle dépendance npm. Proxys comportementaux uniquement
+  // (tap latency, swipe jerk, variance gyro/accélo, temps de décision, cycle nyctéméral).
+
+  // POST /api/fatigue/telemetry — body { points: [{ts, tap_latency_ms, swipe_jerk, accel_variance, gyro_variance, decision_time_ms, correction_ratio}] }
+  app.post("/api/fatigue/telemetry", requireAuth, (req, res) => {
+    try {
+      const username = fatigueCoach.DEFAULT_USER;
+      const body = req.body as { points?: fatigueCoach.TelemetryPoint[] } | fatigueCoach.TelemetryPoint;
+      const points: fatigueCoach.TelemetryPoint[] = Array.isArray((body as any)?.points)
+        ? (body as any).points
+        : [body as fatigueCoach.TelemetryPoint];
+      if (!points.length) {
+        return res.status(400).json({ error: "points requis (array non vide)" });
+      }
+      const result = fatigueCoach.ingestTelemetry(username, points);
+      res.json(result);
+    } catch (e: any) {
+      console.error("[fatigue/telemetry] error:", e);
+      res.status(500).json({ error: "fatigue_telemetry_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // GET /api/fatigue/microsleep-risk
+  app.get("/api/fatigue/microsleep-risk", requireAuth, (req, res) => {
+    try {
+      const username = fatigueCoach.DEFAULT_USER;
+      res.json(fatigueCoach.computeMicrosleepRisk(username));
+    } catch (e: any) {
+      console.error("[fatigue/microsleep-risk] error:", e);
+      res.status(500).json({ error: "microsleep_risk_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // GET /api/fatigue/coach-message
+  app.get("/api/fatigue/coach-message", requireAuth, (req, res) => {
+    try {
+      const username = fatigueCoach.DEFAULT_USER;
+      res.json(fatigueCoach.getCoachMessage(username));
+    } catch (e: any) {
+      console.error("[fatigue/coach-message] error:", e);
+      res.status(500).json({ error: "coach_message_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // POST /api/fatigue/rest-taken — body { duration_min, break_type }
+  app.post("/api/fatigue/rest-taken", requireAuth, (req, res) => {
+    try {
+      const username = fatigueCoach.DEFAULT_USER;
+      const { duration_min, break_type } = req.body as { duration_min?: number; break_type?: string };
+      if (typeof duration_min !== "number" || duration_min <= 0) {
+        return res.status(400).json({ error: "duration_min requis (number > 0)" });
+      }
+      const result = fatigueCoach.recordRestTaken(username, duration_min, break_type || "courte");
+      res.json(result);
+    } catch (e: any) {
+      console.error("[fatigue/rest-taken] error:", e);
+      res.status(500).json({ error: "rest_taken_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // GET /api/fatigue/rest-history
+  app.get("/api/fatigue/rest-history", requireAuth, (req, res) => {
+    try {
+      const username = fatigueCoach.DEFAULT_USER;
+      res.json({ history: fatigueCoach.getRestHistory(username) });
+    } catch (e: any) {
+      console.error("[fatigue/rest-history] error:", e);
+      res.status(500).json({ error: "rest_history_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // GET /api/fatigue/personal-curve
+  app.get("/api/fatigue/personal-curve", requireAuth, (req, res) => {
+    try {
+      const username = fatigueCoach.DEFAULT_USER;
+      res.json(fatigueCoach.getPersonalCurve(username));
+    } catch (e: any) {
+      console.error("[fatigue/personal-curve] error:", e);
+      res.status(500).json({ error: "personal_curve_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // POST /api/fatigue/reaction-test — body { latency_ms, latency_std_ms?, hits, misses }
+  app.post("/api/fatigue/reaction-test", requireAuth, (req, res) => {
+    try {
+      const username = fatigueCoach.DEFAULT_USER;
+      const { latency_ms, latency_std_ms, hits, misses } = req.body as {
+        latency_ms?: number; latency_std_ms?: number; hits?: number; misses?: number;
+      };
+      if (typeof latency_ms !== "number") {
+        return res.status(400).json({ error: "latency_ms requis (number)" });
+      }
+      const result = fatigueCoach.recordReactionTest(
+        username,
+        latency_ms,
+        latency_std_ms,
+        typeof hits === "number" ? hits : 0,
+        typeof misses === "number" ? misses : 0,
+      );
+      res.json(result);
+    } catch (e: any) {
+      console.error("[fatigue/reaction-test] error:", e);
+      res.status(500).json({ error: "reaction_test_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // GET /api/fatigue/reaction-history
+  app.get("/api/fatigue/reaction-history", requireAuth, (req, res) => {
+    try {
+      const username = fatigueCoach.DEFAULT_USER;
+      res.json({ history: fatigueCoach.getReactionHistory(username) });
+    } catch (e: any) {
+      console.error("[fatigue/reaction-history] error:", e);
+      res.status(500).json({ error: "reaction_history_error", message: e?.message || "unknown" });
+    }
+  });
+  // ─── /COUCHE FATIGUE COACH AVANCÉ ───
 
   // ─── COUCHE RL (bandit Thompson) + FEDERATED LEARNING-LITE (Itération 3) ───
   // Toutes les routes du router sont préfixées /api/ml/* (requireAuth appliqué par route
