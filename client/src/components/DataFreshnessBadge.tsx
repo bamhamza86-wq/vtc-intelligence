@@ -38,6 +38,14 @@ export function DataFreshnessBadge({ ts, position = "inline" }: DataFreshnessBad
   if (ageSec > 60) dot = "bg-red-500";
   else if (ageSec >= 10) dot = "bg-orange-500";
 
+  // ─── Levier 6 (Vague 3) — indice de forme redondant à la couleur ──────────
+  // fresh = cercle plein, aging = triangle, stale = carré. Garantit la
+  // lisibilité pour les daltoniens (deutéranopie/protanopie) et sous fort
+  // ensoleillement, sans reposer uniquement sur la teinte.
+  const statusShape: "fresh" | "aging" | "stale" =
+    ageSec > 60 ? "stale" : ageSec >= 10 ? "aging" : "fresh";
+  const shapeFill = ageSec > 60 ? "#ef4444" : ageSec >= 10 ? "#f97316" : "#22c55e";
+
   const positionClass =
     position === "bottom-left"
       ? "fixed bottom-3 left-3 z-[1200]"
@@ -49,7 +57,12 @@ export function DataFreshnessBadge({ ts, position = "inline" }: DataFreshnessBad
       className={`${positionClass} items-center gap-1.5 rounded-full bg-white/90 px-2.5 py-1 text-xs font-medium text-gray-700 shadow-md backdrop-blur`}
     >
       <span className={`h-2 w-2 rounded-full ${dot}`} />
-      <span>Mis à jour il y a {ageSec}s</span>
+      <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true" className="shrink-0">
+        {statusShape === "fresh" && <circle cx="4" cy="4" r="4" fill={shapeFill} />}
+        {statusShape === "aging" && <polygon points="4,0 8,8 0,8" fill={shapeFill} />}
+        {statusShape === "stale" && <rect x="0" y="0" width="8" height="8" fill={shapeFill} />}
+      </svg>
+      <span>Mis à jour il y a <span className="tabular-nums">{ageSec}</span>s</span>
     </div>
   );
 }

@@ -361,3 +361,32 @@
 .perf-low .animate-spin {
   animation-duration: 0s !important;
 }
+
+
+/* ═════════════════════════════════════════════════════════════════════════
+ * CHIFFRES TABULAIRES — Vague 3, Levier 4 (Numeral tabular-figure lock)
+ * ─────────────────────────────────────────────────────────────────────────
+ * Empêche le micro-décalage de largeur des chiffres proportionnels (Inter)
+ * dans les compteurs qui changent chaque seconde (fraîcheur, minuteurs,
+ * montants €). Zéro dépendance : utilise la feature OpenType native.
+ * ═════════════════════════════════════════════════════════════════════════ */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ═════════════════════════════════════════════════════════════════════════
+ * REACH HINT FAB — Vague 3 - Levier 8 (One-thumb reach hint)
+ * ─────────────────────────────────────────────────────────────────────────
+ * Pulse "breathing" opacité/échelle joué une seule fois par session sur le
+ * FAB de QuickActionBar (2 itérations, ~1.6s total) pour aider à repérer sa
+ * position sans devoir le chercher visuellement. Déclenché conditionnellement
+ * via sessionStorage `vtc.fabHintShown` — jamais répété dans le même quart.
+ * ═════════════════════════════════════════════════════════════════════════ */
+@keyframes edge-pulse {
+  0%   { opacity: 1;    transform: scale(1);    box-shadow: 0 0 0 0 rgba(37,99,235,0.55); }
+  50%  { opacity: 0.75; transform: scale(1.08); box-shadow: 0 0 0 10px rgba(37,99,235,0); }
+  100% { opacity: 1;    transform: scale(1);    box-shadow: 0 0 0 0 rgba(37,99,235,0); }
+}
+.animate-edge-pulse {
+  animation: edge-pulse 0.8s ease-in-out 2;
+}

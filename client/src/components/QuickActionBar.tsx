@@ -9,9 +9,15 @@
 import { useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { Mic, MicOff, MapPin, AlertTriangle, Coffee, X, Zap, Radio } from "lucide-react";
-import { haptic, alert as hapticAlert, fatigue as hapticFatigue } from "@/lib/haptics";
+import { haptic, alert as hapticAlert, fatigue as hapticFatigue, tapLeft as hapticTapLeft, tapRight as hapticTapRight } from "@/lib/haptics";
 import { setVoiceMode, isVoiceEnabled, speak } from "@/lib/voice";
 import { useVoiceCommand } from "@/hooks/useVoiceCommand";
+
+// ── Levier 8 (Vague 3) — reach hint FAB ────────────────────────────────────
+// Affiché une seule fois par session pour aider à repérer le FAB sans le
+// chercher visuellement. Flag persisté en sessionStorage (jamais répété
+// pendant un même quart de travail).
+const FAB_HINT_KEY = "vtc.fabHintShown";
 
 export default function QuickActionBar() {
   const [location, navigate] = useLocation();
@@ -21,14 +27,32 @@ export default function QuickActionBar() {
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressTriggeredRef = useRef(false);
 
+  // ── Levier 8 (Vague 3) — reach hint FAB : pulse unique par session ─────────
+  const [showFabHint, setShowFabHint] = useState(() => {
+    try {
+      return typeof sessionStorage !== "undefined" && !sessionStorage.getItem(FAB_HINT_KEY);
+    } catch {
+      return false;
+    }
+  });
+
   // Ne pas afficher sur /login ou en mode conduite (déjà en pleine attention)
   if (location === "/login" || location === "/drive") return null;
+
+  function clearFabHint() {
+    setShowFabHint(false);
+    try {
+      sessionStorage.setItem(FAB_HINT_KEY, "1");
+    } catch {
+      // Stockage indisponible (mode privé strict) — on ignore silencieusement.
+    }
+  }
 
   function toggleVoice() {
     const next = !voiceOn;
     setVoiceOn(next);
     setVoiceMode(next ? "on" : "off");
-    haptic("tap");
+    hapticTapLeft(); // Levier 5 : colonne gauche
     if (next) speak("Voix activée", { priority: "low" });
   }
 
@@ -66,7 +90,7 @@ export default function QuickActionBar() {
     }
   }
   function myPosition() {
-    haptic("tap");
+    hapticTapRight(); // Levier 5 : colonne droite
     navigate("/");
     setOpen(false);
   }
@@ -137,9 +161,12 @@ export default function QuickActionBar() {
           haptic("tap");
           setOpen((o) => !o);
         }}
+        onAnimationEnd={() => {
+          if (showFabHint) clearFabHint();
+        }}
         aria-label="Actions rapides"
         aria-expanded={open}
-        className={`fixed right-3 z-40 rounded-full shadow-2xl active:scale-95 transition-all ${open ? "bg-rose-600" : "bg-primary"} text-white`}
+        className={`fixed right-3 z-40 rounded-full shadow-2xl active:scale-95 transition-all ${open ? "bg-rose-600" : "bg-primary"} text-white ${showFabHint ? "animate-edge-pulse" : ""}`}
         style={{
           bottom: "calc(5rem + env(safe-area-inset-bottom, 0px))",
           width: 56,

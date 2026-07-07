@@ -136,6 +136,42 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     void DRIVE_EXIT_KMH;
   }, [speedKmh, location, navigate]);
 
+  // ─── Vague 3, Levier 1 : remap zone du pouce en mode conduite ─────────────
+  // En dessous de ce seuil, la nav garde son ordre naturel (pas de conduite).
+  // À partir de ce seuil, on réorganise via `order-*` CSS pour rapprocher
+  // "Focus" (action la plus fréquente) de la zone de pouce facile, sans
+  // remonter/démonter les éléments (pas de churn de clés React).
+  const THUMB_REMAP_KMH = 10;
+  const [handedness, setHandednessLocal] = useState<"right" | "left">(() => {
+    if (typeof window === "undefined") return "right";
+    return window.localStorage.getItem("vtc.handedness") === "left" ? "left" : "right";
+  });
+  // Se resynchronise si l'utilisateur change la préférence depuis Profil pendant que Layout est monté
+  useEffect(() => {
+    function handleStorage(e: StorageEvent) {
+      if (e.key === "vtc.handedness") {
+        setHandednessLocal(e.newValue === "left" ? "left" : "right");
+      }
+    }
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+  const isDrivingForNav = speedKmh >= THUMB_REMAP_KMH;
+
+  // Ordre CSS des 3 onglets principaux (Focus / Alertes / Éco) selon le mode :
+  //   - Repos : ordre naturel (Focus, Alertes, Éco)
+  //   - Conduite + droitier : Focus en position 2 depuis la droite (avant «Plus»)
+  //   - Conduite + gaucher  : Focus en position 2 depuis la gauche
+  const navOrder: Record<string, number> = isDrivingForNav
+    ? handedness === "left"
+      ? { "/focus": 2, "/alerts": 1, "/economics": 3 }
+      : { "/focus": 3, "/alerts": 1, "/economics": 2 }
+    : { "/focus": 1, "/alerts": 2, "/economics": 3 };
+  // Classes Tailwind statiques (le JIT ne détecte pas les classes construites
+  // dynamiquement via template string, d'où cette table de correspondance).
+  const ORDER_CLASS: Record<number, string> = { 1: "order-1", 2: "order-2", 3: "order-3" };
+
+
   // ─── Calcul si un item du menu Plus est actif ──────────────────────────────
   const isMoreActive = moreMenuItems.some(item => location === item.path);
 
@@ -219,11 +255,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           {primaryNavItems.map(({ path, label, icon: Icon }) => {
             const isActive = location === path;
             const isAlerts = path === "/alerts";
+            // Vague 3, Levier 1 : ordre visuel remappé en mode conduite (zone du pouce)
+            const orderClass = ORDER_CLASS[navOrder[path]] || "";
             return (
               <Link
                 key={path}
                 href={path}
-                className={`flex flex-col items-center justify-center gap-1 min-h-[56px] text-[11px] transition-colors relative ${
+                className={`flex flex-col items-center justify-center gap-1 min-h-[56px] text-[11px] transition-colors relative ${orderClass} ${
                   isActive ? "text-primary font-medium" : "text-muted-foreground hover:text-foreground"
                 }`}
                 data-testid={`link-nav-${label.toLowerCase()}`}
@@ -251,7 +289,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           })}
 
           {/* ── Bouton « Plus » ──────────────────────────────────────────── */}
-          <div ref={moreRef} className="relative flex flex-col items-center justify-center">
+          <div ref={moreRef} className="relative flex flex-col items-center justify-center order-4">
             <button
               data-testid="nav-more-button"
               onClick={() => setMoreOpen(prev => !prev)}

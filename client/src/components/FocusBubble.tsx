@@ -10,7 +10,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { Target, ChevronRight, Zap } from "lucide-react";
+import { Target, ChevronRight, Zap, GripVertical } from "lucide-react";
 import { API_BASE, getAuthToken } from "@/lib/queryClient";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
 import { useDailyStreak } from "@/hooks/useDailyStreak";
@@ -39,6 +39,37 @@ const VERB_LABEL: Record<string, string> = {
   rentrer: "Rentrer",
 };
 
+// ─── Vague 3, Levier 2 : barre de confiance à 3 segments ───────────────────
+// Nombre de segments remplis selon le seuil de confiance (reco.confidence).
+function confidenceSegments(confidence?: number): number {
+  if (confidence == null) return 0;
+  if (confidence > 0.7) return 3;
+  if (confidence >= 0.4) return 2;
+  return 1;
+}
+
+/** Petite barre horizontale 3 segments (2px h, 16px w) sous le nom de zone. */
+function ConfidenceBar({ confidence, verb }: { confidence?: number; verb: string }) {
+  if (confidence == null) return null;
+  const filled = confidenceSegments(confidence);
+  const fillColor = VERB_COLOR[verb] || "bg-emerald-600";
+  return (
+    <div
+      className="flex items-center gap-0.5 mt-0.5"
+      role="img"
+      aria-label={`Confiance de la recommandation : ${filled}/3`}
+      data-testid="focus-bubble-confidence-bar"
+    >
+      {[1, 2, 3].map((seg) => (
+        <span
+          key={seg}
+          className={`inline-block h-[2px] w-[5px] rounded-full ${seg <= filled ? `${fillColor} opacity-90` : "bg-white/25"}`}
+        />
+      ))}
+    </div>
+  );
+}
+
 export default function FocusBubble() {
   const [location] = useLocation();
   const { position } = useGpsPosition();
@@ -63,6 +94,9 @@ export default function FocusBubble() {
     }
   });
   const dragRef = useRef<{ startY: number; startPos: number } | null>(null);
+  // Vague 3, Levier 3 : distance verticale totale parcourue pendant le drag,
+  // utilisée pour distinguer un tap (navigation) d'un drag (repositionnement).
+  const dragDistanceRef = useRef(0);
 
   const { data: reco } = useQuery<FocusReco | null>({
     queryKey: ["focusBubble", position.lat, position.lng],
@@ -94,6 +128,7 @@ export default function FocusBubble() {
   function onPointerDown(e: React.PointerEvent) {
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     dragRef.current = { startY: e.clientY, startPos: yPos };
+    dragDistanceRef.current = 0;
     // Vague 2 - Feature 3 : démarre le minuteur d'appui long (objectif du jour)
     if (longPressTimer.current) window.clearTimeout(longPressTimer.current);
     longPressTimer.current = window.setTimeout(() => setShowGoalDetail(true), 500);
@@ -101,6 +136,8 @@ export default function FocusBubble() {
   function onPointerMove(e: React.PointerEvent) {
     if (!dragRef.current) return;
     const dy = e.clientY - dragRef.current.startY;
+    // Vague 3, Levier 3 : accumule la distance verticale totale parcourue
+    dragDistanceRef.current = Math.abs(dy);
     const next = Math.max(80, Math.min(window.innerHeight - 200, dragRef.current.startPos + dy));
     setYPos(next);
     // Un déplacement annule l'appui long (c'est un drag, pas un long-press)
@@ -115,6 +152,16 @@ export default function FocusBubble() {
       window.clearTimeout(longPressTimer.current);
       longPressTimer.current = null;
     }
+  }
+
+  // Vague 3, Levier 3 : désambiguïsation tap/drag — delta < 6px = tap (navigation
+  // autorisée), delta >= 6px = drag (on empêche la navigation accidentelle).
+  const DRAG_THRESHOLD_PX = 6;
+  function handleNavClick(e: React.MouseEvent) {
+    if (dragDistanceRef.current >= DRAG_THRESHOLD_PX) {
+      e.preventDefault();
+    }
+    dragDistanceRef.current = 0;
   }
 
   // Vague 2 - Feature 3 : anneau de progression autour de la bulle (SVG additif)
@@ -162,28 +209,54 @@ export default function FocusBubble() {
         </div>
       )}
 
-      <a
-        href="/#/focus"
-        className={`flex items-center gap-2 pr-3 pl-2 rounded-full shadow-xl text-white font-semibold text-sm active:scale-95 transition-transform ${VERB_COLOR[reco.verb] || "bg-emerald-600"}`}
+      <div
+        className={`flex items-center rounded-full shadow-xl text-white font-semibold text-sm ${VERB_COLOR[reco.verb] || "bg-emerald-600"}`}
         style={{ minHeight: 48, touchAction: "none" }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        data-testid="focus-bubble"
-        aria-label={`Focus : ${VERB_LABEL[reco.verb]} ${reco.zoneName ?? ""}. Objectif du jour : ${Math.round(dailyProgress * 100)}%.`}
       >
-        <div className="p-2 rounded-full bg-white/20">
-          <Target size={16} />
+        {/* Vague 3, Levier 3 : poignée de glisser dédiée (24×24px), distincte de
+            la zone tappable pour éviter les faux déclenchements de navigation
+            lors d'un repositionnement (pouce fatigué). */}
+        <div
+          className="flex items-center justify-center shrink-0 w-6 h-12 pl-1 cursor-grab active:cursor-grabbing touch-none"
+          style={{ touchAction: "none" }}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+          data-testid="focus-bubble-drag-handle"
+          aria-label="Repositionner la bulle Focus"
+          role="slider"
+          aria-orientation="vertical"
+          aria-valuenow={yPos}
+        >
+          <GripVertical size={14} className="opacity-70" />
         </div>
-        <div className="flex flex-col items-start leading-tight">
-          <span className="text-[10px] opacity-80 uppercase tracking-widest">Focus</span>
-          <span className="truncate max-w-[9rem]">
-            {VERB_LABEL[reco.verb]} {reco.zoneName ?? ""}
-          </span>
-        </div>
-        <ChevronRight size={16} className="opacity-80" />
-      </a>
+
+        <a
+          href="/#/focus"
+          className="flex items-center gap-2 pr-3 pl-1 flex-1 active:scale-95 transition-transform"
+          style={{ minHeight: 48, touchAction: "none" }}
+          onClick={handleNavClick}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+          data-testid="focus-bubble"
+          aria-label={`Focus : ${VERB_LABEL[reco.verb]} ${reco.zoneName ?? ""}. Objectif du jour : ${Math.round(dailyProgress * 100)}%.`}
+        >
+          <div className="p-2 rounded-full bg-white/20">
+            <Target size={16} />
+          </div>
+          <div className="flex flex-col items-start leading-tight">
+            <span className="text-[10px] opacity-80 uppercase tracking-widest">Focus</span>
+            <span className="truncate max-w-[9rem]">
+              {VERB_LABEL[reco.verb]} {reco.zoneName ?? ""}
+            </span>
+            <ConfidenceBar confidence={reco.confidence} verb={reco.verb} />
+          </div>
+          <ChevronRight size={16} className="opacity-80" />
+        </a>
+      </div>
 
       {/* Détail objectif journalier — affiché sur appui long, Vague 2 Feature 3 */}
       {showGoalDetail && (

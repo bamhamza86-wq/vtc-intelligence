@@ -95,6 +95,8 @@ const ENRICHED_PATTERNS = {
   confirm:     25 as number,                              // tap unique
   fatigue:     [50, 60, 80, 60, 100, 60, 130] as number[], // crescendo
   arrival:     [100, 50, 100] as number[],                // pattern rythmé
+  tapLeft:     15 as number,                              // pulse unique — colonne gauche
+  tapRight:    [10, 30, 10] as number[],                  // double pulse — colonne droite
 } as const;
 
 type EnrichedPatternName = keyof typeof ENRICHED_PATTERNS;
@@ -107,6 +109,8 @@ const FALLBACK_FREQUENCIES: Partial<Record<EnrichedPatternName, number>> = {
   opportunity: 800,
   alert: 400,
   confirm: 1200,
+  tapLeft: 900,
+  tapRight: 1100,
 };
 
 let _hapticsAudioContext: AudioContext | null = null;
@@ -238,6 +242,16 @@ export function arrival(): void {
   triggerEnriched("arrival");
 }
 
+/** Handedness gauche — pulse unique 15ms (boutons colonne gauche). */
+export function tapLeft(): void {
+  triggerEnriched("tapLeft");
+}
+
+/** Handedness droite — double pulse [10, 30, 10] (boutons colonne droite). */
+export function tapRight(): void {
+  triggerEnriched("tapRight");
+}
+
 // ── Objet de commodité regroupant le vocabulaire enrichi ──────────────────────
 // Permet `import { haptics } from "@/lib/haptics"; haptics.opportunity();`
 // tout en gardant les exports nommés individuels ci-dessus.
@@ -247,6 +261,8 @@ export const haptics = {
   confirm,
   fatigue,
   arrival,
+  tapLeft,
+  tapRight,
   enabled: hapticsEnabled,
   setEnabled: setHapticsEnabled,
 };

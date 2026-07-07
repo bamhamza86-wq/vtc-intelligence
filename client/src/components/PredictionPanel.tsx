@@ -25,6 +25,40 @@ function scoreColor(score: number): string {
   return "bg-red-500";
 }
 
+// ─── Vague 3, Levier 2 : barre de confiance à 3 segments (réutilise VERB_COLOR-like palette) ───
+const CONFIDENCE_COLOR = {
+  high: "bg-emerald-500",
+  medium: "bg-amber-500",
+  low: "bg-red-500",
+} as const;
+
+function confidenceSegments(confidence: number): number {
+  if (confidence > 0.7) return 3;
+  if (confidence >= 0.4) return 2;
+  return 1;
+}
+
+function ConfidenceBar({ confidence }: { confidence: number }) {
+  const filled = confidenceSegments(confidence);
+  const fillColor =
+    filled === 3 ? CONFIDENCE_COLOR.high : filled === 2 ? CONFIDENCE_COLOR.medium : CONFIDENCE_COLOR.low;
+  return (
+    <div
+      className="flex items-center gap-0.5"
+      role="img"
+      aria-label={`Confiance de la prédiction : ${filled}/3`}
+      data-testid="prediction-confidence-bar"
+    >
+      {[1, 2, 3].map((seg) => (
+        <span
+          key={seg}
+          className={`inline-block h-[2px] w-[5px] rounded-full ${seg <= filled ? `${fillColor} opacity-90` : "bg-muted"}`}
+        />
+      ))}
+    </div>
+  );
+}
+
 function fmtHour(h: number): string {
   return `${String(h).padStart(2, "0")}:00`;
 }
@@ -102,8 +136,9 @@ export default function PredictionPanel() {
                       style={{ height: `${Math.max(8, Math.min(100, h.predicted_index))}%` }}
                     />
                   </div>
-                  <span className="text-xs font-bold">{Math.round(h.predicted_index)}</span>
-                  <span className="text-[9px] text-muted-foreground">{Math.round(h.confidence * 100)}%</span>
+                  <span className="text-xs font-bold tabular-nums">{Math.round(h.predicted_index)}</span>
+                  <ConfidenceBar confidence={h.confidence} />
+                  <span className="text-[9px] text-muted-foreground tabular-nums">{Math.round(h.confidence * 100)}%</span>
                 </div>
               ))}
             </div>

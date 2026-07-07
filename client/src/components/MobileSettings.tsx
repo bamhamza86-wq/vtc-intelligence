@@ -32,7 +32,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
-import { Smartphone, Volume2, Monitor, Car, MoonStar, Mic } from "lucide-react";
+import { Smartphone, Volume2, Monitor, Car, MoonStar, Mic, Hand } from "lucide-react";
 import { setSoundEnabled } from "@/lib/audio";
 // ── Lot B : mode nuit ambre, vibrations enrichies, voix française ───────────
 import { AmberNightToggle } from "@/components/AmberNightToggle";
@@ -41,10 +41,11 @@ import { useVoice } from "@/hooks/useVoice";
 
 // ── Clés localStorage ─────────────────────────────────────────────────────────
 const KEYS = {
-  haptic:    "vtc.haptic_enabled",
-  sound:     "vtc.sound_enabled",
-  wakelock:  "vtc.wakelockdrive",
-  autoDrive: "vtc.autodrive_off",
+  haptic:     "vtc.haptic_enabled",
+  sound:      "vtc.sound_enabled",
+  wakelock:   "vtc.wakelockdrive",
+  autoDrive:  "vtc.autodrive_off",
+  handedness: "vtc.handedness",
 } as const;
 
 // ── Helpers localStorage ──────────────────────────────────────────────────────
@@ -56,6 +57,16 @@ function getFlag(key: string, defaultValue: boolean): boolean {
 
 function setFlag(key: string, value: boolean): void {
   localStorage.setItem(key, value ? "1" : "0");
+}
+
+// ── Vague 3, Levier 1 : main dominante (remap zone du pouce en mode conduite) ──
+function getHandedness(): "right" | "left" {
+  const val = localStorage.getItem(KEYS.handedness);
+  return val === "left" ? "left" : "right";
+}
+
+function setHandedness(value: "right" | "left"): void {
+  localStorage.setItem(KEYS.handedness, value);
 }
 
 // ── Composant ─────────────────────────────────────────────────────────────────
@@ -102,6 +113,14 @@ export function MobileSettings() {
   const handleTestVoice = useCallback(() => {
     speak("Test de la voix. Roissy dans 14 minutes.", { priority: "high" });
   }, [speak]);
+
+  // ── Vague 3, Levier 1 : main dominante ──────────────────────────────
+  const [handedness, setHandednessState] = useState<"right" | "left">(() => getHandedness());
+  const handleHandedness = useCallback((isLeft: boolean) => {
+    const next = isLeft ? "left" : "right";
+    setHandednessState(next);
+    setHandedness(next);
+  }, []);
 
   return (
     <Card data-testid="mobile-settings" className="border-primary/20">
@@ -260,6 +279,27 @@ export function MobileSettings() {
               aria-label="Activer la voix française"
             />
           </div>
+        </div>
+
+        <Separator />
+
+        {/* ── Vague 3, Levier 1 : Main dominante (remap zone du pouce) ────────── */}
+        <div className="flex items-center justify-between py-3">
+          <div className="flex items-start gap-2.5">
+            <Hand size={16} className="text-muted-foreground mt-0.5 shrink-0" />
+            <div>
+              <p className="text-sm font-medium">Main dominante</p>
+              <p className="text-xs text-muted-foreground">
+                Réorganise la barre de navigation en mode conduite pour la garder à portée du pouce
+              </p>
+            </div>
+          </div>
+          <Switch
+            checked={handedness === "left"}
+            onCheckedChange={handleHandedness}
+            data-testid="toggle-handedness"
+            aria-label="Main gauche dominante (désactivé = main droite)"
+          />
         </div>
 
       </CardContent>

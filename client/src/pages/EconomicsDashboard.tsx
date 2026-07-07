@@ -288,7 +288,7 @@ function KpiCard({ icon, label, value, sub, color }: {
           <span style={{ color }}>{icon}</span>
           <span>{label}</span>
         </div>
-        <p className="text-2xl font-bold leading-tight" style={{ color }}>{value}</p>
+        <p className="text-2xl font-bold leading-tight tabular-nums" style={{ color }}>{value}</p>
         {sub && <p className="text-[11px] text-muted-foreground mt-0.5">{sub}</p>}
       </CardContent>
     </Card>
@@ -314,7 +314,7 @@ function PerfCard({ icon, label, value, sub, color }: {
           <span style={{ color }}>{icon}</span>
           <span>{label}</span>
         </div>
-        <p className="text-2xl font-bold leading-tight" style={{ color }}>{value}</p>
+        <p className="text-2xl font-bold leading-tight tabular-nums" style={{ color }}>{value}</p>
         {sub && <div className="text-[11px] text-muted-foreground mt-0.5">{sub}</div>}
       </CardContent>
     </Card>
@@ -427,7 +427,7 @@ function Gauge({ icon, label, value, benchmark, unit, warnIfAbove }: {
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span style={{ color: barColor }}>{icon}</span>{label}
           </div>
-          <span className="text-sm font-bold" style={{ color: barColor }}>
+          <span className="text-sm font-bold tabular-nums" style={{ color: barColor }}>
             {unit === "%" ? `${value.toFixed(1)}%` : eur(value)}
           </span>
         </div>
@@ -784,7 +784,7 @@ export default function EconomicsDashboard() {
                         <PredictHQBadge boost={z.phqBoost} eventTitle={z.phqEventTitle} compact />
                       </div>
                     )}
-                    <p className="text-xl font-bold mt-1" style={{ color }}>
+                    <p className="text-xl font-bold mt-1 tabular-nums" style={{ color }}>
                       {z.hourlyNet.toFixed(0)} <span className="text-xs font-normal">€/h</span>
                     </p>
                     <div className="flex items-center justify-between mt-1.5">
@@ -981,7 +981,7 @@ export function EconomicsWidget() {
                 <Euro size={12} /> Net réalisé
               </div>
               <p
-                className="text-xl font-bold"
+                className="text-xl font-bold tabular-nums"
                 style={{ color: agg.dailyRealized >= target ? "#22c55e" : "#ef4444" }}
               >
                 {eur(agg.dailyRealized)}
@@ -991,7 +991,7 @@ export function EconomicsWidget() {
               <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
                 <Clock size={12} /> Taux horaire
               </div>
-              <p className="text-xl font-bold" style={{ color: "#f59e0b" }}>
+              <p className="text-xl font-bold tabular-nums" style={{ color: "#f59e0b" }}>
                 {agg.avgHourlyRate.toFixed(0)} €/h
               </p>
             </div>

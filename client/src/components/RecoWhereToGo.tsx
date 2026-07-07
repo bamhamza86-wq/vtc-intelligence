@@ -58,6 +58,38 @@ interface ConfidenceBadgeProps {
   level: "high" | "medium" | "low";
 }
 
+// ─── Vague 3, Levier 2 : barre de confiance à 3 segments (même palette que le badge) ───
+const CONFIDENCE_FILL: Record<ConfidenceBadgeProps["level"], string> = {
+  high: "bg-emerald-500",
+  medium: "bg-amber-500",
+  low: "bg-red-500",
+};
+const CONFIDENCE_SEGMENTS: Record<ConfidenceBadgeProps["level"], number> = {
+  high: 3,
+  medium: 2,
+  low: 1,
+};
+
+function ConfidenceBar({ level }: ConfidenceBadgeProps) {
+  const filled = CONFIDENCE_SEGMENTS[level];
+  const fillColor = CONFIDENCE_FILL[level];
+  return (
+    <span
+      className="inline-flex items-center gap-0.5"
+      role="img"
+      aria-label={`Confiance : ${filled}/3`}
+      data-testid="reco-confidence-bar"
+    >
+      {[1, 2, 3].map((seg) => (
+        <span
+          key={seg}
+          className={`inline-block h-[2px] w-[5px] rounded-full ${seg <= filled ? `${fillColor} opacity-90` : "bg-muted-foreground/30"}`}
+        />
+      ))}
+    </span>
+  );
+}
+
 function ConfidenceBadge({ level }: ConfidenceBadgeProps) {
   const config = {
     high:   { emoji: "🟢", label: "sûr",   tooltip: "Signal fiable : données récentes, forte convergence" },
@@ -69,10 +101,11 @@ function ConfidenceBadge({ level }: ConfidenceBadgeProps) {
     <span
       data-testid="reco-confidence-badge"
       title={config.tooltip}
-      className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground cursor-help ml-1"
+      className="inline-flex items-center gap-1 text-[10px] text-muted-foreground cursor-help ml-1"
     >
       {config.emoji}
       <span className="hidden sm:inline">{config.label}</span>
+      <ConfidenceBar level={level} />
     </span>
   );
 }
