@@ -5,7 +5,7 @@
  * de temps la reco courante reste valide. À intégrer dans FocusPage.
  * ─────────────────────────────────────────────────────────────────────────────
  */
-import { useEffect, useState } from "react";
+import { useEffect, useState, memo } from "react";
 import { Hourglass } from "lucide-react";
 
 interface Props {
@@ -20,7 +20,7 @@ function fmt(ms: number): string {
   return `${m}m ${String(r).padStart(2, "0")}s`;
 }
 
-export default function FocusCountdown({ validUntil }: Props) {
+function FocusCountdownImpl({ validUntil }: Props) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -46,3 +46,5 @@ export default function FocusCountdown({ validUntil }: Props) {
     </div>
   );
 }
+
+export default memo(FocusCountdownImpl);

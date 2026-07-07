@@ -61,6 +61,30 @@ let _listeners: Set<(pos: GpsPosition) => void> = new Set();
 let _errorListeners: Set<(err: GeolocationPositionError) => void> = new Set();
 let _lastRawPosition: GpsPosition | null = null;
 let _lastPositionDate: Date | null = null;
+let _lastEmitAt = 0;
+
+// Throttle des émissions GPS : le watchPosition haute précision peut émettre
+// plusieurs positions/seconde en environnement urbain (multi-trajet satellite).
+// Sans filtre, chaque tick propage une nouvelle référence position aux
+// consommateurs — qui l'injectent dans leurs queryKey react-query — ce qui
+// génère un nouveau cycle isLoading toutes les X ms → flicker perçu.
+//
+// Règle : n'émettre que si le déplacement est significatif (>25m) OU si
+// l'intervalle minimum est écoulé (garantit un rafraîchissement même immobile).
+const MIN_EMIT_INTERVAL_MS = 4000;
+const MIN_MOVE_METERS = 25;
+
+function distanceMeters(a: GpsPosition, b: GpsPosition): number {
+  const R = 6371000;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((a.lat * Math.PI) / 180) *
+      Math.cos((b.lat * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
 
 function startSharedWatch(): void {
   if (_sharedWatchId !== null) return; // déjà actif
@@ -76,6 +100,23 @@ function startSharedWatch(): void {
         accuracy: pos.coords.accuracy,
         speedKmh: msToKmh(pos.coords.speed),
       };
+
+      // Throttle : n'émet vers les listeners que si mouvement significatif
+      // OU si l'intervalle minimal est écoulé. Coupe le flicker à la source.
+      const now = Date.now();
+      const movedEnough =
+        !_lastRawPosition || distanceMeters(_lastRawPosition, gps) > MIN_MOVE_METERS;
+      const enoughTime = now - _lastEmitAt >= MIN_EMIT_INTERVAL_MS;
+      if (!movedEnough && !enoughTime) {
+        // Met à jour uniquement le singleton (pour lecture différée), pas les listeners
+        _lastRawPosition = gps;
+        _lastPositionDate = new Date();
+        if (typeof window !== "undefined") {
+          (window as any).__gpsLastPosition = { lat: gps.lat, lng: gps.lng };
+        }
+        return;
+      }
+      _lastEmitAt = now;
       _lastRawPosition = gps;
       _lastPositionDate = new Date();
       // ── Expose la position GPS dans le singleton window pour MapPage (init carte) ──

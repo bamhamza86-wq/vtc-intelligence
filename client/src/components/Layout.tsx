@@ -112,10 +112,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   };
 
   // ─── Alertes non-lues ───────────────────────────────────────────────────────
+  // Badge affiché via le Layout sur toutes les pages : 30s largement suffisant,
+  // évite un refetch permanent qui remonte l'app tree toutes les 3s.
   const { data: alerts = [] } = useQuery({
     queryKey: ["/api/alerts"],
     queryFn: () => apiRequest("GET", "/api/alerts").then(r => r.json()),
-    refetchInterval: 3_000,
+    refetchInterval: 30_000,
+    staleTime: 25_000,
   });
   const unreadCount   = (alerts as any[]).filter((a: any) => !a.is_read).length;
   const criticalCount = (alerts as any[]).filter((a: any) => !a.is_read && a.priority === "critical").length;

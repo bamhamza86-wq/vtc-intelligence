@@ -7,9 +7,9 @@
  * Draggable verticalement pour éviter les zones critiques.
  * ─────────────────────────────────────────────────────────────────────────────
  */
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useHashLocation } from "wouter/use-hash-location";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { Target, ChevronRight, Zap, GripVertical } from "lucide-react";
 import { API_BASE, getAuthToken } from "@/lib/queryClient";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
@@ -74,7 +74,25 @@ export default function FocusBubble() {
   // useHashLocation directement — car FocusBubble est monté hors du <Router hook={useHashLocation}>
   // et useLocation() renverrait le pathname ("/") au lieu du hash-path ("/focus").
   const [location] = useHashLocation();
+  // Débounce d'affichage : évite un flash de la bulle pendant une navigation
+  // (fenêtre où useHashLocation ici et le <Switch> interne au Router peuvent
+  // être désynchronisés d'un tick lors des transitions rapides).
+  const [stableLocation, setStableLocation] = useState(location);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setStableLocation(location));
+    return () => cancelAnimationFrame(id);
+  }, [location]);
   const { position } = useGpsPosition();
+
+  // Quantification GPS à ~110m pour la queryKey uniquement (pas pour l'API).
+  const roundedLat = useMemo(
+    () => (position.lat ? Math.round(position.lat * 1000) / 1000 : undefined),
+    [position.lat],
+  );
+  const roundedLng = useMemo(
+    () => (position.lng ? Math.round(position.lng * 1000) / 1000 : undefined),
+    [position.lng],
+  );
   // Vague 2 - Feature 3 : progression objectif journalier (anneau + streak)
   const { progress: dailyProgress, target: dailyTarget, currentEuros: dailyCurrentEuros, streakDays } = useDailyStreak();
   const [showGoalDetail, setShowGoalDetail] = useState(false);
@@ -109,9 +127,11 @@ export default function FocusBubble() {
   const dragDistanceRef = useRef(0);
 
   const { data: reco } = useQuery<FocusReco | null>({
-    queryKey: ["focusBubble", position.lat, position.lng],
+    queryKey: ["focusBubble", roundedLat, roundedLng],
     enabled: !!position.lat && !!position.lng,
     refetchInterval: 60_000,
+    staleTime: 45_000,
+    placeholderData: keepPreviousData,
     queryFn: async () => {
       const token = getAuthToken();
       const url = `${API_BASE}/api/focus/recommendation?lat=${position.lat}&lng=${position.lng}`;
@@ -123,15 +143,29 @@ export default function FocusBubble() {
     },
   });
 
-  // Masquer sur pages où l'info est déjà dominante
+  // Masquer sur pages où l'info est déjà dominante (via stableLocation débouncée)
   const hidden =
-    location === "/focus" || location === "/drive" || location === "/login" || dismissed;
+    stableLocation === "/focus" ||
+    stableLocation === "/drive" ||
+    stableLocation === "/login" ||
+    dismissed;
 
   useEffect(() => {
     try {
       localStorage.setItem(LS_Y_POS, String(yPos));
     } catch {}
   }, [yPos]);
+
+  // Recalage de yPos si la hauteur visuelle change (rotation, barre d'adresse
+  // mobile qui se rétracte/déploie). Borne dans les limites utiles sans saut brutal.
+  useEffect(() => {
+    function handleResize() {
+      const vh = window.innerHeight;
+      setYPos((prev) => Math.min(Math.max(prev, 80), vh - 120));
+    }
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   if (hidden || !reco) return null;
 

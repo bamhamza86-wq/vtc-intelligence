@@ -8,7 +8,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { useEffect, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { CloudRain, X } from "lucide-react";
 import { useState } from "react";
 import { API_BASE, getAuthToken } from "@/lib/queryClient";
@@ -39,6 +39,8 @@ export default function WeatherAlert() {
   const { data } = useQuery<WeatherPayload | null>({
     queryKey: ["weatherCurrent"],
     refetchInterval: 15 * 60 * 1000, // 15 min
+    staleTime: 5 * 60 * 1000, // évite un refetch immédiat au remount
+    placeholderData: keepPreviousData,
     queryFn: async () => {
       const token = getAuthToken();
       const res = await fetch(`${API_BASE}/api/weather/current`, {

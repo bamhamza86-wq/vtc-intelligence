@@ -4,9 +4,9 @@
  * Une seule mission à la fois, actions dans la zone du pouce, gros verbe,
  * haptique + voix française sur nouvelle recommandation.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { ArrowRight, Pause, Home as HomeIcon, MapPin, Timer, Euro, ShieldCheck, Zap } from "lucide-react";
 import ShiftRhythm from "@/components/ShiftRhythm";
@@ -78,8 +78,20 @@ export default function FocusPage() {
   const [showAlts, setShowAlts] = useState(false);
   const lastRecoId = useRef<string | null>(null);
 
+  // Quantification GPS à ~110m pour la queryKey uniquement (pas pour l'API).
+  // Évite qu'un micro-bruit GPS ne génère une nouvelle query → flicker.
+  const roundedLat = useMemo(
+    () => (position ? Math.round(position.lat * 1000) / 1000 : undefined),
+    [position?.lat],
+  );
+  const roundedLng = useMemo(
+    () => (position ? Math.round(position.lng * 1000) / 1000 : undefined),
+    [position?.lng],
+  );
+
   const { data: reco, isLoading } = useQuery<FocusRecommendation>({
-    queryKey: ["focus-reco", position?.lat, position?.lng],
+    queryKey: ["focus-reco", roundedLat, roundedLng],
+    placeholderData: keepPreviousData,
     queryFn: async () => {
       const token = getAuthToken();
       const params = position ? `?lat=${position.lat}&lng=${position.lng}` : "";
@@ -168,7 +180,9 @@ export default function FocusPage() {
           <VerbIcon className="w-4 h-4" />
           <span className="uppercase tracking-widest text-xs">Recommandation</span>
           <div className="ml-auto flex items-center gap-2">
-            {reco.validUntil && <FocusCountdown validUntil={reco.validUntil} />}
+            {reco.validUntil && (
+              <FocusCountdown key={reco.id} validUntil={reco.validUntil} />
+            )}
             <div className="flex items-center gap-1 text-xs bg-white/15 rounded-full px-2 py-0.5">
               <ShieldCheck className="w-3 h-3" />
               {Math.round(reco.confidence * 100)}%
