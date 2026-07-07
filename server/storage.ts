@@ -6,7 +6,8 @@ import { refreshWeather, getWeatherBoost, getCachedWeather } from "./weatherServ
 // ─── Levier 1 SSE : push temps réel des mises à jour de zones ─────────────────
 import { sseService } from "./sseService";
 
-export const sqlite = new Database("data.db"); // exporté additivement (Couche Communautaire) pour communityEngine.ts
+// exporté additivement (Couche Communautaire) pour communityEngine.ts et radarLive.ts
+export const sqlite = new Database("data.db");
 // ← audit G: pragmas SQLite production (WAL + cache + synchronous NORMAL)
 sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('synchronous = NORMAL');
@@ -361,6 +362,37 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_platform_rules_user ON platform_rules(user_id, platform, active);
 `);
 // ─── /Couche Économie & Fiscalité ──────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Couche Radar aérien communautaire (additif — rapport.md §5 signal surge +
+// §13 wow#9 "carte façon radar aérien Flightradar24-like").
+// Privacy-first : positions arrondies à une grille ~100m, jamais l'id réel du
+// chauffeur (hash rolling par heure calculé dans radarLive.ts), TTL court 5min.
+// ─────────────────────────────────────────────────────────────────────────────
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS radar_heartbeat (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    lat_floue REAL NOT NULL,
+    lng_floue REAL NOT NULL,
+    ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    direction_deg REAL,
+    speed_kmh REAL
+  );
+  CREATE INDEX IF NOT EXISTS idx_radar_heartbeat_ts ON radar_heartbeat(ts);
+  CREATE INDEX IF NOT EXISTS idx_radar_heartbeat_user ON radar_heartbeat(user_id, ts);
+
+  CREATE TABLE IF NOT EXISTS radar_corridor (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_zone TEXT NOT NULL,
+    to_zone TEXT NOT NULL,
+    count_chauffeurs INTEGER NOT NULL DEFAULT 1,
+    avg_duration_s REAL NOT NULL DEFAULT 0,
+    ts_bucket TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_radar_corridor_bucket ON radar_corridor(ts_bucket);
+  CREATE INDEX IF NOT EXISTS idx_radar_corridor_pair ON radar_corridor(from_zone, to_zone, ts_bucket);
+`);
+// ─── /Couche Radar aérien communautaire ────────────────────────────────────
 
 // ─── Prepared statements globaux — compilés une seule fois à l'init ───────────────────
 // Bench: alerts/events étaient recompilés à chaque requête HTTP (−64-197% latence sous 50 req. simult.)

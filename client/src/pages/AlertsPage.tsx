@@ -14,6 +14,9 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import SurgeTransparencyWidget from "@/components/SurgeTransparencyWidget";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
+import { PullToRefresh } from "@/components/PullToRefresh";
+import { EmptyState } from "@/components/EmptyState";
+import { queryClient as qc } from "@/lib/queryClient";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -533,6 +536,10 @@ function GpsBanner({ status, position, lastUpdatedAt, isFallback, onActivate }: 
 export default function AlertsPage() {
 
   // ── Alertes ────────────────────────────────────────────────────────────────
+  const onRefreshAlerts = useCallback(async () => {
+    await qc.invalidateQueries({ predicate: (q) => Array.isArray(q.queryKey) && typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).includes("alert") });
+  }, []);
+
   const { data: alerts = [], isLoading } = useQuery({
     queryKey: ["/api/alerts"],
     queryFn: () => apiRequest("GET", "/api/alerts").then(r => r.json()),
@@ -623,17 +630,20 @@ export default function AlertsPage() {
   );
 
   if (allAlerts.length === 0) return (
-    <div className="flex flex-col items-center justify-center h-64 gap-3 text-center px-4">
-      <BellOff size={40} className="text-muted-foreground/40" />
-      <p className="font-medium">Aucune alerte active</p>
-      <p className="text-sm text-muted-foreground">Les opportunités apparaîtront ici en temps réel</p>
-    </div>
+    <PullToRefresh onRefresh={onRefreshAlerts}>
+      <EmptyState
+        variant="alerts"
+        title="Aucune alerte active"
+        description="Les opportunités apparaîtront ici en temps réel. Tire vers le bas pour rafraîchir."
+      />
+    </PullToRefresh>
   );
 
   const totalSlotsUrgent = eventSchedule?.eventBlocks.reduce((acc, b) =>
     acc + b.slots.filter(s => s.urgency === "now" || s.urgency === "soon").length, 0) ?? 0;
 
   return (
+    <PullToRefresh onRefresh={onRefreshAlerts}>
     <div className="min-h-full">
 
       {/* ── Header ───────────────────────────────────────────────────────────── */}
@@ -891,5 +901,6 @@ export default function AlertsPage() {
 
       </div>
     </div>
+    </PullToRefresh>
   );
 }

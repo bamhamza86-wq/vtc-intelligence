@@ -143,11 +143,14 @@ export default function FocusBubble() {
     },
   });
 
-  // Masquer sur pages où l'info est déjà dominante (via stableLocation débouncée)
+  // Masquer sur pages où l'info est déjà dominante ou où la bulle n'a pas de sens.
+  // Visible uniquement sur la carte (/), la page best-route et la home implicite.
+  // Sur toutes les autres pages (economics, tax, platforms, ml-insights, achievements,
+  // profile, alerts, sources, smart-plan, return-journey, simulator), on masque pour
+  // éviter d'écraser le contenu de la page.
+  const visibleRoutes = ["/", "/best-route"];
   const hidden =
-    stableLocation === "/focus" ||
-    stableLocation === "/drive" ||
-    stableLocation === "/login" ||
+    !visibleRoutes.includes(stableLocation) ||
     dismissed;
 
   useEffect(() => {

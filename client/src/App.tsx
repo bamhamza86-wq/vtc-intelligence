@@ -21,6 +21,9 @@ import EconomicsDashboard from "./pages/EconomicsDashboard";
 import FocusPage from "./pages/FocusPage";
 import TaxJournalPage from "./pages/TaxJournalPage";
 import PlatformsPage from "./pages/PlatformsPage";
+import RadarPage from "./pages/RadarPage";
+import MLInsightsPage from "./pages/MLInsightsPage";
+import FatiguePage from "./pages/FatiguePage";
 import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/not-found";
 import { registerServiceWorker } from "./lib/pwa";
@@ -163,6 +166,8 @@ export default function App() {
                 <Route path="/profile" component={ProfilePage} />
                 <Route path="/ml-insights" component={MLInsightsPage} />
                 <Route path="/achievements" component={AchievementsPage} />
+                <Route path="/radar" component={RadarPage} />
+                <Route path="/fatigue" component={FatiguePage} />
                 <Route component={NotFound} />
               </Switch>
             </Layout>
@@ -177,6 +182,9 @@ export default function App() {
           <RecordAlertToast />
           <BatteryAwareMode />
           <AutoSunsetTheme />
+          {/* ─── Couche Fatigue Coach avancé : bulle discrète + capture télémétrie (rapport.md §5, §2) ─── */}
+          <FatigueTelemetryCollector />
+          <FatigueCoach />
         </AuthGuard>
         <Toaster />
         </ToastProvider>

@@ -16,6 +16,7 @@ import {
   CheckCircle2, XCircle, Gauge, CloudRain, CalendarClock,
 } from "lucide-react";
 import { SelfSabotageInsight } from "@/components/SelfSabotageInsight";
+import { MLInsightsAdvanced } from "@/components/MLInsightsAdvanced";
 
 interface PatternResult {
   pattern_type: "weekday_hour_hotspot" | "weather_boost" | "event_hotspot";
@@ -276,6 +277,11 @@ export default function MLInsightsPage() {
             </CardContent>
           </Card>
         ) : null}
+      </section>
+
+      {/* ─── Couche RL (bandit Thompson) + Federated Learning-lite (Itération 3) ─── */}
+      <section className="px-4 mt-5">
+        <MLInsightsAdvanced />
       </section>
     </div>
   );

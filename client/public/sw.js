@@ -192,3 +192,55 @@ self.addEventListener("message", (event) => {
     self.skipWaiting();
   }
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// push — notifications Web Push (additif, ne modifie pas les stratégies
+// existantes ci-dessus). Le corps de la notification est du JSON envoyé par
+// le serveur ({ title, body, url, tag }). VAPID configuré côté serveur via
+// /api/push/subscribe-info — aucune dépendance npm ajoutée ici.
+// ────────────────────────────────────────────────────────────────────────────
+self.addEventListener("push", (event) => {
+  let payload = { title: "VTC Intelligence", body: "Nouvelle notification", url: "/" };
+  try {
+    if (event.data) {
+      payload = { ...payload, ...event.data.json() };
+    }
+  } catch (err) {
+    if (event.data) {
+      payload.body = event.data.text();
+    }
+  }
+
+  const options = {
+    body: payload.body,
+    icon: "/icons/icon-192.png",
+    badge: "/icons/icon-192.png",
+    tag: payload.tag || "vtc-notification",
+    data: { url: payload.url || "/" },
+  };
+
+  event.waitUntil(self.registration.showNotification(payload.title, options));
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// notificationclick — focus/ouvre l'app sur l'URL ciblée par la notification
+// ────────────────────────────────────────────────────────────────────────────
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetUrl = (event.notification.data && event.notification.data.url) || "/";
+
+  event.waitUntil(
+    (async () => {
+      const allClients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      for (const client of allClients) {
+        if ("focus" in client) {
+          client.navigate(targetUrl);
+          return client.focus();
+        }
+      }
+      if (self.clients.openWindow) {
+        return self.clients.openWindow(targetUrl);
+      }
+    })()
+  );
+});

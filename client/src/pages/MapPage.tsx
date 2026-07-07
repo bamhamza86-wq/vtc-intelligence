@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { TrendingUp, Clock, Zap, Plane, ChevronDown, ChevronUp, Navigation, Radio, MapPin } from "lucide-react";
+import { TrendingUp, Clock, Zap, Plane, ChevronDown, ChevronUp, Navigation, Radio, MapPin, Radar as RadarIcon } from "lucide-react";
 import { UpdateWidget } from "@/components/UpdateWidget";
 import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 import { PredictHQBadge } from "@/components/PredictHQBadge";
@@ -936,6 +936,28 @@ export default function MapPage() {
           >
             <span className="text-lg leading-none">🚗</span>
             <span className="tracking-wide">Mode conduite</span>
+          </Link>
+
+          {/* ─── Radar aérien communautaire (rapport.md §5 + §13 wow#9) : FAB discret ─── */}
+          {/* Mobile → FAB flottant au-dessus du bouton mode conduite */}
+          <Link
+            href="/radar"
+            className="fixed bottom-36 right-4 z-[1100] sm:hidden flex items-center justify-center rounded-full h-12 w-12 bg-cyan-500/90 text-white shadow-2xl active:scale-95 transition-all border-2 border-cyan-300/50"
+            data-testid="button-open-radar"
+            title="Radar communautaire"
+            aria-label="Ouvrir le radar aérien communautaire"
+          >
+            <RadarIcon size={20} />
+          </Link>
+          {/* Desktop → bouton discret coin supérieur gauche, sous le bouton mode conduite */}
+          <Link
+            href="/radar"
+            className="hidden sm:flex absolute top-14 left-3 z-[1000] items-center gap-1.5 rounded-lg bg-cyan-500/90 backdrop-blur px-3 py-2 border border-cyan-300/40 text-white text-sm font-bold shadow-lg hover:bg-cyan-500 active:scale-95 transition-all"
+            data-testid="button-open-radar-desktop"
+            title="Radar aérien communautaire — voir les chauffeurs actifs autour de vous"
+          >
+            <RadarIcon size={16} />
+            <span className="tracking-wide">Radar</span>
           </Link>
 
           {/* Popup zone sélectionnée — enrichie avec données vols */}

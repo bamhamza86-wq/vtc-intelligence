@@ -10,6 +10,7 @@ import { useState, useEffect, useCallback } from "react";
 import { apiRequest, API_BASE, getAuthToken } from "@/lib/queryClient";
 import { Download, FileText, Calendar, Loader2, Gauge, Route, Calculator, X } from "lucide-react";
 import { haptic } from "@/lib/haptics";
+import { CoachSidebar } from "@/components/CoachSidebar";
 
 interface JournalRow {
   date: string;
@@ -405,6 +406,12 @@ export default function TaxJournalPage() {
         )}
 
         {/* ── Note ─────────────────────────────────────────────────────── */}
+        {/* Couche Décision Avancée : coach VTC conversationnel (URSSAF, TVA, statuts) */}
+        <CoachSidebar
+          taxContext={lastData ? { ca_annuel: lastData.totals.ca_ht * 12 } : undefined}
+          title="Coach VTC — questions fiscales"
+        />
+
         <p className="text-xs text-muted-foreground leading-relaxed px-1">
           Document indicatif basé sur vos courses enregistrées et vos paramètres
           économiques. À conserver 10 ans (art. L102 B du LPF).

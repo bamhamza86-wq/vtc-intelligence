@@ -57,6 +57,20 @@
       "description": "Tableau de bord économique",
       "url": "/#/economics",
       "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Nouvelle course",
+      "short_name": "Course",
+      "description": "Démarrer rapidement une nouvelle course",
+      "url": "/#/drive?action=new-ride",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "SOS",
+      "short_name": "SOS",
+      "description": "Accès direct à l'alerte d'urgence",
+      "url": "/#/drive?action=sos",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
     }
   ]
 }

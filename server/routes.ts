@@ -6,6 +6,8 @@ import { sseService } from "./sseService";
 import { requireAuth, getCurrentUsername } from "./auth";
 // ─── Couche ML Personnel Driver (LR online + arbre + bandit + patterns + anomalies + XAI + drift) ───
 import * as mlPersonal from "./mlPersonal";
+// ─── Couche RL (bandit Thompson) + Federated Learning-lite (Itération 3) ───
+import { mlAdvancedRouter } from "./mlAdvanced";
 // ← H2 : fusion adaptative multi-sources (TomTom + PHQ + vols + seeds)
 import {
   fusionSignals,
@@ -31,6 +33,8 @@ import * as wowEngine from "./wowEngine";
 import * as safetyEngine from "./safetyEngine";
 import { getSncfSignals, getZoneSncfBoost, GARE_ZONE_MAPPING, getSncfSignalsSync } from "./sncfService";
 import { getCurrentWeather, getCachedWeather } from "./weatherService";
+// ─── Radar aérien communautaire (additif — rapport.md §5 signal surge + §13 wow#9) ───
+import * as radarLive from "./radarLive";
 import {
   testTomTomConnection,
   testGigDataConnection,
@@ -867,6 +871,87 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   app.get("/api/model/reliability", requireAuth, (req, res) => {
     res.json(storage.getModelReliability());
   });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Radar aérien communautaire — rapport.md §5 (signal surge) + §13 wow#9
+  // (carte façon Flightradar24 : blips, heatspots, convergences, corridors).
+  // Privacy-first : k-anonymité ≥ 5, positions floues grille ~100m, TTL 5min.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // POST /api/community/radar/heartbeat — enregistre position floue (session courte, TTL 5min)
+  app.post("/api/community/radar/heartbeat", requireAuth, (req, res) => {
+    try {
+      const userId = (req as any).user?.id || (req as any).session?.userId || "default";
+      const { lat, lng, directionDeg, speedKmh } = req.body || {};
+      if (typeof lat !== "number" || typeof lng !== "number") {
+        return res.status(400).json({ error: "lat/lng requis" });
+      }
+      const result = radarLive.recordHeartbeat({ userId: String(userId), lat, lng, directionDeg, speedKmh });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur heartbeat radar" });
+    }
+  });
+
+  // GET /api/community/radar-stream — flux SSE 5s (blips, heatspots, convergences, arrivals)
+  app.get("/api/community/radar-stream", requireAuth, (req, res) => {
+    const userId = (req as any).user?.id || (req as any).session?.userId || "default";
+    const lat = parseFloat(String(req.query.lat));
+    const lng = parseFloat(String(req.query.lng));
+    const radiusKm = req.query.radiusKm ? parseFloat(String(req.query.radiusKm)) : undefined;
+    const center = { lat: isFinite(lat) ? lat : 48.8566, lng: isFinite(lng) ? lng : 2.3522 };
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    res.write(": connected\n\n");
+
+    const sendSnapshot = () => {
+      try {
+        const snapshot = radarLive.buildRadarSnapshot(center, String(userId), radiusKm);
+        res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+      } catch (err: any) {
+        res.write(`event: error\ndata: ${JSON.stringify({ error: err?.message || "snapshot error" })}\n\n`);
+      }
+    };
+    sendSnapshot();
+    const snapshotInterval = setInterval(sendSnapshot, 5000);
+    const heartbeatComment = setInterval(() => res.write(": ping\n\n"), 25000);
+
+    req.on("close", () => {
+      clearInterval(snapshotInterval);
+      clearInterval(heartbeatComment);
+    });
+  });
+
+  // GET /api/community/radar/density-forecast — projection 15/30/60min
+  app.get("/api/community/radar/density-forecast", requireAuth, (req, res) => {
+    try {
+      const lat = parseFloat(String(req.query.lat));
+      const lng = parseFloat(String(req.query.lng));
+      const radiusKm = req.query.radiusKm ? parseFloat(String(req.query.radiusKm)) : undefined;
+      const center = { lat: isFinite(lat) ? lat : 48.8566, lng: isFinite(lng) ? lng : 2.3522 };
+      const forecast = radarLive.getDensityForecast(center, radiusKm);
+      res.json({ forecast, _ts: Date.now() });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur prévision densité" });
+    }
+  });
+
+  // GET /api/community/radar/hot-corridors — corridors communautaires détectés
+  app.get("/api/community/radar/hot-corridors", requireAuth, (req, res) => {
+    try {
+      const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : undefined;
+      const corridors = radarLive.getHotCorridors(limit);
+      res.json({ corridors, _ts: Date.now() });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur corridors" });
+    }
+  });
+  // ─── /Radar aérien communautaire ───────────────────────────────────────────────────────────────────────
 
   app.get("/api/events", async (_req, res) => {
     const events = storage.getActiveEvents();
@@ -4076,4 +4161,9 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   });
   // ─── /COUCHE ÉCONOMIE & FISCALITÉ ───
 
+  // ─── COUCHE RL (bandit Thompson) + FEDERATED LEARNING-LITE (Itération 3) ───
+  // Toutes les routes du router sont préfixées /api/ml/* (requireAuth appliqué par route
+  // à l'intérieur du router lui-même — voir server/mlAdvanced.ts).
+  app.use("/api/ml", mlAdvancedRouter);
+  // ─── /COUCHE RL + FEDERATED LEARNING-LITE ───
 }
