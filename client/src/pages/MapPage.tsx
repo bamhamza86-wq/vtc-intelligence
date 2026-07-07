@@ -22,8 +22,7 @@ import { useRepositioningAlerts } from "@/hooks/useRepositioningAlerts";
 import type { EventProximity } from "@/lib/eventProximity";
 import { RareEventBanner } from "@/components/RareEventBanner";
 import { RoutingSourceBanner } from "@/components/RoutingSourceBanner";
-// ─── Lot Beta : bandeau « Où aller maintenant » + pastille de fraîcheur ───
-import { RecommendationBanner } from "@/components/RecommendationBanner";
+// ─── Lot Beta : pastille de fraîcheur (RecommendationBanner retiré, remplacé par RecoWhereToGo) ─
 import { DataFreshnessBadge } from "@/components/DataFreshnessBadge";
 import { ZoneSignalPanel } from "@/components/ZoneSignalPanel";
 import StationOverlay from "@/components/StationOverlay";
@@ -701,8 +700,9 @@ export default function MapPage() {
     // la carte Leaflet (absolute fill) reste plein écran à l'intérieur.
     <PullToRefresh onRefresh={onRefresh}>
     <div className="relative flex flex-col" style={{ height: "calc(100vh - 8.5rem)" }}>
-      {/* ─── Lot Beta : bandeau « Où aller maintenant » — TOUT en haut, au-dessus des autres bandeaux ───── */}
-      <RecommendationBanner />
+      {/* ─── Bandeau « Où aller maintenant » ─ rendu par <RecoWhereToGo /> plus bas.
+           Ancien <RecommendationBanner /> retiré (doublon + sticky z-1200 qui
+           écrasait le header, les filtres et le contenu du menu). ────────── */}
       {/* ─── Lot Beta (Levier 5) : pastille de fraîcheur des données, fixe en bas à gauche ───── */}
       <DataFreshnessBadge ts={topZonesData?._ts} position="bottom-left" />
       {/* ─── Bandeau alerte événement rare (Lot C) — premier enfant, au-dessus de la carte ───── */}
@@ -830,7 +830,8 @@ export default function MapPage() {
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        <div className="flex-1 relative">
+        {/* isolate + overflow-hidden : plafonne les z-index Leaflet dans ce conteneur */}
+        <div className="flex-1 relative overflow-hidden isolate">
           <div ref={mapRef} style={{ width: "100%", height: "100%" }} data-testid="map-container" />
 
           {/* Indicateur global — source ETA active (coin supérieur droit) */}

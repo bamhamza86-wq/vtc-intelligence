@@ -84,11 +84,15 @@ export function RecommendationBanner() {
   // Pas de données exploitables → on n'affiche rien.
   if (!best || best.error || best.score_effectif === undefined) return null;
 
-  // ─── Palette dynamique selon score effectif ────────────────────────────────
+  // ─── Seuil de pertinence : on n'affiche le bandeau que si le score effectif
+  //     est significatif (≥ 40). En dessous, l'info est du bruit qui écrase les
+  //     autres UI (filtres, ShiftRhythm) sans valeur ajoutée pour le chauffeur.
   const scoreEff = best.score_effectif;
-  let tone = "bg-gray-100 border-gray-400 text-gray-700";
+  if (scoreEff < 40) return null;
+
+  // ─── Palette dynamique selon score effectif ────────────────────────────────
+  let tone = "bg-orange-100 border-orange-500 text-orange-900";
   if (scoreEff > 70) tone = "bg-green-100 border-green-500 text-green-900";
-  else if (scoreEff >= 40) tone = "bg-orange-100 border-orange-500 text-orange-900";
 
   // ─── Deeplink Google Maps « Y aller » ──────────────────────────────────────
   const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${best.lat},${best.lng}&travelmode=driving`;
@@ -96,19 +100,19 @@ export function RecommendationBanner() {
   return (
     <div
       data-testid="recommendation-banner"
-      className={`sticky top-0 z-[1200] flex flex-col gap-1 border-b-2 px-4 py-3 shadow-md sm:flex-row sm:items-center sm:justify-between ${tone}`}
+      className={`relative z-10 flex flex-row items-center justify-between gap-2 border-b px-3 py-2 shadow-sm ${tone}`}
     >
       {/* ── Bloc texte : zone + score + distance + countdown ── */}
-      <div className="flex flex-col">
-        <span className="text-lg font-extrabold leading-tight sm:text-xl" data-testid="recommendation-zone-name">
+      <div className="flex flex-col min-w-0 flex-1">
+        <span className="text-sm font-bold leading-tight truncate" data-testid="recommendation-zone-name">
           {best.name}
         </span>
-        <span className="text-sm font-medium opacity-90" data-testid="recommendation-score-line">
+        <span className="text-xs font-medium opacity-90 truncate" data-testid="recommendation-score-line">
           Score {best.score_effectif} · {best.distance_km} km
         </span>
         {minutesLeft !== null && (
-          <span className="text-xs font-semibold opacity-80" data-testid="recommendation-peak-timer">
-            ⏱️ Prochain pic dans {minutesLeft} min
+          <span className="text-[10px] font-semibold opacity-80 truncate" data-testid="recommendation-peak-timer">
+            ⏱️ Pic dans {minutesLeft} min
           </span>
         )}
       </div>
@@ -119,7 +123,7 @@ export function RecommendationBanner() {
         target="_blank"
         rel="noopener noreferrer"
         data-testid="recommendation-go-button"
-        className="mt-1 inline-flex items-center justify-center rounded-lg bg-black/80 px-4 py-2 text-sm font-bold text-white shadow hover:bg-black sm:mt-0"
+        className="shrink-0 inline-flex items-center justify-center rounded-lg bg-black/80 px-3 py-2 text-xs font-bold text-white shadow hover:bg-black min-h-[44px]"
       >
         🗺️ Y aller
       </a>

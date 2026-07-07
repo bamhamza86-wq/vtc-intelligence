@@ -46,9 +46,11 @@ export function DataFreshnessBadge({ ts, position = "inline" }: DataFreshnessBad
     ageSec > 60 ? "stale" : ageSec >= 10 ? "aging" : "fresh";
   const shapeFill = ageSec > 60 ? "#ef4444" : ageSec >= 10 ? "#f97316" : "#22c55e";
 
+  // Position bottom-left : placé AU-DESSUS de la nav bottom (~57px + pb-safe).
+  // z-30 pour rester sous le header/nav (z-50/60) et sous les popups/dialog.
   const positionClass =
     position === "bottom-left"
-      ? "fixed bottom-3 left-3 z-[1200]"
+      ? "fixed bottom-20 left-3 z-30"
       : "inline-flex";
 
   return (

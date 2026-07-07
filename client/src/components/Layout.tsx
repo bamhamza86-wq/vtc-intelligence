@@ -181,7 +181,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* ─── En-tête ────────────────────────────────────────────────────────── */}
-      <header className="border-b border-border bg-card sticky top-0 z-50 pt-safe">
+      {/* z-[60] : au-dessus des markers Leaflet (z-index 1169) grâce à l'isolation de <main> */}
+      <header className="border-b border-border bg-card sticky top-0 z-[60] pt-safe">
         <div className="flex items-center justify-between px-3 sm:px-4 py-2 sm:py-3">
           {/* ─── Logo + titre ────────────────────────────────────────────── */}
           <div className="flex items-center gap-2">
@@ -245,11 +246,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </header>
 
       {/* ─── Contenu principal ──────────────────────────────────────────────── */}
-      <main className="flex-1 overflow-auto">{children}</main>
+      {/* isolate + relative + z-0 : crée un stacking context qui plafonne les z-index enfants (markers Leaflet z:1169) DANS <main>, les empêchant de déborder au-dessus du header/nav (z-[60]). */}
+      <main className="flex-1 overflow-auto relative z-0 isolate">{children}</main>
 
       {/* ─── Barre de navigation bas ────────────────────────────────────────── */}
+      {/* z-[60] : même niveau que header, au-dessus des markers Leaflet */}
       <nav
-        className="border-t border-border bg-card sticky bottom-0 z-50 pb-safe"
+        className="border-t border-border bg-card sticky bottom-0 z-[60] pb-safe"
         data-testid="nav-bottom"
       >
         {/* ─── Grille fixe 4 colonnes ──────────────────────────────────────── */}
