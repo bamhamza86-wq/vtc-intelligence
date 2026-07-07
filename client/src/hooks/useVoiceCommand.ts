@@ -15,6 +15,8 @@
  *   "je fais pause" / "pause" → toast "Pause enregistrée" + LS vtc.pause.since
  *   "combien" / "bilan"       → navigation vers /tax (bilan fiscal / gains)
  *   "rentrer"                 → navigation vers /return-journey
+ *   "signale surge à <zone>"  → POST /api/voice/command (signalement communautaire
+ *                                vocal coté serveur, ex: "signale surge à Bercy")
  *
  * Écoute limitée à 5s max (arrêt auto si l'utilisateur ne relâche pas le
  * bouton). Confirmation vocale via speak(..., {priority:"high"}).
@@ -24,6 +26,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { speak } from "@/lib/voice";
 import { confirm as hapticConfirm, alert as hapticAlert } from "@/lib/haptics";
+import { apiRequest } from "@/lib/queryClient";
 
 const LS_PAUSE_SINCE = "vtc.pause.since";
 const MAX_LISTEN_MS = 5000;
@@ -75,6 +78,24 @@ export function useVoiceCommand(onOpenBilan?: () => void): UseVoiceCommandResult
     (rawText: string) => {
       const text = normalize(rawText);
       setLastTranscript(rawText);
+
+      // ─── Couche UX Avancée : signalement communautaire vocal (§10.3) ───
+      // "signale surge à Bercy" / "signale un bouchon à Roissy" / "zone morte à Orly"
+      if (text.includes("signale") || text.includes("signaler")) {
+        hapticConfirm();
+        apiRequest("POST", "/api/voice/command", { transcript: rawText })
+          .then((r) => r.json())
+          .then((result: { ok: boolean; message: string; navigate?: string }) => {
+            speak(result.message, { priority: "high" });
+            if (result.ok && result.navigate) navigate(result.navigate);
+            if (!result.ok) hapticAlert();
+          })
+          .catch(() => {
+            hapticAlert();
+            speak("Signalement impossible pour le moment", { priority: "high" });
+          });
+        return;
+      }
 
       if (text.includes("ou aller") || text === "ou" || text.includes(" ou ") || text.startsWith("ou")) {
         hapticConfirm();
