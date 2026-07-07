@@ -15,6 +15,8 @@ import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { User, BarChart, Wrench, Brain, Gauge, AlertTriangle, Lightbulb, MapPin, Clock, Plug, CheckCircle2, XCircle, AlertCircle, RefreshCw } from "lucide-react";
 import { MobileSettings } from "@/components/MobileSettings";
+import { Flame } from "lucide-react";
+import { getDailyGoalTarget, setDailyGoalTarget, useDailyStreak } from "@/hooks/useDailyStreak";
 
 const ZONES_93 = [
   { id: "z_cdg", name: "CDG" }, { id: "z_orly", name: "Orly" },
@@ -41,6 +43,9 @@ function scoreColor(s: number): string {
 
 export default function ProfilePage() {
   const { toast } = useToast();
+  // Vague 2 - Feature 3 : édition de l'objectif journalier + affichage streak
+  const { streakDays } = useDailyStreak();
+  const [goalTargetInput, setGoalTargetInput] = useState<string>(() => String(getDailyGoalTarget()));
   const [form, setForm] = useState<any>({ fuelConsumptionPer100km: 7, fuelPricePerLiter: 1.85, platformCommissionPct: 25, hourlyTargetIncome: 35, wearCostPerKm: 0.08, vehicleType: "berline", preferLongRides: true,
     preferredZones: [], workHoursStart: 6, workHoursEnd: 22, avoidHighway: false, vehicleBrand: "", vehicleModel: "", vehicleYear: 2020, totalKmDriven: 0 });
   const { data: profile, isLoading } = useQuery({ queryKey: ["/api/driver-profile"], queryFn: () => apiRequest("GET", "/api/driver-profile").then(r => r.json()), refetchInterval: 3_000 });
@@ -378,6 +383,53 @@ export default function ProfilePage() {
               ✅ Données de demande temps réel actives — visibles dans la carte et les alertes
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* ── Vague 2 - Feature 3 : Objectif journalier & série ── */}
+      <Card className="border-amber-400/30 bg-amber-400/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Flame size={14} className="text-amber-400" />
+            Objectif journalier
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 px-4 pb-4">
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <Label className="text-xs">Cible du jour (€)</Label>
+              <Input
+                type="number"
+                step="10"
+                min="1"
+                inputMode="numeric"
+                value={goalTargetInput}
+                onChange={e => setGoalTargetInput(e.target.value)}
+                onBlur={() => {
+                  const n = parseFloat(goalTargetInput);
+                  if (Number.isFinite(n) && n > 0) {
+                    setDailyGoalTarget(n);
+                    // Le storage event natif ne se déclenche pas dans le même onglet ;
+                    // on l'émet manuellement pour que useDailyStreak (FocusBubble) se
+                    // mette à jour immédiatement sans rechargement de page.
+                    window.dispatchEvent(new StorageEvent("storage", { key: "vtc.dailyGoal.target" }));
+                    toast({ title: "Objectif mis à jour" });
+                  } else {
+                    setGoalTargetInput(String(getDailyGoalTarget()));
+                  }
+                }}
+                className="h-11 text-sm mt-1"
+                data-testid="input-daily-goal-target"
+              />
+            </div>
+            <div className="flex flex-col items-center justify-center pt-4">
+              <span className="text-lg font-bold text-amber-400" data-testid="text-daily-streak">{streakDays}</span>
+              <span className="text-[10px] text-muted-foreground">jour{streakDays > 1 ? "s" : ""} de série</span>
+            </div>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            Visible sous forme d'anneau de progression autour de la bulle Focus.
+          </p>
         </CardContent>
       </Card>
 

@@ -345,3 +345,19 @@
 .animate-pulse-ring {
   animation: pulse-ring 1.6s ease-out infinite;
 }
+
+/* ═════════════════════════════════════════════════════════════════════════
+ * MODE PERFORMANCE DÉGRADÉ — Vague 2 - Feature 4 (Batterie faible / Data Saver)
+ * ─────────────────────────────────────────────────────────────────────────
+ * Classe `.perf-low` posée sur <html> par useBatteryStatus.ts quand la
+ * batterie est < 20% (hors charge) ou que la connexion signale Data Saver.
+ * Désactive les animations lourdes pour économiser batterie/CPU/réseau.
+ * ═════════════════════════════════════════════════════════════════════════ */
+.perf-low *[data-animate],
+.perf-low .animate-pulse-ring,
+.perf-low .animate-slide-up {
+  animation: none !important;
+}
+.perf-low .animate-spin {
+  animation-duration: 0s !important;
+}

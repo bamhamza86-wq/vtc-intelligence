@@ -26,6 +26,12 @@ import { ToastProvider } from "./lib/toast";
 import FocusBubble from "./components/FocusBubble";
 import QuickActionBar from "./components/QuickActionBar";
 import AutoDriveToast from "./components/AutoDriveToast";
+import { useBatteryStatus } from "./hooks/useBatteryStatus";
+import { useAutoSunsetTheme } from "./hooks/useAutoSunsetTheme";
+import OfflineBanner from "./components/OfflineBanner";
+import EcoScoreTracker from "./components/EcoScoreTracker";
+import DeadZoneAlert from "./components/DeadZoneAlert";
+import EndOfShiftModal from "./components/EndOfShiftModal";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // AuthGuard — checks /api/auth/me on mount, shows LoginPage if not authenticated
@@ -102,6 +108,24 @@ function RoutingOriginSync() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// BatteryAwareMode — active le mode performance dégradé si batterie faible
+// ou Data Saver actif (Vague 2 - Feature 4). Ne rend rien.
+// ──────────────────────────────────────────────────────────────────────────────
+function BatteryAwareMode() {
+  useBatteryStatus();
+  return null;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// AutoSunsetTheme — bascule le thème clair/sombre selon lever/coucher du
+// soleil à Paris (Vague 2 - Feature 7). Ne rend rien.
+// ──────────────────────────────────────────────────────────────────────────────
+function AutoSunsetTheme() {
+  useAutoSunsetTheme();
+  return null;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // App
 // ──────────────────────────────────────────────────────────────────────────────
 export default function App() {
@@ -115,6 +139,7 @@ export default function App() {
       <ThemeProvider>
         <ToastProvider>
         <AuthGuard>
+          <OfflineBanner />
           <RoutingOriginSync />
           <Router hook={useHashLocation}>
             <Layout>
@@ -138,6 +163,11 @@ export default function App() {
           <FocusBubble />
           <QuickActionBar />
           <AutoDriveToast />
+          <EcoScoreTracker />
+          <DeadZoneAlert />
+          <EndOfShiftModal />
+          <BatteryAwareMode />
+          <AutoSunsetTheme />
         </AuthGuard>
         <Toaster />
         </ToastProvider>

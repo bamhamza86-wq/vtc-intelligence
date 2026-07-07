@@ -5,6 +5,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 import { useEffect, useState } from "react";
 import { WifiOff } from "lucide-react";
+import { queueLength, replayQueue } from "@/lib/queueOffline";
 
 const LAST_ONLINE_KEY = "vtc.lastOnlineAt";
 
@@ -39,6 +40,7 @@ export function OfflineBanner() {
     typeof navigator !== "undefined" ? !navigator.onLine : false
   );
   const [lastOnlineAt, setLastOnlineAt] = useState<number | null>(readLastOnline);
+  const [pending, setPending] = useState<number>(() => queueLength());
 
   useEffect(() => {
     // Si on démarre déjà en ligne, on marque tout de suite un point de sync.
@@ -50,6 +52,7 @@ export function OfflineBanner() {
 
     const handleOffline = () => {
       setIsOffline(true);
+      setPending(queueLength());
     };
 
     const handleOnline = () => {
@@ -57,6 +60,8 @@ export function OfflineBanner() {
       writeLastOnline(now);
       setLastOnlineAt(now);
       setIsOffline(false);
+      // Rejoue la file des requêtes en attente, puis met à jour le compteur affiché.
+      replayQueue().finally(() => setPending(queueLength()));
     };
 
     window.addEventListener("offline", handleOffline);
@@ -80,7 +85,8 @@ export function OfflineBanner() {
     >
       <WifiOff size={16} className="shrink-0" aria-hidden />
       <span className="truncate">
-        Hors connexion — dernières données du {formatHeure(lastOnlineAt)}
+        Hors ligne — dernière donnée : {formatHeure(lastOnlineAt)}.
+        {pending > 0 ? ` ${pending} action${pending > 1 ? "s" : ""} mise${pending > 1 ? "s" : ""} en file.` : " Actions mises en file."}
       </span>
     </div>
   );

@@ -6,16 +6,20 @@
  * Actions : Voix ON/OFF · Ma position (recentrer) · Alerte communauté · Pause.
  * ─────────────────────────────────────────────────────────────────────────────
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { Mic, MicOff, MapPin, AlertTriangle, Coffee, X, Zap } from "lucide-react";
+import { Mic, MicOff, MapPin, AlertTriangle, Coffee, X, Zap, Radio } from "lucide-react";
 import { haptic, alert as hapticAlert, fatigue as hapticFatigue } from "@/lib/haptics";
 import { setVoiceMode, isVoiceEnabled, speak } from "@/lib/voice";
+import { useVoiceCommand } from "@/hooks/useVoiceCommand";
 
 export default function QuickActionBar() {
   const [location, navigate] = useLocation();
   const [open, setOpen] = useState(false);
   const [voiceOn, setVoiceOn] = useState(isVoiceEnabled());
+  const { isSupported: voiceCmdSupported, isListening, start: startListening, stop: stopListening } = useVoiceCommand();
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressTriggeredRef = useRef(false);
 
   // Ne pas afficher sur /login ou en mode conduite (déjà en pleine attention)
   if (location === "/login" || location === "/drive") return null;
@@ -26,6 +30,40 @@ export default function QuickActionBar() {
     setVoiceMode(next ? "on" : "off");
     haptic("tap");
     if (next) speak("Voix activée", { priority: "low" });
+  }
+
+  // ── Micro commandes vocales (push-to-talk) ─────────────────────────────────
+  // Appui long (>350ms) = démarre l'écoute push-to-talk (relâcher = arrêt).
+  // Tap court = bascule la voix ON/OFF (comportement historique conservé).
+  function micPointerDown() {
+    longPressTriggeredRef.current = false;
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTriggeredRef.current = true;
+      haptic("tap");
+      startListening();
+    }, 350);
+  }
+  function micPointerUp() {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    if (longPressTriggeredRef.current) {
+      stopListening();
+      longPressTriggeredRef.current = false;
+    } else {
+      toggleVoice();
+    }
+  }
+  function micPointerLeave() {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    if (longPressTriggeredRef.current) {
+      stopListening();
+      longPressTriggeredRef.current = false;
+    }
   }
   function myPosition() {
     haptic("tap");
@@ -50,6 +88,10 @@ export default function QuickActionBar() {
       icon: voiceOn ? Mic : MicOff,
       color: voiceOn ? "bg-emerald-600" : "bg-slate-600",
       onClick: toggleVoice,
+      // Bouton voix : tap court garde le comportement historique (toggle),
+      // un appui long déclenche le push-to-talk (géré via pointer handlers
+      // spécifiques ci-dessous, pas via onClick).
+      pointerHandlers: true,
     },
     {
       key: "position",
@@ -72,6 +114,19 @@ export default function QuickActionBar() {
       color: "bg-amber-600",
       onClick: takeBreak,
     },
+    ...(voiceCmdSupported
+      ? [
+          {
+            key: "voicecmd",
+            label: isListening ? "Écoute…" : "Commande",
+            icon: Radio,
+            color: isListening ? "bg-rose-600 animate-pulse-ring" : "bg-indigo-600",
+            onClick: () => {},
+            pointerHandlers: true,
+            isVoiceCmd: true,
+          },
+        ]
+      : []),
   ];
 
   return (
@@ -109,10 +164,16 @@ export default function QuickActionBar() {
             role="menu"
             aria-label="Actions rapides"
           >
-            {actions.map((a) => (
+            {actions.map((a: any) => (
               <button
                 key={a.key}
-                onClick={a.onClick}
+                {...(a.pointerHandlers
+                  ? {
+                      onPointerDown: micPointerDown,
+                      onPointerUp: micPointerUp,
+                      onPointerLeave: micPointerLeave,
+                    }
+                  : { onClick: a.onClick })}
                 className={`${a.color} text-white rounded-2xl shadow-xl flex flex-col items-center justify-center gap-1 active:scale-95 transition-transform`}
                 style={{ minHeight: 88, minWidth: 88 }}
                 role="menuitem"
