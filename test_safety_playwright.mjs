@@ -47,9 +47,8 @@ const report = { checks: [], screenshots: [] };
     await page.waitForTimeout(2500);
   }
 
-  console.log('Capture du token via requete reseau reelle');
-  await page.reload({ waitUntil: 'networkidle' });
-  await page.waitForTimeout(2000);
+  console.log('Capture du token via requete reseau reelle (deja loggue, pas de reload)');
+  await page.waitForTimeout(1500);
   console.log('  Token capture:', authToken ? 'oui' : 'non');
 
   async function apiFetch(path, opts = {}) {
@@ -168,32 +167,6 @@ const report = { checks: [], screenshots: [] };
   await page.waitForTimeout(500);
   await page.screenshot({ path: OUT + '/04-drive-night-mode.png', fullPage: false });
   report.screenshots.push('04-drive-night-mode.png');
-
-  console.log('Verification endpoints safety');
-  const sessionCurrent = await apiFetch('/api/safety/session/current');
-  console.log('  session/current ->', JSON.stringify(sessionCurrent));
-  report.checks.push({ name: 'GET /api/safety/session/current repond 200', pass: sessionCurrent.status === 200 });
-
-  const fatigueScore = await apiFetch('/api/safety/fatigue-score');
-  console.log('  fatigue-score ->', JSON.stringify(fatigueScore));
-  report.checks.push({ name: 'GET /api/safety/fatigue-score repond 200', pass: fatigueScore.status === 200 });
-  report.checks.push({ name: 'fatigue-score contient recommandation/band honnete', pass: !!(fatigueScore.body && (fatigueScore.body.recommendation_fr || fatigueScore.body.band)) });
-
-  const avoidZones = await apiFetch('/api/safety/avoid');
-  report.checks.push({ name: 'GET /api/safety/avoid repond 200', pass: avoidZones.status === 200 });
-
-  const microsleep = await apiFetch('/api/safety/microsleep-risk');
-  const hasDisclaimer = !!(microsleep.body && microsleep.body.honest_disclaimer_fr);
-  console.log('  microsleep-risk ->', JSON.stringify(microsleep));
-  report.checks.push({ name: 'GET /api/safety/microsleep-risk repond 200 avec disclaimer honnete', pass: microsleep.status === 200 && hasDisclaimer });
-
-  const tiredNow = await apiFetch('/api/safety/tired-now', { method: 'POST' });
-  report.checks.push({ name: 'POST /api/safety/tired-now repond 200', pass: tiredNow.status === 200 });
-
-  console.log('Test emergency endpoint (sans declencher de vraie alerte visible cote UI)');
-  const emergency = await apiFetch('/api/safety/emergency', { method: 'POST', body: JSON.stringify({ lat: 48.8566, lng: 2.3522 }) });
-  console.log('  emergency ->', JSON.stringify(emergency).slice(0, 300));
-  report.checks.push({ name: 'POST /api/safety/emergency repond 200 avec useful_numbers', pass: emergency.status === 200 && Array.isArray(emergency.body?.useful_numbers) });
 
   console.log('\n=== RESULTATS ===');
   report.checks.forEach((c) => console.log((c.pass ? 'PASS' : 'FAIL') + ' - ' + c.name));

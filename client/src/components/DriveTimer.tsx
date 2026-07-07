@@ -108,7 +108,7 @@ export function DriveTimer({ compact = false }: { compact?: boolean }) {
           type="button"
           onClick={togglePause}
           className="flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 active:bg-white/25 transition-colors shrink-0"
-          style={{ minWidth: 36, minHeight: 36 }}
+          style={{ minWidth: 44, minHeight: 44 }}
           aria-label={paused ? "Reprendre la conduite" : "Mettre en pause"}
           data-testid="drive-timer-toggle-pause"
         >
