@@ -74,18 +74,18 @@ async function main() {
     log('Mobile heatmap toggled + screenshot taken');
   }
 
-  // Try opening a zone popup to see ZoneChat
-  const zoneMarkers = mpage.locator('.leaflet-marker-icon, .leaflet-interactive');
+  // Try opening a zone popup to see ZoneChat — use divIcon markers (circleMarker labels), not raw SVG paths which get re-rendered by the heatmap refetch
+  const zoneMarkers = mpage.locator('.leaflet-marker-icon');
   const zCount = await zoneMarkers.count();
-  log('Zone markers/interactive elements found on mobile map: ' + zCount);
+  log('Zone divIcon markers found on mobile map: ' + zCount);
   if (zCount > 0) {
     try {
-      await zoneMarkers.first().click({ timeout: 5000 });
+      await zoneMarkers.first().click({ timeout: 8000, force: true });
       await mpage.waitForTimeout(1000);
       await mpage.screenshot({ path: '/tmp/qa_07_zone_popup.png' });
       log('Clicked a zone marker, screenshot taken (ZoneChat expected)');
     } catch (e) {
-      log('Could not click zone marker: ' + e.message);
+      log('Could not click zone marker: ' + e.message.split('\n')[0]);
     }
   }
 
@@ -105,7 +105,7 @@ async function main() {
   if (await plusBtn.count() > 0) {
     await plusBtn.click();
     await page3.waitForTimeout(600);
-    const profilLink = page3.locator('a:has-text("Profil"), [href="/profile"], text=Profil').first();
+    const profilLink = page3.locator('a:has-text("Profil"), [href="/profile"]').first();
     if (await profilLink.count() > 0) {
       await profilLink.click();
       await page3.waitForTimeout(1200);

@@ -896,12 +896,13 @@ export default function MapPage() {
           </div>
 
           {/* ─── Couche Communautaire : toggle "Chaleur communauté" (heatmap H3-like) ─── */}
+          {/* Positionné à gauche sur mobile pour éviter le FocusBubble (fixed right-2 z-40), à droite sur desktop */}
           <button
             type="button"
             onClick={() => setShowCommunityHeat((v) => !v)}
             data-testid="button-toggle-community-heat"
             aria-pressed={showCommunityHeat}
-            className={`absolute top-14 right-3 z-[1000] flex items-center gap-1.5 rounded-lg backdrop-blur px-2.5 py-2 border transition-colors ${showCommunityHeat ? "bg-orange-500/90 border-orange-300/50 text-white" : "bg-black/75 border-white/10 text-white/70"}`}
+            className={`absolute top-14 left-3 sm:left-auto sm:right-3 z-[1000] flex items-center gap-1.5 rounded-lg backdrop-blur px-2.5 py-2 border transition-colors ${showCommunityHeat ? "bg-orange-500/90 border-orange-300/50 text-white" : "bg-black/75 border-white/10 text-white/70"}`}
             style={{ minHeight: 44 }}
           >
             <Flame size={14} />
