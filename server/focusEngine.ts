@@ -26,6 +26,11 @@ export interface FocusAlternative {
   verb: string;
   zoneName: string;
   reasonShort: string;
+  zoneId: string | null;
+  distanceKm: number | null;
+  etaMin: number | null;
+  expectedGainEuros: number | null;
+  confidence: number;
 }
 
 export interface FocusRecommendation {
@@ -267,6 +272,11 @@ function buildResterRecommendation(current: any, scored: any[], now: number): Fo
       verb: "aller",
       zoneName: s.zoneName,
       reasonShort: s.reasonParts[0] ?? `Score ${Math.round(s.score)}`,
+      zoneId: s.zoneId,
+      distanceKm: s.distanceKm,
+      etaMin: estimateEtaMin(s.distanceKm),
+      expectedGainEuros: estimateGainLowEuros(s.score, s.longRideProbability),
+      confidence: Math.min(0.9, 0.4 + s.reasonParts.length * 0.15 + Math.min(s.score, 100) / 300),
     }));
 
   return {
@@ -306,6 +316,11 @@ function buildAllerRecommendation(scored: any[], now: number): FocusRecommendati
     verb: "aller",
     zoneName: s.zoneName,
     reasonShort: s.reasonParts[0] ?? `Score ${Math.round(s.score)} · ${s.distanceKm} km`,
+    zoneId: s.zoneId,
+    distanceKm: s.distanceKm,
+    etaMin: estimateEtaMin(s.distanceKm),
+    expectedGainEuros: estimateGainLowEuros(s.score, s.longRideProbability),
+    confidence: Math.min(0.9, 0.4 + s.reasonParts.length * 0.15 + Math.min(s.score, 100) / 300),
   }));
 
   const etaMin = estimateEtaMin(best.distanceKm);
