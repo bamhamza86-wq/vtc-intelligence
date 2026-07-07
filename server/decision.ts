@@ -25,6 +25,7 @@ import {
   type WhatIfScenario,
 } from "./decisionEngine";
 import { COACH_TEMPLATES } from "./coachTemplates";
+import { answerCoachQuestionExtended } from "./coachEngine";
 
 export const decisionRouter = Router();
 
@@ -136,7 +137,9 @@ decisionRouter.post("/api/coach/ask", requireAuth, (req: Request, res: Response)
     if (!question || !question.trim()) {
       return res.status(400).json({ error: "question requise" });
     }
-    res.json(answerCoachQuestion(question));
+    // Étendu (rapport.md §13.4) : patterns économiques supplémentaires (marge,
+    // km à vide, objectif, comparaison peer) avant repli sur answerCoachQuestion.
+    res.json(answerCoachQuestionExtended(question));
   } catch (e: any) {
     console.error("[coach/ask] error:", e);
     res.status(500).json({ error: "coach_ask_error", message: e?.message || "unknown" });

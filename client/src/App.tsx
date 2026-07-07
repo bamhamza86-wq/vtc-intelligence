@@ -26,6 +26,30 @@ import AirportPage from "./pages/AirportPage";
 import MLInsightsPage from "./pages/MLInsightsPage";
 import FatiguePage from "./pages/FatiguePage";
 import DecisionPage from "./pages/DecisionPage";
+import CrmPage from "./pages/CrmPage";
+import YieldPage from "./pages/YieldPage";
+// ─── Couche DIVERSIFICATION DE REVENUS (colis, B2B, devis/contrats, marketplace, aéroport, événements, cashback) ───
+import DiversificationPage from "./pages/DiversificationPage";
+// ─── Couche Coach IA Économique + Gamification (rapport.md §10, §13, §15, §20, §21) ───
+import CoachPage from "./pages/CoachPage";
+// ─── Couche SANTÉ & FINANCE PERSO (rapport.md §6, §11, §19 + gaps benchmark) ───
+import SantePage from "./pages/SantePage";
+import FinancePage from "./pages/FinancePage";
+// ─── Couche ARBITRAGE MULTI-PLATEFORME AUTOMATIQUE ───
+import ArbitragePage from "./pages/ArbitragePage";
+// ─── Couche FISCAL PROACTIF (rapport.md §5, §6, §18) ───
+import FiscalProactifPage from "./pages/FiscalProactifPage";
+// ─── Couche Prédictive Signaux (rapport.md §3, §8, §9, §22) ───
+import SignalsPage from "./pages/SignalsPage";
+// ─── Couche Véhicule (entretien, EV, carburant, éco-conduite) (rapport.md §4, §6) ───
+import VehiculePage from "./pages/VehiculePage";
+// ─── Couche TRUST & TRANSPARENCE (pourboire, flags client/lieu, historique offres, bouclier fiscal, incidents) ───
+import TrustPage from "./pages/TrustPage";
+// ─── Couche ANALYTICS BI AVANCÉE (rapport.md §10, §20 + gaps benchmark) ───
+import AnalyticsPage from "./pages/AnalyticsPage";
+// ─── Couche ONBOARDING NOUVEAU CHAUFFEUR + JURIDIQUE ───
+import OnboardingPage from "./pages/OnboardingPage";
+import LegalPage from "./pages/LegalPage";
 import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/not-found";
 import { registerServiceWorker } from "./lib/pwa";
@@ -187,6 +211,31 @@ export default function App() {
                 <Route path="/aeroports" component={AirportPage} />
                 <Route path="/fatigue" component={FatiguePage} />
                 <Route path="/decision" component={DecisionPage} />
+                <Route path="/yield" component={YieldPage} />
+                {/* ─── Couche FISCAL PROACTIF (rapport.md §5, §6, §18) ─── */}
+                <Route path="/fiscal" component={FiscalProactifPage} />
+                {/* ─── Couche Prédictive Signaux (rapport.md §3, §8, §9, §22) ─── */}
+                <Route path="/signals" component={SignalsPage} />
+                {/* ─── Couche CRM Chauffeur (rapport.md §7, §14.1, §17.1/17.3/17.4) ─── */}
+                <Route path="/crm" component={CrmPage} />
+                {/* ─── Couche DIVERSIFICATION DE REVENUS (colis, B2B, devis/contrats, marketplace, aéroport, cashback) ─── */}
+                <Route path="/diversification" component={DiversificationPage} />
+                {/* ─── Couche Coach IA Économique + Gamification (rapport.md §10, §13, §15, §20, §21) ─── */}
+                <Route path="/coach" component={CoachPage} />
+                {/* ─── Couche ARBITRAGE MULTI-PLATEFORME AUTOMATIQUE ─── */}
+                <Route path="/arbitrage" component={ArbitragePage} />
+                {/* ─── Couche Véhicule (entretien, EV, carburant, éco-conduite) (rapport.md §4, §6) ─── */}
+                <Route path="/vehicule" component={VehiculePage} />
+                {/* ─── Couche SANTÉ & FINANCE PERSO (rapport.md §6, §11, §19 + gaps benchmark) ─── */}
+                <Route path="/sante" component={SantePage} />
+                <Route path="/finance" component={FinancePage} />
+                {/* ─── Couche TRUST & TRANSPARENCE (pourboire, flags, historique offres, bouclier fiscal, incidents) ─── */}
+                <Route path="/trust" component={TrustPage} />
+                {/* ─── Couche ANALYTICS BI AVANCÉE (rapport.md §10, §20 + gaps benchmark) ─── */}
+                <Route path="/analytics" component={AnalyticsPage} />
+                {/* ─── Couche ONBOARDING NOUVEAU CHAUFFEUR + JURIDIQUE ─── */}
+                <Route path="/onboarding" component={OnboardingPage} />
+                <Route path="/legal" component={LegalPage} />
                 <Route component={NotFound} />
               </Switch>
             </Layout>

@@ -776,6 +776,11 @@ const ACHIEVEMENT_CATALOG: { key: string; label_fr: string; description_fr: stri
   { key: "christmas",       label_fr: "Noël au volant",              description_fr: "Une course le jour de Noël.",                     icon: "🎄" },
   { key: "new_year",        label_fr: "Nouvel An",                   description_fr: "Une course au Nouvel An.",                        icon: "🎉" },
   { key: "first_community", label_fr: "Premier signalement accepté", description_fr: "Votre premier signalement communautaire a été validé.", icon: "🤝" },
+  // ─── Achievements financiers (rapport.md §15.3) ──────────────────────────
+  { key: "first_2000",      label_fr: "Premier 2000€",               description_fr: "Vous avez dépassé 2000€ de revenu net sur un mois.", icon: "💶" },
+  { key: "breakeven_10j",   label_fr: "10 jours au-dessus du seuil",  description_fr: "10 jours consécutifs au-dessus de votre seuil de rentabilité.", icon: "📈" },
+  { key: "big_rides_10",    label_fr: "10 grosses courses",           description_fr: "10 courses à forte marge complétées.", icon: "💰" },
+  { key: "streak_7j",       label_fr: "Série de 7 jours",             description_fr: "7 jours d'activité consécutifs — belle régularité.", icon: "🔥" },
 ];
 
 /** Détection auto d'easter eggs métier — à appeler post-ride. */
@@ -793,6 +798,31 @@ export function checkEasterEggs(totalKm: number, totalRides: number, rideTimesta
 
 export function unlockFirstCommunitySignalAchievement(userId: string = DEFAULT_USER_ID): void {
   unlockAchievement("first_community", "Premier signalement accepté", "Votre premier signalement communautaire a été validé.", "🤝", userId);
+}
+
+/**
+ * Détection auto des achievements financiers (rapport.md §15.3) — appelée
+ * depuis gamifEcon.ts (endpoint /api/gamif/econ-leaderboard ou goal-progress)
+ * ou post-ride. Purement additive, aucune dépendance circulaire créée.
+ */
+export function checkEconAchievements(params: {
+  monthlyNetEur: number;
+  consecutiveBreakEvenDays: number;
+  bigRidesCount: number; // nb de courses à forte marge (seuil défini par l'appelant)
+}, userId: string = DEFAULT_USER_ID): void {
+  if (params.monthlyNetEur >= 2000) {
+    unlockAchievement("first_2000", "Premier 2000€", "Vous avez dépassé 2000€ de revenu net sur un mois.", "💶", userId);
+  }
+  if (params.consecutiveBreakEvenDays >= 10) {
+    unlockAchievement("breakeven_10j", "10 jours au-dessus du seuil", "10 jours consécutifs au-dessus de votre seuil de rentabilité.", "📈", userId);
+  }
+  if (params.bigRidesCount >= 10) {
+    unlockAchievement("big_rides_10", "10 grosses courses", "10 courses à forte marge complétées.", "💰", userId);
+  }
+  const streak = getStreakStatus(userId);
+  if (streak.current >= 7) {
+    unlockAchievement("streak_7j", "Série de 7 jours", "7 jours d'activité consécutifs — belle régularité.", "🔥", userId);
+  }
 }
 
 export function getAchievements(userId: string = DEFAULT_USER_ID) {

@@ -17,6 +17,7 @@
  */
 import { storage } from "./storage";
 import { recordEnrichedSignal, type SignalContext } from "./communityEngine";
+import { answerQuickVoiceQuery } from "./coachEngine";
 
 export interface VoiceCommandResult {
   ok: boolean;
@@ -193,6 +194,23 @@ export function handleVoiceCommand(rawTranscript: string, userId: string): Voice
       message: `Signalement enregistré : ${contextLabel[signalContext] ?? signalContext} à ${zone.name}. Merci !`,
       matched_zone: { id: zone.id, name: zone.name },
       signal: { type: signalType, context: signalContext },
+    };
+  }
+
+  // Intents "question rapide" (rapport.md §13.1) — délégués à coachEngine.answerQuickVoiceQuery
+  // pour une réponse parlée riche (chiffres réels) plutôt qu'une simple navigation.
+  // On tente ces intents AVANT les stubs de navigation génériques ci-dessous.
+  const quick = answerQuickVoiceQuery(rawTranscript);
+  if (quick.ok && quick.intent !== "unknown") {
+    const navigateMap: Record<string, string> = {
+      how_much_today: "/economics",
+      where_to_go: "/focus",
+    };
+    return {
+      ok: true,
+      intent: quick.intent,
+      message: quick.spoken_text,
+      navigate: navigateMap[quick.intent],
     };
   }
 

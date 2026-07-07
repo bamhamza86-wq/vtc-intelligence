@@ -14,8 +14,18 @@ import * as uxEngine from "./uxEngine";
 import { getNearbyStations, getNearbyStationsFallback } from "./chargingStationsIDF";
 import { handleVoiceCommand } from "./voiceCommands";
 import { decisionRouter } from "./decision";
+// ─── Couche Coach IA Économique + Gamification (rapport.md §10, §13, §15, §20, §21) ───
+import * as healthMetrics from "./healthMetrics";
+import * as coachEngine from "./coachEngine";
+import * as gamifEcon from "./gamifEcon";
+import * as notificationRules from "./notificationRules";
 // ─── Couche Fatigue Coach avancé + détection micro-sommeil sans caméra (rapport.md §5, §2) ───
 import * as fatigueCoach from "./fatigueCoach";
+import * as trustEngine from "./trustEngine";
+import * as healthEngine from "./healthEngine";
+import * as financeEngine from "./financeEngine";
+// ─── Couche ARBITRAGE MULTI-PLATEFORME AUTOMATIQUE (règles, simulateur, historique, pulse, garantie €/h) ───
+import * as arbitrageEngine from "./arbitrageEngine";
 // ← H2 : fusion adaptative multi-sources (TomTom + PHQ + vols + seeds)
 import {
   fusionSignals,
@@ -41,10 +51,16 @@ import * as wowEngine from "./wowEngine";
 import * as safetyEngine from "./safetyEngine";
 import { getSncfSignals, getZoneSncfBoost, GARE_ZONE_MAPPING, getSncfSignalsSync } from "./sncfService";
 import { getCurrentWeather, getCachedWeather } from "./weatherService";
+// ─── Couche Prédictive Signaux (rapport.md §3, §8, §9) ───
+import * as predictiveSignals from "./predictiveSignals";
+import * as specialModes from "./specialModes";
 // ─── Radar aérien communautaire (additif — rapport.md §5 signal surge + §13 wow#9) ───
 import * as radarLive from "./radarLive";
 // ─── Couche Aéroports + Événements + Grèves (additif — rapport.md §7) ───
 import * as airportEngine from "./airportEngine";
+import * as crmEngine from "./crmEngine";
+// ─── Couche DIVERSIFICATION DE REVENUS (colis, B2B, devis/contrats, marketplace, aéroport, événements, cashback) ───
+import * as diversificationEngine from "./diversificationEngine";
 import {
   testTomTomConnection,
   testGigDataConnection,
@@ -63,6 +79,16 @@ import {
 } from "./predictHQService";
 // ─── Couche Économie & Fiscalité (coût réel, marge, URSSAF/TVA, multi-plateforme) ───
 import * as economicsEngine from "./economicsEngine";
+// ─── Couche ANALYTICS BI AVANCÉE (rapport.md §10, §20 + gaps benchmark) ───
+import * as analyticsEngine from "./analyticsEngine";
+// ─── Couche FISCAL PROACTIF (Itération Rentabilisation, rapport.md §5, §6, §18) ───
+import * as fiscalProactif from "./fiscalProactif";
+import * as onboardingEngine from "./onboardingEngine";
+import * as legalEngine from "./legalEngine";
+// ─── Couche Véhicule (entretien, EV, carburant, éco-conduite) (rapport.md §4, §6) ───
+import * as vehicleEngine from "./vehicleEngine";
+// ─── Couche Yield Management (rapport.md §1 Optimisation économique fine + §2 Yield management) ───
+import * as yieldEngine from "./yieldEngine";
 import * as taxConstants from "./taxConstants";
 import * as focusEngineStatic from "./focusEngine";
 // ─── Couche Communauté (réputation, anti-troll, signaux enrichis, heatmap, avoid-zones, convergence) ───
@@ -4589,4 +4615,2754 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   // Premier passage immédiat au démarrage (non bloquant)
   setTimeout(() => airportEngine.runAirportEventsCron(), 5000);
   // ─── /COUCHE AÉROPORTS + ÉVÉNEMENTS + GRÈVES ───
+
+  // ═══ COUCHE YIELD MANAGEMENT (rapport.md §1 Optimisation économique fine + §2 Yield management) ═══
+  // 10 leviers : arbitrage plateforme temps réel, dead-mileage, projection fin de journée,
+  // value/minute, score qualité journée, taux d'acceptation optimal, ride-mix, prix de réserve,
+  // sur-sélectivité, simulateur always-on. Moteur : yieldEngine.ts.
+
+  // GET /api/platforms/optimal-mix?hour=&signals= — Levier 1.1 : arbitrage plateforme temps réel multi-critères
+  app.get("/api/platforms/optimal-mix", requireAuth, (req, res) => {
+    try {
+      const hour = req.query.hour !== undefined ? parseInt(String(req.query.hour), 10) : new Date().getHours();
+      let liveSignals: Record<string, any> | undefined;
+      if (req.query.signals) {
+        try { liveSignals = JSON.parse(String(req.query.signals)); } catch { liveSignals = undefined; }
+      }
+      const result = yieldEngine.computeOptimalPlatformMix(isFinite(hour) ? hour : new Date().getHours(), liveSignals);
+      res.json(result);
+    } catch (err: any) {
+      console.error("[yield/optimal-mix] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur calcul du mix plateforme optimal" });
+    }
+  });
+
+  // GET /api/economics/dead-mileage?days= — Levier 1.2 : synthèse kilométrage à vide
+  app.get("/api/economics/dead-mileage", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req) || "root";
+      const days = req.query.days ? parseInt(String(req.query.days), 10) : 7;
+      const summary = yieldEngine.getDeadMileageSummary(userId, isFinite(days) && days > 0 ? days : 7);
+      res.json(summary);
+    } catch (err: any) {
+      console.error("[economics/dead-mileage GET] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur récupération kilométrage à vide" });
+    }
+  });
+
+  // POST /api/economics/dead-mileage — Levier 1.2 : enregistrer un trajet à vide
+  app.post("/api/economics/dead-mileage", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req) || "root";
+      const { distance_km, duration_min, from_zone_id, to_zone_id, reason } = req.body || {};
+      if (typeof distance_km !== "number" || distance_km <= 0) {
+        return res.status(400).json({ error: "distance_km requis (nombre positif)" });
+      }
+      const entry = yieldEngine.recordDeadMileage({
+        userId,
+        distanceKm: distance_km,
+        durationMin: typeof duration_min === "number" ? duration_min : undefined,
+        fromZoneId: from_zone_id,
+        toZoneId: to_zone_id,
+        reason,
+      });
+      res.json(entry);
+    } catch (err: any) {
+      console.error("[economics/dead-mileage POST] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur enregistrement kilométrage à vide" });
+    }
+  });
+
+  // GET /api/economics/day-projection?target_hours=&target_income= — Levier 1.5 : projection fin de journée live
+  app.get("/api/economics/day-projection", requireAuth, (req, res) => {
+    try {
+      const targetHours = req.query.target_hours ? parseFloat(String(req.query.target_hours)) : 8;
+      const targetIncome = req.query.target_income ? parseFloat(String(req.query.target_income)) : undefined;
+      const result = yieldEngine.computeDayProjection(isFinite(targetHours) && targetHours > 0 ? targetHours : 8, targetIncome);
+      res.json(result);
+    } catch (err: any) {
+      console.error("[economics/day-projection] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur projection fin de journée" });
+    }
+  });
+
+  // GET /api/economics/marginal-value — Levier 1.6 : alerte value/minute décroissante
+  app.get("/api/economics/marginal-value", requireAuth, (req, res) => {
+    try {
+      const result = yieldEngine.computeMarginalValue();
+      res.json(result);
+    } catch (err: any) {
+      console.error("[economics/marginal-value] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur calcul valeur marginale" });
+    }
+  });
+
+  // GET /api/economics/day-quality-score — Levier 1.10 : score qualité journée composite
+  app.get("/api/economics/day-quality-score", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req) || "root";
+      const result = yieldEngine.computeDayQualityScore(userId);
+      res.json(result);
+    } catch (err: any) {
+      console.error("[economics/day-quality-score] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur calcul score qualité journée" });
+    }
+  });
+
+  // GET /api/yield/optimal-acceptance-rate?platform=&current_pct= — Levier 2.1 : taux d'acceptation optimal
+  app.get("/api/yield/optimal-acceptance-rate", requireAuth, (req, res) => {
+    try {
+      const platform = String(req.query.platform || "uber");
+      const currentPct = req.query.current_pct !== undefined ? parseFloat(String(req.query.current_pct)) : undefined;
+      const result = yieldEngine.computeOptimalAcceptanceRate(platform, currentPct !== undefined && isFinite(currentPct) ? currentPct : undefined);
+      res.json(result);
+    } catch (err: any) {
+      console.error("[yield/optimal-acceptance-rate] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur calcul taux d'acceptation optimal" });
+    }
+  });
+
+  // GET /api/yield/ride-mix?days=&hour= — Levier 2.2 : ratio courses courtes/longues
+  app.get("/api/yield/ride-mix", requireAuth, (req, res) => {
+    try {
+      const days = req.query.days ? parseInt(String(req.query.days), 10) : 7;
+      const hour = req.query.hour !== undefined ? parseInt(String(req.query.hour), 10) : undefined;
+      const result = yieldEngine.computeRideMix(isFinite(days) && days > 0 ? days : 7, hour !== undefined && isFinite(hour) ? hour : undefined);
+      res.json(result);
+    } catch (err: any) {
+      console.error("[yield/ride-mix] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur calcul ratio courses courtes/longues" });
+    }
+  });
+
+  // GET /api/yield/reserve-price?hour= — Levier 2.3 : prix de réserve dynamique
+  app.get("/api/yield/reserve-price", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req) || "root";
+      const hour = req.query.hour !== undefined ? parseInt(String(req.query.hour), 10) : undefined;
+      const result = yieldEngine.computeReservePrice(userId, hour !== undefined && isFinite(hour) ? hour : undefined);
+      res.json(result);
+    } catch (err: any) {
+      console.error("[yield/reserve-price] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur calcul prix de réserve" });
+    }
+  });
+
+  // GET /api/yield/over-selective-alert — Levier 2.4 : détection sur-sélectivité
+  app.get("/api/yield/over-selective-alert", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req) || "root";
+      const result = yieldEngine.computeOverSelectiveAlert(userId);
+      res.json(result);
+    } catch (err: any) {
+      console.error("[yield/over-selective-alert] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur détection sur-sélectivité" });
+    }
+  });
+
+  // GET /api/yield/always-on-simulator?hours= — Levier 2.6 : simulateur always-on vs sélectif
+  app.get("/api/yield/always-on-simulator", requireAuth, (req, res) => {
+    try {
+      const hours = req.query.hours ? parseFloat(String(req.query.hours)) : 8;
+      const result = yieldEngine.computeAlwaysOnSimulator(isFinite(hours) && hours > 0 ? hours : 8);
+      res.json(result);
+    } catch (err: any) {
+      console.error("[yield/always-on-simulator] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur simulateur always-on" });
+    }
+  });
+  // ─── /COUCHE YIELD MANAGEMENT ───
+// ════════════════════════════════════════════════════════════════════════
+  // ─── COUCHE FISCAL PROACTIF (rapport.md §5, §6, §18) ──────────────────────
+  // Additif : tables + endpoints pour provisionnement, notes de frais,
+  // entretien préventif, suivi LOA/LLD, échéances administratives FR 2026.
+  // ════════════════════════════════════════════════════════════════════════
+  fiscalProactif.initFiscalProactif();
+
+  // 5.1 — Simulateur franchissement seuil TVA
+  app.get("/api/tax/tva-threshold-forecast", requireAuth, (req, res) => {
+    try {
+      const year = req.query.year ? Number(req.query.year) : undefined;
+      res.json(fiscalProactif.computeTvaThresholdForecast(year));
+    } catch (err: any) {
+      console.error("[tax/tva-threshold-forecast] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur simulation seuil TVA" });
+    }
+  });
+
+  // 5.4 — Provisionnement quotidien automatique (URSSAF + TVA + IR)
+  app.get("/api/tax/daily-provision", requireAuth, (req, res) => {
+    try {
+      const date = req.query.date ? String(req.query.date) : undefined;
+      res.json(fiscalProactif.computeDailyProvision(date));
+    } catch (err: any) {
+      console.error("[tax/daily-provision] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur provisionnement quotidien" });
+    }
+  });
+  app.get("/api/tax/provisions-history", requireAuth, (req, res) => {
+    try {
+      const limit = req.query.limit ? Number(req.query.limit) : 30;
+      res.json({ history: fiscalProactif.getProvisionsHistory(limit) });
+    } catch (err: any) {
+      console.error("[tax/provisions-history] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur historique provisions" });
+    }
+  });
+
+  // 5.5 — Notes de frais avec catégorisation (POST/GET)
+  app.post("/api/expenses", requireAuth, (req, res) => {
+    try {
+      const { date, category, label, amount_eur, km, deductible, notes } = req.body || {};
+      if (!category) return res.status(400).json({ error: "category requis" });
+      const expense = fiscalProactif.addExpense({ date, category, label, amount_eur, km, deductible, notes });
+      res.status(201).json(expense);
+    } catch (err: any) {
+      console.error("[expenses/create] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur création dépense" });
+    }
+  });
+  app.get("/api/expenses", requireAuth, (req, res) => {
+    try {
+      const month = req.query.month ? String(req.query.month) : undefined;
+      const category = req.query.category ? (String(req.query.category) as any) : undefined;
+      const limit = req.query.limit ? Number(req.query.limit) : undefined;
+      res.json(fiscalProactif.listExpenses({ month, category, limit }));
+    } catch (err: any) {
+      console.error("[expenses/list] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur liste dépenses" });
+    }
+  });
+
+  // 5.6 — Calcul ACRE éligibilité + économies
+  app.get("/api/tax/acre-simulator", requireAuth, (req, res) => {
+    try {
+      const annualCa = req.query.annual_ca ? Number(req.query.annual_ca) : undefined;
+      res.json(fiscalProactif.simulateAcre(annualCa));
+    } catch (err: any) {
+      console.error("[tax/acre-simulator] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur simulateur ACRE" });
+    }
+  });
+
+  // 5.7 — Versement libératoire vs prélèvement à la source
+  app.get("/api/tax/liberatoire-vs-source", requireAuth, (req, res) => {
+    try {
+      const annualCa = req.query.annual_ca
+        ? Number(req.query.annual_ca)
+        : economicsEngine.computeUrssafSummary(new Date().getFullYear()).total_ca;
+      const rfrParPart = req.query.rfr_par_part ? Number(req.query.rfr_par_part) : undefined;
+      const tauxMoyen = req.query.taux_moyen_pct ? Number(req.query.taux_moyen_pct) : undefined;
+      res.json(fiscalProactif.computeLiberatoireVsSource(annualCa, rfrParPart, tauxMoyen));
+    } catch (err: any) {
+      console.error("[tax/liberatoire-vs-source] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur comparateur libératoire/source" });
+    }
+  });
+
+  // 6.1 — Entretien préventif prédictif (planning km + rappels)
+  app.get("/api/maintenance/preventive", requireAuth, (_req, res) => {
+    try {
+      res.json(fiscalProactif.computePreventiveMaintenance());
+    } catch (err: any) {
+      console.error("[maintenance/preventive] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur entretien préventif" });
+    }
+  });
+  app.put("/api/maintenance/preventive/:component/done", requireAuth, (req, res) => {
+    try {
+      const item = fiscalProactif.markMaintenanceScheduleDone(String(req.params.component));
+      if (!item) return res.status(404).json({ error: "Composant introuvable" });
+      res.json(item);
+    } catch (err: any) {
+      console.error("[maintenance/preventive/done] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur mise à jour entretien" });
+    }
+  });
+
+  // 6.3 — Alerte dépassement km LOA/LLD
+  app.get("/api/maintenance/loa-km-tracker", requireAuth, (_req, res) => {
+    try {
+      res.json(fiscalProactif.computeLoaKmTracker());
+    } catch (err: any) {
+      console.error("[maintenance/loa-km-tracker] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur suivi km LOA/LLD" });
+    }
+  });
+  app.post("/api/maintenance/loa-contract", requireAuth, (req, res) => {
+    try {
+      const { contract_type, start_date, end_date, km_plafond_annuel, km_depart, penalite_par_km_eur } = req.body || {};
+      if (!start_date || !end_date || !km_plafond_annuel) {
+        return res.status(400).json({ error: "start_date, end_date et km_plafond_annuel requis" });
+      }
+      const contract = fiscalProactif.upsertLoaContract({
+        contract_type, start_date, end_date, km_plafond_annuel, km_depart, penalite_par_km_eur,
+      });
+      res.status(201).json(contract);
+    } catch (err: any) {
+      console.error("[maintenance/loa-contract] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur enregistrement contrat LOA/LLD" });
+    }
+  });
+
+  // 6.4 — Comparateur LOA vs LLD vs achat
+  app.post("/api/economics/vehicle-finance-comparator", requireAuth, (req, res) => {
+    try {
+      const { prix_vehicule_eur, duree_mois, km_annuel_estime, apport_eur } = req.body || {};
+      if (!prix_vehicule_eur) return res.status(400).json({ error: "prix_vehicule_eur requis" });
+      res.json(fiscalProactif.compareVehicleFinance({ prix_vehicule_eur, duree_mois, km_annuel_estime, apport_eur }));
+    } catch (err: any) {
+      console.error("[economics/vehicle-finance-comparator] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur comparateur financement véhicule" });
+    }
+  });
+
+  // 18.1 — Rappels URSSAF/TVA/CFE/IR (échéances administratives)
+  app.get("/api/admin/deadlines", requireAuth, (req, res) => {
+    try {
+      const limit = req.query.limit ? Number(req.query.limit) : 20;
+      res.json({ deadlines: fiscalProactif.getUpcomingDeadlines(limit) });
+    } catch (err: any) {
+      console.error("[admin/deadlines] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur échéances administratives" });
+    }
+  });
+  app.post("/api/admin/deadlines", requireAuth, (req, res) => {
+    try {
+      const { type, label_fr, due_date } = req.body || {};
+      if (!type || !label_fr || !due_date) return res.status(400).json({ error: "type, label_fr et due_date requis" });
+      res.status(201).json(fiscalProactif.addCustomDeadline({ type, label_fr, due_date }));
+    } catch (err: any) {
+      console.error("[admin/deadlines/create] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur création échéance" });
+    }
+  });
+  app.put("/api/admin/deadlines/:id/done", requireAuth, (req, res) => {
+    try {
+      fiscalProactif.markDeadlineDone(Number(req.params.id));
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[admin/deadlines/done] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur mise à jour échéance" });
+    }
+  });
+
+  // 18.2 — Carte professionnelle VTC + formation continue (5 ans)
+  app.get("/api/admin/professional-card", requireAuth, (_req, res) => {
+    try {
+      res.json(fiscalProactif.getProfessionalCardStatus());
+    } catch (err: any) {
+      console.error("[admin/professional-card] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur statut carte professionnelle" });
+    }
+  });
+  app.put("/api/admin/professional-card", requireAuth, (req, res) => {
+    try {
+      const { carte_pro_vtc_date, carte_pro_vtc_expiry } = req.body || {};
+      fiscalProactif.updateFiscalProfileFields({ carte_pro_vtc_date, carte_pro_vtc_expiry });
+      res.json(fiscalProactif.getProfessionalCardStatus());
+    } catch (err: any) {
+      console.error("[admin/professional-card/update] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur mise à jour carte professionnelle" });
+    }
+  });
+
+  // 18.3 — Contrôle technique véhicule
+  app.get("/api/admin/controle-technique", requireAuth, (_req, res) => {
+    try {
+      res.json(fiscalProactif.getControleTechniqueStatus());
+    } catch (err: any) {
+      console.error("[admin/controle-technique] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur statut contrôle technique" });
+    }
+  });
+  app.put("/api/admin/controle-technique", requireAuth, (req, res) => {
+    try {
+      const { controle_technique_date } = req.body || {};
+      fiscalProactif.updateFiscalProfileFields({ controle_technique_date });
+      res.json(fiscalProactif.getControleTechniqueStatus());
+    } catch (err: any) {
+      console.error("[admin/controle-technique/update] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur mise à jour contrôle technique" });
+    }
+  });
+
+  // 18.4 — Assurance RC circulation professionnelle
+  app.get("/api/admin/assurance-rc", requireAuth, (_req, res) => {
+    try {
+      res.json(fiscalProactif.getAssuranceRcStatus());
+    } catch (err: any) {
+      console.error("[admin/assurance-rc] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur statut assurance RC pro" });
+    }
+  });
+  app.put("/api/admin/assurance-rc", requireAuth, (req, res) => {
+    try {
+      const { assurance_rc_pro_expiry } = req.body || {};
+      fiscalProactif.updateFiscalProfileFields({ assurance_rc_pro_expiry });
+      res.json(fiscalProactif.getAssuranceRcStatus());
+    } catch (err: any) {
+      console.error("[admin/assurance-rc/update] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur mise à jour assurance RC pro" });
+    }
+  });
+  // ─── /COUCHE FISCAL PROACTIF ───
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // COUCHE VÉHICULE (entretien, EV, carburant, éco-conduite) — rapport.md §4, §6
+  // ═══════════════════════════════════════════════════════════════════════
+  vehicleEngine.initVehicleEngine();
+
+  // 1 — Score éco-conduite du jour
+  app.post("/api/vehicle/eco-score/log", requireAuth, (req, res) => {
+    try {
+      const { harsh_braking_count, harsh_accel_count, avg_speed_kmh, km_parcourus, source } = req.body || {};
+      const result = vehicleEngine.logEcoDriving(vehicleEngine.DEFAULT_USER, {
+        harsh_braking_count, harsh_accel_count, avg_speed_kmh, km_parcourus, source,
+      });
+      res.status(201).json(result);
+    } catch (err: any) {
+      console.error("[vehicle/eco-score/log] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur enregistrement éco-conduite" });
+    }
+  });
+  app.get("/api/vehicle/eco-score", requireAuth, (_req, res) => {
+    try {
+      res.json(vehicleEngine.computeEcoScore(vehicleEngine.DEFAULT_USER));
+    } catch (err: any) {
+      console.error("[vehicle/eco-score] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur calcul score éco-conduite" });
+    }
+  });
+
+  // 2 — Stations carburant les moins chères
+  app.get("/api/vehicle/cheap-fuel", requireAuth, (req, res) => {
+    try {
+      const lat = parseFloat(String(req.query.lat)) || 48.8566;
+      const lng = parseFloat(String(req.query.lng)) || 2.3522;
+      const fuelType = String(req.query.type || "E10");
+      const radiusKm = req.query.radiusKm ? parseFloat(String(req.query.radiusKm)) : 15;
+      res.json(vehicleEngine.getCheapFuelStations(lat, lng, fuelType, radiusKm));
+    } catch (err: any) {
+      console.error("[vehicle/cheap-fuel] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur recherche stations carburant" });
+    }
+  });
+
+  // 3 — Bornes de recharge stratégiques (3 paliers)
+  app.get("/api/vehicle/charging-strategy", requireAuth, (req, res) => {
+    try {
+      const lat = parseFloat(String(req.query.lat)) || 48.8566;
+      const lng = parseFloat(String(req.query.lng)) || 2.3522;
+      res.json(vehicleEngine.getChargingStrategy(lat, lng));
+    } catch (err: any) {
+      console.error("[vehicle/charging-strategy] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur stratégie de recharge" });
+    }
+  });
+
+  // 4 — Temps de charge = pause légale
+  app.get("/api/vehicle/charge-as-break", requireAuth, (req, res) => {
+    try {
+      const lat = parseFloat(String(req.query.lat)) || 48.8566;
+      const lng = parseFloat(String(req.query.lng)) || 2.3522;
+      res.json(vehicleEngine.getChargeAsBreak(vehicleEngine.DEFAULT_USER, lat, lng));
+    } catch (err: any) {
+      console.error("[vehicle/charge-as-break] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur corrélation charge/pause" });
+    }
+  });
+
+  // 5 — Coût réel EV vs thermique (jour par jour)
+  app.post("/api/vehicle/ev-vs-thermal", requireAuth, (req, res) => {
+    try {
+      const { km_par_jour, jours, conso_kwh_100km, conso_l_100km, prix_carburant_eur_l, pct_recharge_rapide, pct_recharge_lente } = req.body || {};
+      res.json(vehicleEngine.computeEvVsThermal({
+        km_par_jour, jours, conso_kwh_100km, conso_l_100km, prix_carburant_eur_l, pct_recharge_rapide, pct_recharge_lente,
+      }));
+    } catch (err: any) {
+      console.error("[vehicle/ev-vs-thermal] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur comparatif EV vs thermique" });
+    }
+  });
+  app.get("/api/vehicle/ev-vs-thermal", requireAuth, (_req, res) => {
+    try {
+      res.json(vehicleEngine.computeEvVsThermal({}));
+    } catch (err: any) {
+      console.error("[vehicle/ev-vs-thermal GET] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur comparatif EV vs thermique" });
+    }
+  });
+
+  // 6 — Rappels d'entretien (table dédiée maintenance_reminders)
+  app.get("/api/vehicle/maintenance-reminders", requireAuth, (_req, res) => {
+    try {
+      res.json({ reminders: vehicleEngine.getMaintenanceReminders() });
+    } catch (err: any) {
+      console.error("[vehicle/maintenance-reminders] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur rappels entretien" });
+    }
+  });
+  app.post("/api/vehicle/maintenance-reminders/progress", requireAuth, (req, res) => {
+    try {
+      const { current_km } = req.body || {};
+      if (current_km === undefined) return res.status(400).json({ error: "current_km requis" });
+      res.json({ reminders: vehicleEngine.updateMaintenanceProgress(Number(current_km)) });
+    } catch (err: any) {
+      console.error("[vehicle/maintenance-reminders/progress] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur mise à jour progression entretien" });
+    }
+  });
+  app.put("/api/vehicle/maintenance-reminders/:id/done", requireAuth, (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const { next_km_interval } = req.body || {};
+      const updated = vehicleEngine.markReminderDone(id, Number(next_km_interval) || 15000);
+      if (!updated) return res.status(404).json({ error: "Rappel introuvable" });
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[vehicle/maintenance-reminders/done] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur validation entretien" });
+    }
+  });
+
+  // 7 — LOA/LLD km tracker (délègue à fiscalProactif : table loa_contract existante)
+  app.get("/api/vehicle/loa-tracker", requireAuth, (_req, res) => {
+    try {
+      res.json(fiscalProactif.computeLoaKmTracker());
+    } catch (err: any) {
+      console.error("[vehicle/loa-tracker] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur suivi km LOA/LLD" });
+    }
+  });
+  app.post("/api/vehicle/loa-tracker", requireAuth, (req, res) => {
+    try {
+      const { contract_type, start_date, end_date, km_plafond_annuel, km_depart, penalite_par_km_eur } = req.body || {};
+      if (!start_date || !end_date || !km_plafond_annuel) {
+        return res.status(400).json({ error: "start_date, end_date et km_plafond_annuel requis" });
+      }
+      const contract = fiscalProactif.upsertLoaContract({ contract_type, start_date, end_date, km_plafond_annuel, km_depart, penalite_par_km_eur });
+      res.status(201).json(contract);
+    } catch (err: any) {
+      console.error("[vehicle/loa-tracker POST] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur enregistrement contrat LOA/LLD" });
+    }
+  });
+
+  // 8 — Comparateur LOA vs LLD vs achat (délègue à fiscalProactif)
+  app.post("/api/vehicle/finance-comparator", requireAuth, (req, res) => {
+    try {
+      const { prix_vehicule_eur, duree_mois, km_annuel_estime, apport_eur } = req.body || {};
+      if (!prix_vehicule_eur) return res.status(400).json({ error: "prix_vehicule_eur requis" });
+      res.json(fiscalProactif.compareVehicleFinance({ prix_vehicule_eur, duree_mois, km_annuel_estime, apport_eur }));
+    } catch (err: any) {
+      console.error("[vehicle/finance-comparator] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur comparateur financement véhicule" });
+    }
+  });
+
+  // 9 — Suivi consommation (fuel_log)
+  app.get("/api/vehicle/fuel-log", requireAuth, (req, res) => {
+    try {
+      const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 30;
+      res.json(vehicleEngine.getFuelLogStats(vehicleEngine.DEFAULT_USER, limit));
+    } catch (err: any) {
+      console.error("[vehicle/fuel-log] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur récupération consommation" });
+    }
+  });
+  app.post("/api/vehicle/fuel-log", requireAuth, (req, res) => {
+    try {
+      const { date, km_debut, km_fin, litres, kwh, prix, station } = req.body || {};
+      if (km_debut === undefined || km_fin === undefined || prix === undefined) {
+        return res.status(400).json({ error: "km_debut, km_fin et prix requis" });
+      }
+      const entry = vehicleEngine.addFuelLog(vehicleEngine.DEFAULT_USER, { date, km_debut, km_fin, litres, kwh, prix, station });
+      res.status(201).json(entry);
+    } catch (err: any) {
+      console.error("[vehicle/fuel-log POST] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur ajout plein/recharge" });
+    }
+  });
+
+  // 10 — Alerte carburant décision (plein maintenant vs attendre)
+  app.get("/api/vehicle/refuel-decision", requireAuth, (req, res) => {
+    try {
+      const lat = parseFloat(String(req.query.lat)) || 48.8566;
+      const lng = parseFloat(String(req.query.lng)) || 2.3522;
+      const fuelType = String(req.query.type || "E10");
+      const reservoirPct = req.query.reservoir_pct ? parseFloat(String(req.query.reservoir_pct)) : 25;
+      res.json(vehicleEngine.getRefuelDecision(lat, lng, fuelType, reservoirPct));
+    } catch (err: any) {
+      console.error("[vehicle/refuel-decision] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur décision carburant" });
+    }
+  });
+
+  // 11 — Détecteur véhicule non rentable
+  app.get("/api/vehicle/profitability-check", requireAuth, (req, res) => {
+    try {
+      const courses_par_jour = req.query.courses_par_jour ? parseFloat(String(req.query.courses_par_jour)) : undefined;
+      const km_par_jour = req.query.km_par_jour ? parseFloat(String(req.query.km_par_jour)) : undefined;
+      res.json(vehicleEngine.checkVehicleProfitability({ courses_par_jour, km_par_jour }));
+    } catch (err: any) {
+      console.error("[vehicle/profitability-check] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur analyse rentabilité véhicule" });
+    }
+  });
+
+  // Profil véhicule (getter/setter utilisé par la page frontend)
+  app.get("/api/vehicle/profile", requireAuth, (_req, res) => {
+    try {
+      res.json(vehicleEngine.getVehicleProfile());
+    } catch (err: any) {
+      console.error("[vehicle/profile] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur profil véhicule" });
+    }
+  });
+  app.put("/api/vehicle/profile", requireAuth, (req, res) => {
+    try {
+      res.json(vehicleEngine.updateVehicleProfile(req.body || {}));
+    } catch (err: any) {
+      console.error("[vehicle/profile PUT] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur mise à jour profil véhicule" });
+    }
+  });
+  // ─── /COUCHE VÉHICULE ───
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // COUCHE PRÉDICTIVE SIGNAUX (rapport.md §3, §8, §9, §22)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // ── 3.1 Modèle météo-demande personnalisé ──
+  app.get("/api/signals/weather-demand-model", requireAuth, async (_req, res) => {
+    try {
+      await getCurrentWeather(); // rafraîchit le cache météo si besoin
+      res.json(predictiveSignals.computeWeatherDemandModel());
+    } catch (err: any) {
+      console.error("[signals/weather-demand-model] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur modèle météo-demande" });
+    }
+  });
+
+  // ── 3.2 Corrélation jours de paie ──
+  app.get("/api/signals/payday-effect", requireAuth, (req, res) => {
+    try {
+      const date = req.query.date ? String(req.query.date) : undefined;
+      res.json(predictiveSignals.computePaydayEffect(date));
+    } catch (err: any) {
+      console.error("[signals/payday-effect] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur effet jour de paie" });
+    }
+  });
+
+  // ── 3.3 Vacances scolaires FR (zones A/B/C, calendrier 2026-2027) ──
+  app.get("/api/signals/school-holidays", requireAuth, (req, res) => {
+    try {
+      const date = req.query.date ? String(req.query.date) : new Date().toISOString().slice(0, 10);
+      const impact = predictiveSignals.getSchoolHolidaysImpact(date);
+      res.json({
+        ...impact,
+        calendar: predictiveSignals.VACANCES_SCOLAIRES_2026_2027,
+        zone_c_academies: predictiveSignals.ZONE_C_ACADEMIES,
+      });
+    } catch (err: any) {
+      console.error("[signals/school-holidays] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur vacances scolaires" });
+    }
+  });
+
+  // ── 3.4 Agrégats micro-locaux (hôtels, hôpitaux, cinémas, bureaux) ──
+  app.get("/api/signals/local-hotspots", requireAuth, (req, res) => {
+    try {
+      const hour = req.query.hour !== undefined ? parseInt(String(req.query.hour), 10) : undefined;
+      res.json({ hotspots: predictiveSignals.getLocalHotspots(hour) });
+    } catch (err: any) {
+      console.error("[signals/local-hotspots] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur agrégats micro-locaux" });
+    }
+  });
+
+  // ── 3.5 RER perturbés → zones bénéficiaires (réutilise sncfService) ──
+  app.get("/api/signals/rer-disruption-impact", requireAuth, async (_req, res) => {
+    try {
+      const sncf = await getSncfSignals();
+      const disruptions = await airportEngine.getTransportDisruptions();
+      const beneficiaryZones = Array.from(
+        new Set([...sncf.peak_zones, ...disruptions.flatMap((d) => (d.zone_id ? [d.zone_id] : []))])
+      );
+      res.json({
+        sncf_signals: sncf,
+        active_disruptions: disruptions,
+        beneficiary_zones: beneficiaryZones,
+        message_fr:
+          disruptions.length > 0
+            ? `${disruptions.length} perturbation(s) active(s) — zones bénéficiaires potentielles : ${beneficiaryZones.join(", ") || "aucune identifiée"}.`
+            : "Aucune perturbation RER/métro active actuellement.",
+      });
+    } catch (err: any) {
+      console.error("[signals/rer-disruption-impact] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur impact perturbation RER" });
+    }
+  });
+
+  // ── 8.1 Shifts optimaux recommandés ──
+  app.get("/api/planning/optimal-shifts", requireAuth, (req, res) => {
+    try {
+      const dow = req.query.day_of_week !== undefined ? parseInt(String(req.query.day_of_week), 10) : undefined;
+      res.json({ shifts: predictiveSignals.getOptimalShifts(dow) });
+    } catch (err: any) {
+      console.error("[planning/optimal-shifts] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur shifts optimaux" });
+    }
+  });
+
+  // ── 8.2 Jours off recommandés ──
+  app.get("/api/planning/rest-days", requireAuth, (_req, res) => {
+    try {
+      res.json(predictiveSignals.getRestDaysRecommendation());
+    } catch (err: any) {
+      console.error("[planning/rest-days] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur jours off recommandés" });
+    }
+  });
+
+  // ── 8.3 Planning hebdomadaire suggéré ──
+  app.get("/api/planning/weekly-plan", requireAuth, (req, res) => {
+    try {
+      const startDate = req.query.start_date ? String(req.query.start_date) : undefined;
+      res.json(predictiveSignals.getWeeklyPlan(startDate));
+    } catch (err: any) {
+      console.error("[planning/weekly-plan] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur planning hebdomadaire" });
+    }
+  });
+
+  // ── 9.1 Calendrier grèves 48-72h (préavis SNCF/RATP) ──
+  app.get("/api/signals/strikes-forecast", requireAuth, (_req, res) => {
+    try {
+      res.json(predictiveSignals.getStrikesForecast());
+    } catch (err: any) {
+      console.error("[signals/strikes-forecast] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur prévision grèves" });
+    }
+  });
+  app.post("/api/signals/strikes-forecast", requireAuth, (req, res) => {
+    try {
+      const { operator, line_or_scope, notice_type, start_date, end_date, impact_desc, source_url } = req.body || {};
+      if (!operator || !line_or_scope || !start_date || !end_date || !impact_desc) {
+        return res.status(400).json({ error: "operator, line_or_scope, start_date, end_date, impact_desc requis" });
+      }
+      const id = predictiveSignals.addStrikeNotice({ operator, line_or_scope, notice_type, start_date, end_date, impact_desc, source_url });
+      res.json({ id, ...predictiveSignals.getStrikesForecast() });
+    } catch (err: any) {
+      console.error("[signals/strikes-forecast POST] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur ajout préavis grève" });
+    }
+  });
+
+  // ── 9.2 Événements majeurs annoncés (table major_events_2026 pré-remplie) ──
+  app.get("/api/signals/major-events", requireAuth, (_req, res) => {
+    try {
+      res.json({
+        events: predictiveSignals.getMajorEvents2026(),
+        next_event: predictiveSignals.getNextMajorEvent(),
+      });
+    } catch (err: any) {
+      console.error("[signals/major-events] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur événements majeurs" });
+    }
+  });
+
+  // ── 9.3 Alertes trafic récurrentes (A86, A6a, Porte de Bagnolet) ──
+  app.get("/api/signals/traffic-patterns", requireAuth, (req, res) => {
+    try {
+      const hour = req.query.hour !== undefined ? parseInt(String(req.query.hour), 10) : undefined;
+      res.json({ patterns: predictiveSignals.getTrafficPatterns(hour) });
+    } catch (err: any) {
+      console.error("[signals/traffic-patterns] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur alertes trafic récurrentes" });
+    }
+  });
+
+  // ── 22.1-22.6 Modes spéciaux actifs (canicule/grève/fêtes/ramadan/vacances/weekend) ──
+  app.get("/api/modes/active", requireAuth, (req, res) => {
+    try {
+      const date = req.query.date ? String(req.query.date) : undefined;
+      res.json(specialModes.detectActiveModes(date));
+    } catch (err: any) {
+      console.error("[modes/active] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur détection modes spéciaux" });
+    }
+  });
+
+  // ── Bandeau "signaux du jour" agrégé pour SignalsPage (météo + mode actif + grève + événements) ──
+  app.get("/api/signals/today-summary", requireAuth, async (_req, res) => {
+    try {
+      const [weather, sncf] = await Promise.all([getCurrentWeather(), getSncfSignals()]);
+      const modes = specialModes.detectActiveModes();
+      const strikes = predictiveSignals.getStrikesForecast();
+      const nextEvent = predictiveSignals.getNextMajorEvent();
+      const traffic = predictiveSignals.getTrafficPatterns();
+      const today = new Date().toISOString().slice(0, 10);
+      const ferie = predictiveSignals.isFerie(today);
+
+      res.json({
+        date: today,
+        weather,
+        sncf_signals: sncf,
+        active_modes: modes.active_modes,
+        most_urgent_mode: modes.most_urgent,
+        strikes,
+        next_major_event: nextEvent,
+        traffic_active: traffic.filter((t) => t.is_active_now),
+        ferie,
+      });
+    } catch (err: any) {
+      console.error("[signals/today-summary] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur résumé signaux du jour" });
+    }
+  });
+  // ─── /COUCHE PRÉDICTIVE SIGNAUX ───
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ─── COUCHE CRM CHAUFFEUR (clientèle privée & partenariats) ────────────
+  // rapport.md §7 (Chaîne de valeur clients), §14.1 (Bourse d'échange),
+  // §17.1/17.3/17.4 (Automatisation clientèle privée)
+  // ══════════════════════════════════════════════════════════════════════
+
+  // ─── 7.1 Clients — CRUD ─────────────────────────────────────────────────
+  app.get("/api/crm/clients", requireAuth, (req, res) => {
+    try {
+      const search = req.query.search ? String(req.query.search) : undefined;
+      res.json(crmEngine.listClients(search));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste clients" });
+    }
+  });
+
+  app.get("/api/crm/clients/:id", requireAuth, (req, res) => {
+    try {
+      const client = crmEngine.getClient(Number(req.params.id));
+      if (!client) return res.status(404).json({ error: "Client introuvable" });
+      res.json(client);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur détail client" });
+    }
+  });
+
+  app.post("/api/crm/clients", requireAuth, (req, res) => {
+    try {
+      const client = crmEngine.createClient(req.body || {});
+      res.status(201).json(client);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur création client" });
+    }
+  });
+
+  app.put("/api/crm/clients/:id", requireAuth, (req, res) => {
+    try {
+      const client = crmEngine.updateClient(Number(req.params.id), req.body || {});
+      res.json(client);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur mise à jour client" });
+    }
+  });
+
+  app.delete("/api/crm/clients/:id", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.deleteClient(Number(req.params.id)));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur suppression client" });
+    }
+  });
+
+  // ─── 7.1 Courses privées — CRUD ─────────────────────────────────────────
+  app.get("/api/crm/rides", requireAuth, (req, res) => {
+    try {
+      const clientId = req.query.client_id ? Number(req.query.client_id) : undefined;
+      res.json(crmEngine.listRides(clientId));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste courses" });
+    }
+  });
+
+  app.post("/api/crm/rides", requireAuth, (req, res) => {
+    try {
+      const ride = crmEngine.createRide(req.body || {});
+      res.status(201).json(ride);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur création course" });
+    }
+  });
+
+  app.delete("/api/crm/rides/:id", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.deleteRide(Number(req.params.id)));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur suppression course" });
+    }
+  });
+
+  // ─── 7.2 Blacklist personnelle ──────────────────────────────────────────
+  app.get("/api/crm/blacklist", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.listBlacklist());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste blacklist" });
+    }
+  });
+
+  app.post("/api/crm/blacklist", requireAuth, (req, res) => {
+    try {
+      res.status(201).json(crmEngine.addBlacklistEntry(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur ajout blacklist" });
+    }
+  });
+
+  app.delete("/api/crm/blacklist/:id", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.removeBlacklistEntry(Number(req.params.id)));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur suppression blacklist" });
+    }
+  });
+
+  // ─── 7.3 Notation client visible avant acceptation ──────────────────────
+  app.get("/api/crm/rating-lookup", requireAuth, (req, res) => {
+    try {
+      const ref = String(req.query.ref || "");
+      res.json(crmEngine.ratingLookup(ref));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur recherche notation" });
+    }
+  });
+
+  // ─── 7.4 Suivi VIP / pourboires ─────────────────────────────────────────
+  app.get("/api/crm/vip-analytics", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.vipAnalytics());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur analytics VIP" });
+    }
+  });
+
+  // ─── 7.5 Courses récurrentes ─────────────────────────────────────────────
+  app.get("/api/crm/recurring", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.listRecurring());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste récurrentes" });
+    }
+  });
+
+  app.post("/api/crm/recurring", requireAuth, (req, res) => {
+    try {
+      res.status(201).json(crmEngine.createRecurring(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur création récurrente" });
+    }
+  });
+
+  app.put("/api/crm/recurring/:id", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.updateRecurring(Number(req.params.id), req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur mise à jour récurrente" });
+    }
+  });
+
+  app.delete("/api/crm/recurring/:id", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.deleteRecurring(Number(req.params.id)));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur suppression récurrente" });
+    }
+  });
+
+  // ─── 7.6 Partenariats hôtels/restos/salles ──────────────────────────────
+  app.get("/api/crm/partnerships", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.listPartnerships());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste partenariats" });
+    }
+  });
+
+  app.post("/api/crm/partnerships", requireAuth, (req, res) => {
+    try {
+      res.status(201).json(crmEngine.createPartnership(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur création partenariat" });
+    }
+  });
+
+  app.put("/api/crm/partnerships/:id", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.updatePartnership(Number(req.params.id), req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur mise à jour partenariat" });
+    }
+  });
+
+  app.delete("/api/crm/partnerships/:id", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.deletePartnership(Number(req.params.id)));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur suppression partenariat" });
+    }
+  });
+
+  // ─── 7.7 Facturation privée ──────────────────────────────────────────────
+  app.get("/api/crm/invoices", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.listInvoices());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste factures" });
+    }
+  });
+
+  app.get("/api/crm/invoices/:id", requireAuth, (req, res) => {
+    try {
+      const invoice = crmEngine.getInvoice(Number(req.params.id));
+      if (!invoice) return res.status(404).json({ error: "Facture introuvable" });
+      res.json(invoice);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur détail facture" });
+    }
+  });
+
+  app.post("/api/crm/invoices", requireAuth, (req, res) => {
+    try {
+      res.status(201).json(crmEngine.createInvoice(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur création facture" });
+    }
+  });
+
+  app.put("/api/crm/invoices/:id/statut", requireAuth, (req, res) => {
+    try {
+      const { statut } = req.body || {};
+      res.json(crmEngine.updateInvoiceStatus(Number(req.params.id), statut));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur mise à jour statut facture" });
+    }
+  });
+
+  app.delete("/api/crm/invoices/:id", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.deleteInvoice(Number(req.params.id)));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur suppression facture" });
+    }
+  });
+
+  // ─── 17.3 Génération PDF facture (HTML formaté imprimable via window.print) ──
+  app.get("/api/crm/invoice-pdf/:id", requireAuth, (req, res) => {
+    try {
+      const html = crmEngine.generateInvoiceHtml(Number(req.params.id));
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(html);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur génération facture" });
+    }
+  });
+
+  // ─── 17.4 Relances impayés J+7/J+15/J+30 ────────────────────────────────
+  app.get("/api/crm/invoice-reminders", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.invoiceReminders());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur relances impayés" });
+    }
+  });
+
+  // ─── 14.1 Bourse d'échange de courses (démo communautaire) ──────────────
+  app.get("/api/crm/ride-exchange", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.listRideExchange());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste bourse d'échange" });
+    }
+  });
+
+  app.post("/api/crm/ride-exchange", requireAuth, (req, res) => {
+    try {
+      res.status(201).json(crmEngine.createRideExchange(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur création offre bourse" });
+    }
+  });
+
+  app.put("/api/crm/ride-exchange/:id", requireAuth, (req, res) => {
+    try {
+      const { status } = req.body || {};
+      res.json(crmEngine.updateRideExchangeStatus(Number(req.params.id), status));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur mise à jour offre bourse" });
+    }
+  });
+
+  app.delete("/api/crm/ride-exchange/:id", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.deleteRideExchange(Number(req.params.id)));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur suppression offre bourse" });
+    }
+  });
+
+  // ─── 17.1 Templates réponses auto SMS/WhatsApp ──────────────────────────
+  app.get("/api/crm/auto-reply-templates", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.listAutoReplyTemplates());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste templates" });
+    }
+  });
+
+  app.post("/api/crm/auto-reply-templates", requireAuth, (req, res) => {
+    try {
+      res.status(201).json(crmEngine.createAutoReplyTemplate(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur création template" });
+    }
+  });
+
+  app.put("/api/crm/auto-reply-templates/:id", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.updateAutoReplyTemplate(Number(req.params.id), req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur mise à jour template" });
+    }
+  });
+
+  app.delete("/api/crm/auto-reply-templates/:id", requireAuth, (req, res) => {
+    try {
+      res.json(crmEngine.deleteAutoReplyTemplate(Number(req.params.id)));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur suppression template" });
+    }
+  });
+  // ─── /COUCHE CRM CHAUFFEUR ───
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ─── COUCHE DIVERSIFICATION DE REVENUS ─────────────────────────────────
+  // Inspiré benchmark : Roadie (colis), LeCab/Marcel (B2B forfaitaire),
+  // Bonsai (devis/contrats), Solo Pay Guarantee, cashback carburant Uber Pro.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // ─── 1. Missions colis intercités ──────────────────────────────────────
+  app.get("/api/diversification/parcels", requireAuth, (req, res) => {
+    try {
+      const status = req.query.status ? String(req.query.status) : undefined;
+      res.json(diversificationEngine.listParcelMissions(status));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste missions colis" });
+    }
+  });
+
+  app.post("/api/diversification/parcels", requireAuth, (req, res) => {
+    try {
+      res.status(201).json(diversificationEngine.createParcelMission(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur création mission colis" });
+    }
+  });
+
+  app.patch("/api/diversification/parcels/:id/status", requireAuth, (req, res) => {
+    try {
+      const { status } = req.body || {};
+      res.json(diversificationEngine.updateParcelMissionStatus(Number(req.params.id), status));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur mise à jour mission colis" });
+    }
+  });
+
+  app.delete("/api/diversification/parcels/:id", requireAuth, (req, res) => {
+    try {
+      res.json(diversificationEngine.deleteParcelMission(Number(req.params.id)));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur suppression mission colis" });
+    }
+  });
+
+  // ─── 2. Réservations B2B ────────────────────────────────────────────────
+  app.get("/api/diversification/b2b", requireAuth, (req, res) => {
+    try {
+      const statut = req.query.statut ? String(req.query.statut) : undefined;
+      res.json(diversificationEngine.listB2bBookings(statut));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste réservations B2B" });
+    }
+  });
+
+  app.get("/api/diversification/b2b/:id", requireAuth, (req, res) => {
+    try {
+      const booking = diversificationEngine.getB2bBooking(Number(req.params.id));
+      if (!booking) return res.status(404).json({ error: "Réservation B2B introuvable" });
+      res.json(booking);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur détail réservation B2B" });
+    }
+  });
+
+  app.post("/api/diversification/b2b", requireAuth, (req, res) => {
+    try {
+      res.status(201).json(diversificationEngine.createB2bBooking(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur création réservation B2B" });
+    }
+  });
+
+  app.patch("/api/diversification/b2b/:id/statut", requireAuth, (req, res) => {
+    try {
+      const { statut } = req.body || {};
+      res.json(diversificationEngine.updateB2bBookingStatus(Number(req.params.id), statut));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur mise à jour réservation B2B" });
+    }
+  });
+
+  app.delete("/api/diversification/b2b/:id", requireAuth, (req, res) => {
+    try {
+      res.json(diversificationEngine.deleteB2bBooking(Number(req.params.id)));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur suppression réservation B2B" });
+    }
+  });
+
+  // ─── 3. Générateur de devis ─────────────────────────────────────────────
+  app.get("/api/diversification/quotes", requireAuth, (req, res) => {
+    try {
+      res.json(diversificationEngine.listQuotes());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste devis" });
+    }
+  });
+
+  app.post("/api/diversification/quote", requireAuth, (req, res) => {
+    try {
+      res.status(201).json(diversificationEngine.generateQuote(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur génération devis" });
+    }
+  });
+
+  app.get("/api/diversification/quote/:id/html", requireAuth, (req, res) => {
+    try {
+      const html = diversificationEngine.generateQuoteHtml(Number(req.params.id));
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(html);
+    } catch (err: any) {
+      res.status(404).json({ error: err?.message || "Devis introuvable" });
+    }
+  });
+
+  // ─── 4. Générateur de contrats forfaits ─────────────────────────────────
+  app.get("/api/diversification/contracts", requireAuth, (req, res) => {
+    try {
+      res.json(diversificationEngine.listContracts());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste contrats" });
+    }
+  });
+
+  app.post("/api/diversification/contract", requireAuth, (req, res) => {
+    try {
+      res.status(201).json(diversificationEngine.generateContract(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur génération contrat" });
+    }
+  });
+
+  app.get("/api/diversification/contract/:id/html", requireAuth, (req, res) => {
+    try {
+      const html = diversificationEngine.generateContractHtml(Number(req.params.id));
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(html);
+    } catch (err: any) {
+      res.status(404).json({ error: err?.message || "Contrat introuvable" });
+    }
+  });
+
+  // ─── 5. Marketplace missions (comparateur commissions plateformes) ─────
+  app.get("/api/diversification/marketplace", requireAuth, (req, res) => {
+    try {
+      const activeOnly = req.query.active === "1" || req.query.active === "true";
+      res.json(diversificationEngine.listMarketplaceMissions(activeOnly));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste marketplace" });
+    }
+  });
+
+  app.post("/api/diversification/marketplace", requireAuth, (req, res) => {
+    try {
+      res.status(201).json(diversificationEngine.createMarketplaceMission(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur création mission marketplace" });
+    }
+  });
+
+  app.patch("/api/diversification/marketplace/:id/active", requireAuth, (req, res) => {
+    try {
+      const { active } = req.body || {};
+      res.json(diversificationEngine.updateMarketplaceMissionActive(Number(req.params.id), !!active));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur mise à jour mission marketplace" });
+    }
+  });
+
+  app.delete("/api/diversification/marketplace/:id", requireAuth, (req, res) => {
+    try {
+      res.json(diversificationEngine.deleteMarketplaceMission(Number(req.params.id)));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur suppression mission marketplace" });
+    }
+  });
+
+  // ─── 6. Course forfaitaire aéroport ─────────────────────────────────────
+  app.get("/api/diversification/airport-forfait", requireAuth, (req, res) => {
+    try {
+      const toAirport = req.query.to_airport ? String(req.query.to_airport) : undefined;
+      res.json(diversificationEngine.listAirportForfaits(toAirport));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur grille forfaits aéroport" });
+    }
+  });
+
+  app.post("/api/diversification/airport-forfait", requireAuth, (req, res) => {
+    try {
+      res.status(201).json(diversificationEngine.createAirportForfait(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur création forfait aéroport" });
+    }
+  });
+
+  app.delete("/api/diversification/airport-forfait/:id", requireAuth, (req, res) => {
+    try {
+      res.json(diversificationEngine.deleteAirportForfait(Number(req.params.id)));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur suppression forfait aéroport" });
+    }
+  });
+
+  // ─── 7. Événements spéciaux (mariage, salon, congrès) ───────────────────
+  app.get("/api/diversification/events", requireAuth, (req, res) => {
+    try {
+      const status = req.query.status ? String(req.query.status) : undefined;
+      res.json(diversificationEngine.listEventMissions(status));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste événements" });
+    }
+  });
+
+  app.post("/api/diversification/events", requireAuth, (req, res) => {
+    try {
+      res.status(201).json(diversificationEngine.createEventMission(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur création événement" });
+    }
+  });
+
+  app.patch("/api/diversification/events/:id/status", requireAuth, (req, res) => {
+    try {
+      const { status } = req.body || {};
+      res.json(diversificationEngine.updateEventMissionStatus(Number(req.params.id), status));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur mise à jour événement" });
+    }
+  });
+
+  app.delete("/api/diversification/events/:id", requireAuth, (req, res) => {
+    try {
+      res.json(diversificationEngine.deleteEventMission(Number(req.params.id)));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur suppression événement" });
+    }
+  });
+
+  // ─── 8. Cashback carburant ───────────────────────────────────────────────
+  app.get("/api/diversification/fuel-cashback", requireAuth, (req, res) => {
+    try {
+      res.json(diversificationEngine.fuelCashbackWithSavings());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur liste cashback carburant" });
+    }
+  });
+
+  app.post("/api/diversification/fuel-cashback", requireAuth, (req, res) => {
+    try {
+      res.status(201).json(diversificationEngine.createFuelCashbackPartner(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur création partenaire cashback" });
+    }
+  });
+
+  app.delete("/api/diversification/fuel-cashback/:id", requireAuth, (req, res) => {
+    try {
+      res.json(diversificationEngine.deleteFuelCashbackPartner(Number(req.params.id)));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "Erreur suppression partenaire cashback" });
+    }
+  });
+
+  // ─── 9. Recap diversification revenu (mix VTC vs colis vs B2B vs forfaits) ──
+  app.get("/api/diversification/revenue-mix", requireAuth, (req, res) => {
+    try {
+      const days = req.query.days ? parseInt(String(req.query.days), 10) : 30;
+      res.json(diversificationEngine.computeRevenueMix(isFinite(days) && days > 0 ? days : 30));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur calcul mix revenu" });
+    }
+  });
+
+  // ─── Missions du jour (agrégation colis + B2B + événements disponibles) ────
+  app.get("/api/diversification/today", requireAuth, (req, res) => {
+    try {
+      res.json(diversificationEngine.listTodayMissions());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Erreur missions du jour" });
+    }
+  });
+  // ─── /COUCHE DIVERSIFICATION DE REVENUS ───
+
+  // ─── COUCHE COACH IA ÉCONOMIQUE + GAMIFICATION (rapport.md §10, §13, §15, §20, §21) ───
+  // Dashboard santé business, peer comparison k-anon, score /100, brief vocal
+  // matin/soir, quick-query vocal, défis hebdo, leaderboard éco, objectifs,
+  // records/courbe d'apprentissage, export RGPD, notifications adaptatives.
+  // Logique dans healthMetrics.ts / coachEngine.ts / gamifEcon.ts / notificationRules.ts.
+
+  // 10.1 — Dashboard health of business
+  app.get("/api/health/business-kpis", requireAuth, (req, res) => {
+    try {
+      res.json(healthMetrics.computeBusinessKpis());
+    } catch (e: any) {
+      console.error("[health/business-kpis] error:", e);
+      res.status(500).json({ error: "business_kpis_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 10.2 — Peer comparison (k-anonymat ≥ 5)
+  app.get("/api/health/peer-benchmark", requireAuth, (req, res) => {
+    try {
+      res.json(healthMetrics.computePeerBenchmarkEcon());
+    } catch (e: any) {
+      console.error("[health/peer-benchmark] error:", e);
+      res.status(500).json({ error: "peer_benchmark_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 10.3 — Score de performance global /100
+  app.get("/api/health/perf-score", requireAuth, (req, res) => {
+    try {
+      res.json(healthMetrics.computePerfScore());
+    } catch (e: any) {
+      console.error("[health/perf-score] error:", e);
+      res.status(500).json({ error: "perf_score_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 13.1 — Questions vocales rapides ("combien j'ai fait", "où aller", "prochain gros")
+  app.post("/api/voice/quick-query", requireAuth, (req, res) => {
+    try {
+      const { text } = req.body as { text?: string };
+      if (!text || !text.trim()) {
+        return res.status(400).json({ error: "text requis" });
+      }
+      res.json(coachEngine.answerQuickVoiceQuery(text));
+    } catch (e: any) {
+      console.error("[voice/quick-query] error:", e);
+      res.status(500).json({ error: "quick_query_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 13.2 — Brief matinal audio (texte à synthétiser côté client via SpeechSynthesis)
+  app.get("/api/voice/morning-brief", requireAuth, (req, res) => {
+    try {
+      res.json(coachEngine.getMorningBriefSpoken());
+    } catch (e: any) {
+      console.error("[voice/morning-brief] error:", e);
+      res.status(500).json({ error: "morning_brief_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 13.3 — Débrief soir
+  app.get("/api/voice/evening-debrief", requireAuth, (req, res) => {
+    try {
+      const dateStr = typeof req.query.date === "string" ? req.query.date : undefined;
+      res.json(coachEngine.getEveningDebriefSpoken(dateStr));
+    } catch (e: any) {
+      console.error("[voice/evening-debrief] error:", e);
+      res.status(500).json({ error: "evening_debrief_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 15.1 — Défi rentabilité hebdo actif
+  app.get("/api/gamif/weekly-challenge", requireAuth, (req, res) => {
+    try {
+      res.json(gamifEcon.getWeeklyChallenge());
+    } catch (e: any) {
+      console.error("[gamif/weekly-challenge] error:", e);
+      res.status(500).json({ error: "weekly_challenge_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 15.2 — Leaderboard économique k-anonyme
+  app.get("/api/gamif/econ-leaderboard", requireAuth, (req, res) => {
+    try {
+      res.json(gamifEcon.getEconLeaderboard());
+    } catch (e: any) {
+      console.error("[gamif/econ-leaderboard] error:", e);
+      res.status(500).json({ error: "econ_leaderboard_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 15.4 — Barre de progression objectif (jour/semaine/mois) + projection
+  app.get("/api/gamif/goal-progress", requireAuth, (req, res) => {
+    try {
+      const period = (req.query.period as "daily" | "weekly" | "monthly") || "daily";
+      res.json(gamifEcon.getGoalProgress(period));
+    } catch (e: any) {
+      console.error("[gamif/goal-progress] error:", e);
+      res.status(500).json({ error: "goal_progress_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 20.1 — Registre des records personnels (réutilise wowEngine existant)
+  app.get("/api/analytics/personal-records", requireAuth, (req, res) => {
+    try {
+      res.json(wowEngine.getAllRecords());
+    } catch (e: any) {
+      console.error("[analytics/personal-records] error:", e);
+      res.status(500).json({ error: "personal_records_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 20.2 — Courbe d'apprentissage : évolution du €/h dans le temps
+  app.get("/api/analytics/learning-curve", requireAuth, (req, res) => {
+    try {
+      res.json(healthMetrics.computeLearningCurve());
+    } catch (e: any) {
+      console.error("[analytics/learning-curve] error:", e);
+      res.status(500).json({ error: "learning_curve_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 20.4 — Export RGPD (CSV/JSON) de toutes les tables personnelles
+  app.get("/api/analytics/export-all", requireAuth, (req, res) => {
+    try {
+      const format = (req.query.format as string) === "csv" ? "csv" : "json";
+      const data = healthMetrics.exportAllPersonalData();
+      if (format === "csv") {
+        res.setHeader("Content-Type", "text/csv; charset=utf-8");
+        res.setHeader("Content-Disposition", "attachment; filename=export-vtc-intelligence.csv");
+        res.send(healthMetrics.toCsv(data));
+      } else {
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.setHeader("Content-Disposition", "attachment; filename=export-vtc-intelligence.json");
+        res.json(data);
+      }
+    } catch (e: any) {
+      console.error("[analytics/export-all] error:", e);
+      res.status(500).json({ error: "export_all_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 21.1 — Règle de délivrance adaptative ("jamais en conduite" sauf sécurité)
+  app.post("/api/notifications/should-deliver", requireAuth, (req, res) => {
+    try {
+      const { alertType, speedKmh } = req.body as { alertType?: string; speedKmh?: number };
+      if (!alertType) {
+        return res.status(400).json({ error: "alertType requis" });
+      }
+      res.json(notificationRules.shouldDeliver({ alertType, speedKmh }));
+    } catch (e: any) {
+      console.error("[notifications/should-deliver] error:", e);
+      res.status(500).json({ error: "should_deliver_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 21.2 — Digest notifications (regroupement des alertes non-urgentes)
+  app.get("/api/notifications/digest", requireAuth, (req, res) => {
+    try {
+      res.json(notificationRules.getNotificationDigest());
+    } catch (e: any) {
+      console.error("[notifications/digest] error:", e);
+      res.status(500).json({ error: "digest_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 21.5 — Préférences notifications par catégorie
+  app.get("/api/notifications/prefs", requireAuth, (req, res) => {
+    try {
+      res.json(notificationRules.getNotificationPrefs());
+    } catch (e: any) {
+      console.error("[notifications/prefs GET] error:", e);
+      res.status(500).json({ error: "prefs_get_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.post("/api/notifications/prefs", requireAuth, (req, res) => {
+    try {
+      const { category, enabled, digestOnly } = req.body as { category?: string; enabled?: boolean; digestOnly?: boolean };
+      if (!category || !(notificationRules.NOTIFICATION_CATEGORIES as readonly string[]).includes(category)) {
+        return res.status(400).json({ error: "category invalide" });
+      }
+      res.json(
+        notificationRules.setNotificationPref(
+          category as any,
+          enabled !== false,
+          !!digestOnly
+        )
+      );
+    } catch (e: any) {
+      console.error("[notifications/prefs POST] error:", e);
+      res.status(500).json({ error: "prefs_post_error", message: e?.message || "unknown" });
+    }
+  });
+  // ─── /COUCHE COACH IA ÉCONOMIQUE + GAMIFICATION ───
+
+  // ══════════════════════════════════════════════════════════════════════════════════════
+  // ─── COUCHE ARBITRAGE MULTI-PLATEFORME AUTOMATIQUE ───
+  // Inspiré des gaps benchmark (Para, Mystro, Gridwise, Solo, inDrive) :
+  // règles d'auto-décision, simulateur d'offre, historique, analyse des refus,
+  // filtres géo, Live Pulse SSE communautaire, garantie €/h, cashout, tarifs perso.
+  // ════════════════════════════════════════════════════════════════────────────────────────────────────────────═
+
+  // Seed démo (3 règles + 10 offres + 1 filtre zone + 1 grille tarifaire) — idempotent
+  try { arbitrageEngine.seedArbitrageDemoData(); } catch (e) { console.error("[arbitrage] seed error:", e); }
+
+  // ─── 1. Règles d'auto-décision ─ CRUD /api/arbitrage/rules ───
+  app.get("/api/arbitrage/rules", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      res.json(arbitrageEngine.listAutoRules(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId));
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_rules_list_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.post("/api/arbitrage/rules", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const body = req.body || {};
+      if (!body.name) return res.status(400).json({ error: "name requis" });
+      const rule = arbitrageEngine.createAutoRule(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId, body);
+      res.json(rule);
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_rules_create_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.put("/api/arbitrage/rules/:id", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const id = Number(req.params.id);
+      const rule = arbitrageEngine.updateAutoRule(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId, id, req.body || {});
+      if (!rule) return res.status(404).json({ error: "règle introuvable" });
+      res.json(rule);
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_rules_update_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.delete("/api/arbitrage/rules/:id", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const id = Number(req.params.id);
+      const ok = arbitrageEngine.deleteAutoRule(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId, id);
+      if (!ok) return res.status(404).json({ error: "règle introuvable" });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_rules_delete_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // ─── 2. Simulateur d'offre ─ POST /api/arbitrage/simulate ───
+  app.post("/api/arbitrage/simulate", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const { platform, fare, distanceKm, durationMin, from, to } = req.body || {};
+      if (!platform || fare == null || distanceKm == null || durationMin == null) {
+        return res.status(400).json({ error: "platform, fare, distanceKm, durationMin requis" });
+      }
+      const result = arbitrageEngine.simulateOffer(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId, {
+        platform: String(platform),
+        fare: Number(fare),
+        distanceKm: Number(distanceKm),
+        durationMin: Number(durationMin),
+        from: from ? String(from) : undefined,
+        to: to ? String(to) : undefined,
+      });
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_simulate_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // ─── 3. Historique offres ─ GET/POST /api/arbitrage/offers ───
+  app.get("/api/arbitrage/offers", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const limit = req.query.limit ? Number(req.query.limit) : 50;
+      res.json(arbitrageEngine.listOfferHistory(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId, limit));
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_offers_list_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.post("/api/arbitrage/offers", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const { platform, fare, distanceKm, durationMin, from, to, decision, actual_gain } = req.body || {};
+      if (!platform || fare == null || distanceKm == null || durationMin == null || !decision) {
+        return res.status(400).json({ error: "platform, fare, distanceKm, durationMin, decision requis" });
+      }
+      const row = arbitrageEngine.recordOffer(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId, {
+        platform: String(platform),
+        fare: Number(fare),
+        distanceKm: Number(distanceKm),
+        durationMin: Number(durationMin),
+        from: from ? String(from) : undefined,
+        to: to ? String(to) : undefined,
+        decision: String(decision),
+        actual_gain: actual_gain != null ? Number(actual_gain) : null,
+      });
+      res.json(row);
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_offers_create_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // ─── 4. Analyse rétrospective des offres refusées ───
+  app.get("/api/arbitrage/refused-analysis", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      res.json(arbitrageEngine.analyzeRefusedOffers(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId));
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_refused_analysis_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // ─── 5. Geo/restaurant filter ─ CRUD /api/arbitrage/zone-filters ───
+  app.get("/api/arbitrage/zone-filters", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      res.json(arbitrageEngine.listZoneFilters(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId));
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_zone_filters_list_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.post("/api/arbitrage/zone-filters", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const body = req.body || {};
+      if (!body.name) return res.status(400).json({ error: "name requis" });
+      res.json(arbitrageEngine.createZoneFilter(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId, body));
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_zone_filters_create_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.put("/api/arbitrage/zone-filters/:id", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const id = Number(req.params.id);
+      const row = arbitrageEngine.updateZoneFilter(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId, id, req.body || {});
+      if (!row) return res.status(404).json({ error: "filtre introuvable" });
+      res.json(row);
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_zone_filters_update_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.delete("/api/arbitrage/zone-filters/:id", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const id = Number(req.params.id);
+      const ok = arbitrageEngine.deleteZoneFilter(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId, id);
+      if (!ok) return res.status(404).json({ error: "filtre introuvable" });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_zone_filters_delete_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // ─── 6. Live Pulse ─ SSE GET /api/pulse/stream (blips k-anonymisés, réutilise sseService) ───
+  app.get("/api/pulse/stream", requireAuth, (req, res) => {
+    res.set({
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    res.flushHeaders();
+    res.write(`event: connected\ndata: ${JSON.stringify({ ok: true, _ts: Date.now() })}\n\n`);
+    sseService.addClient(res);
+
+    // Génère un blip démo/simulation toutes les 4-8s (chauffeurs anonymes recevant des offres)
+    const emitBlip = () => {
+      try {
+        const blip = arbitrageEngine.generatePulseBlip();
+        res.write(`event: pulse:blip\ndata: ${JSON.stringify(blip)}\n\n`);
+      } catch { /* ignore */ }
+    };
+    emitBlip();
+    const blipTimer = setInterval(emitBlip, 5000 + Math.random() * 3000);
+    const hb = setInterval(() => { try { res.write(`: heartbeat\n\n`); } catch {} }, 25000);
+
+    req.on("close", () => {
+      clearInterval(hb);
+      clearInterval(blipTimer);
+      sseService.removeClient(res);
+    });
+  });
+
+  // ─── 7. Prédicteur de garantie €/h ─ GET /api/arbitrage/hourly-guarantee ───
+  app.get("/api/arbitrage/hourly-guarantee", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      res.json(arbitrageEngine.predictHourlyGuarantee(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId));
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_hourly_guarantee_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // ─── 8. Cashout tracker ─ GET /api/arbitrage/cashout-forecast ───
+  app.get("/api/arbitrage/cashout-forecast", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const targetHours = req.query.targetHours ? Number(req.query.targetHours) : 8;
+      res.json(arbitrageEngine.computeCashoutForecast(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId, targetHours));
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_cashout_forecast_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // ─── 9. Négociation tarif (compteur perso) ─ CRUD /api/arbitrage/custom-pricing ───
+  app.get("/api/arbitrage/custom-pricing", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      res.json(arbitrageEngine.listCustomPricing(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId));
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_custom_pricing_list_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.post("/api/arbitrage/custom-pricing", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const { client_type, base_fare, per_km, per_min, notes } = req.body || {};
+      if (!client_type) return res.status(400).json({ error: "client_type requis" });
+      const row = arbitrageEngine.createCustomPricing(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId, {
+        client_type: String(client_type),
+        base_fare: Number(base_fare) || 0,
+        per_km: Number(per_km) || 0,
+        per_min: Number(per_min) || 0,
+        notes: notes ? String(notes) : undefined,
+      });
+      res.json(row);
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_custom_pricing_create_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.put("/api/arbitrage/custom-pricing/:id", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const id = Number(req.params.id);
+      const row = arbitrageEngine.updateCustomPricing(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId, id, req.body || {});
+      if (!row) return res.status(404).json({ error: "grille introuvable" });
+      res.json(row);
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_custom_pricing_update_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.delete("/api/arbitrage/custom-pricing/:id", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const id = Number(req.params.id);
+      const ok = arbitrageEngine.deleteCustomPricing(userId === "anon" ? arbitrageEngine.DEFAULT_USER : userId, id);
+      if (!ok) return res.status(404).json({ error: "grille introuvable" });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(500).json({ error: "arbitrage_custom_pricing_delete_error", message: e?.message || "unknown" });
+    }
+  });
+  // ─── /COUCHE ARBITRAGE MULTI-PLATEFORME AUTOMATIQUE ───
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ─── COUCHE SANTÉ CHAUFFEUR (rapport.md §6, §11, §19 + gaps benchmark) ───
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // 1. Journal santé — POST/GET /api/health/log
+  app.post("/api/health/log", requireAuth, (req, res) => {
+    try {
+      const userId = healthEngine.DEFAULT_USER;
+      const result = healthEngine.logHealth(userId, req.body || {});
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: "health_log_post_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.get("/api/health/log", requireAuth, (req, res) => {
+    try {
+      const userId = healthEngine.DEFAULT_USER;
+      const limit = req.query.limit ? Number(req.query.limit) : 30;
+      res.json({ history: healthEngine.getHealthHistory(userId, limit) });
+    } catch (e: any) {
+      res.status(500).json({ error: "health_log_get_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.get("/api/health/log/today", requireAuth, (req, res) => {
+    try {
+      const userId = healthEngine.DEFAULT_USER;
+      res.json(healthEngine.getHealthToday(userId));
+    } catch (e: any) {
+      res.status(500).json({ error: "health_log_today_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 2. Bibliothèque d'exercices — GET /api/health/exercises
+  app.get("/api/health/exercises", requireAuth, (req, res) => {
+    try {
+      const categorie = req.query.categorie as string | undefined;
+      res.json({ exercises: healthEngine.getExercises(categorie) });
+    } catch (e: any) {
+      res.status(500).json({ error: "health_exercises_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.get("/api/health/exercises/recommended", requireAuth, (req, res) => {
+    try {
+      const userId = healthEngine.DEFAULT_USER;
+      res.json(healthEngine.getRecommendedExercise(userId));
+    } catch (e: any) {
+      res.status(500).json({ error: "health_exercises_recommended_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 3. Score ergonomie véhicule — GET questions, POST résultat
+  app.get("/api/health/vehicle-ergo-score", requireAuth, (req, res) => {
+    try {
+      res.json({ questions: healthEngine.ERGO_QUESTIONS, history: healthEngine.getErgoHistory(healthEngine.DEFAULT_USER) });
+    } catch (e: any) {
+      res.status(500).json({ error: "health_ergo_get_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.post("/api/health/vehicle-ergo-score", requireAuth, (req, res) => {
+    try {
+      const userId = healthEngine.DEFAULT_USER;
+      const { answers } = req.body as { answers?: Record<string, number> };
+      if (!answers || typeof answers !== "object") {
+        return res.status(400).json({ error: "answers requis (objet question_id -> points)" });
+      }
+      res.json(healthEngine.computeErgoScore(userId, answers));
+    } catch (e: any) {
+      res.status(500).json({ error: "health_ergo_post_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 4. Comparateur mutuelles TNS — GET /api/health/mutuelles-tns
+  app.get("/api/health/mutuelles-tns", requireAuth, (req, res) => {
+    try {
+      res.json({ mutuelles: healthEngine.getMutuellesTns() });
+    } catch (e: any) {
+      res.status(500).json({ error: "health_mutuelles_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 5. Comparateur assurance véhicule VTC — GET /api/health/assurances-vehicule
+  app.get("/api/health/assurances-vehicule", requireAuth, (req, res) => {
+    try {
+      res.json({ assurances: healthEngine.getAssurancesVehicule() });
+    } catch (e: any) {
+      res.status(500).json({ error: "health_assurances_error", message: e?.message || "unknown" });
+    }
+  });
+  // ─── /COUCHE SANTÉ CHAUFFEUR ───
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ─── COUCHE FINANCE PERSO (rapport.md §6, §11, §19 + gaps benchmark) ───
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // 6. Budget mensuel chauffeur — GET/POST /api/finance/budget
+  app.post("/api/finance/budget", requireAuth, (req, res) => {
+    try {
+      const userId = financeEngine.DEFAULT_USER;
+      const { mois, annee, revenu_brut, charges, provision_impot, epargne_target } = req.body || {};
+      if (!mois || !annee || revenu_brut == null || charges == null) {
+        return res.status(400).json({ error: "mois, annee, revenu_brut, charges requis" });
+      }
+      const result = financeEngine.upsertBudget(userId, { mois, annee, revenu_brut, charges, provision_impot, epargne_target });
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: "finance_budget_post_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.get("/api/finance/budget", requireAuth, (req, res) => {
+    try {
+      const userId = financeEngine.DEFAULT_USER;
+      const now = new Date();
+      const mois = req.query.mois ? Number(req.query.mois) : now.getMonth() + 1;
+      const annee = req.query.annee ? Number(req.query.annee) : now.getFullYear();
+      const budget = financeEngine.getBudget(userId, mois, annee);
+      res.json({ budget, history: financeEngine.getBudgetHistory(userId) });
+    } catch (e: any) {
+      res.status(500).json({ error: "finance_budget_get_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 7. Épargne automatique % — GET/POST /api/finance/auto-save
+  app.get("/api/finance/auto-save", requireAuth, (req, res) => {
+    try {
+      const userId = financeEngine.DEFAULT_USER;
+      res.json({ settings: financeEngine.getAutoSaveSettings(userId), history: financeEngine.getAutoSaveHistory(userId) });
+    } catch (e: any) {
+      res.status(500).json({ error: "finance_auto_save_get_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.post("/api/finance/auto-save", requireAuth, (req, res) => {
+    try {
+      const userId = financeEngine.DEFAULT_USER;
+      const { enabled, percent } = req.body as { enabled?: boolean; percent?: number };
+      const result = financeEngine.setAutoSaveSettings(userId, !!enabled, percent ?? 10);
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: "finance_auto_save_post_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.post("/api/finance/auto-save/apply", requireAuth, (req, res) => {
+    try {
+      const userId = financeEngine.DEFAULT_USER;
+      const { ride_amount } = req.body as { ride_amount?: number };
+      if (ride_amount == null) return res.status(400).json({ error: "ride_amount requis" });
+      res.json(financeEngine.applyAutoSave(userId, ride_amount));
+    } catch (e: any) {
+      res.status(500).json({ error: "finance_auto_save_apply_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 8. Objectifs financiers annuels — GET/POST /api/finance/goals
+  app.get("/api/finance/goals", requireAuth, (req, res) => {
+    try {
+      const userId = financeEngine.DEFAULT_USER;
+      if (req.query.annee) {
+        res.json({ goal: financeEngine.getAnnualGoal(userId, Number(req.query.annee)) });
+      } else {
+        res.json({ goals: financeEngine.listAnnualGoals(userId) });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: "finance_goals_get_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.post("/api/finance/goals", requireAuth, (req, res) => {
+    try {
+      const userId = financeEngine.DEFAULT_USER;
+      const { annee, ca_target, net_target, epargne_target, projet } = req.body || {};
+      if (!annee) return res.status(400).json({ error: "annee requis" });
+      const result = financeEngine.upsertAnnualGoal(userId, {
+        annee,
+        ca_target: ca_target ?? 0,
+        net_target: net_target ?? 0,
+        epargne_target: epargne_target ?? 0,
+        projet,
+      });
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: "finance_goals_post_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 9. Simulateur crédit véhicule — POST /api/finance/loan-simulator
+  app.post("/api/finance/loan-simulator", requireAuth, (req, res) => {
+    try {
+      const { montant, taux, duree, apport } = req.body || {};
+      if (montant == null || taux == null || duree == null) {
+        return res.status(400).json({ error: "montant, taux, duree requis" });
+      }
+      res.json(financeEngine.simulateLoan({ montant, taux, duree, apport }));
+    } catch (e: any) {
+      res.status(500).json({ error: "finance_loan_simulator_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 10. Simulateur retraite indépendant — GET /api/finance/retirement-forecast
+  app.get("/api/finance/retirement-forecast", requireAuth, (req, res) => {
+    try {
+      const age_actuel = req.query.age_actuel ? Number(req.query.age_actuel) : 35;
+      const age_depart = req.query.age_depart ? Number(req.query.age_depart) : 64;
+      const revenu_annuel_moyen = req.query.revenu_annuel_moyen ? Number(req.query.revenu_annuel_moyen) : 25000;
+      const versement_liberatoire = req.query.versement_liberatoire === "true";
+      const per_mensuel = req.query.per_mensuel ? Number(req.query.per_mensuel) : 0;
+      res.json(
+        financeEngine.forecastRetirement({ age_actuel, age_depart, revenu_annuel_moyen, versement_liberatoire, per_mensuel })
+      );
+    } catch (e: any) {
+      res.status(500).json({ error: "finance_retirement_forecast_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 11. Réconciliation revenus multi-plateformes — POST /api/finance/multi-platform-reconciliation
+  app.post("/api/finance/multi-platform-reconciliation", requireAuth, (req, res) => {
+    try {
+      const userId = financeEngine.DEFAULT_USER;
+      const { period, uber, bolt, heetch, freenow, bank_statement_amount } = req.body || {};
+      if (!period || bank_statement_amount == null) {
+        return res.status(400).json({ error: "period et bank_statement_amount requis" });
+      }
+      res.json(financeEngine.reconcileMultiPlatform(userId, { period, uber, bolt, heetch, freenow, bank_statement_amount }));
+    } catch (e: any) {
+      res.status(500).json({ error: "finance_reconciliation_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 12. Alertes financières intelligentes — GET /api/finance/smart-alerts
+  app.get("/api/finance/smart-alerts", requireAuth, (req, res) => {
+    try {
+      const userId = financeEngine.DEFAULT_USER;
+      res.json(financeEngine.getSmartAlerts(userId));
+    } catch (e: any) {
+      res.status(500).json({ error: "finance_smart_alerts_error", message: e?.message || "unknown" });
+    }
+  });
+  // ─────────────────────────────────────────────────────────────────────────
+  // ─── COUCHE TRUST & TRANSPARENCE ────────────────────────────────────────
+  // Inspiré des gaps benchmark : Para (pourboire, flags client), Mystro
+  // (historique offres complet), Everlance (garantie audit fiscal), Stride
+  // (comparateur commissions plateformes). Toutes les routes sont protégées
+  // par requireAuth. Voir server/trustEngine.ts pour la logique métier.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Seed des données de démonstration au démarrage (idempotent)
+  try {
+    trustEngine.seedDemoData(trustEngine.DEFAULT_USER);
+  } catch (e: any) {
+    console.error("[trust/seed] error:", e?.message || e);
+  }
+
+  // 1. Révélation pourboire probable — POST /api/trust/tip-forecast
+  app.post("/api/trust/tip-forecast", requireAuth, (req, res) => {
+    try {
+      const { zone_pickup, zone_dropoff, hour, day, fare } = req.body || {};
+      if (!zone_pickup || !zone_dropoff || hour == null || !day || fare == null) {
+        return res.status(400).json({ error: "zone_pickup, zone_dropoff, hour, day, fare requis" });
+      }
+      const result = trustEngine.forecastTip(trustEngine.DEFAULT_USER, {
+        zone_pickup,
+        zone_dropoff,
+        hour: Number(hour),
+        day,
+        fare: Number(fare),
+      });
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_tip_forecast_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // Enregistrer une observation réelle de pourboire (alimente la prévision future)
+  app.post("/api/trust/tip-observation", requireAuth, (req, res) => {
+    try {
+      const { zone_pickup, zone_dropoff, hour, day, fare, tip_amount } = req.body || {};
+      if (!zone_pickup || !zone_dropoff || hour == null || !day || fare == null || tip_amount == null) {
+        return res.status(400).json({ error: "zone_pickup, zone_dropoff, hour, day, fare, tip_amount requis" });
+      }
+      const result = trustEngine.recordTipObservation(trustEngine.DEFAULT_USER, {
+        zone_pickup,
+        zone_dropoff,
+        hour: Number(hour),
+        day,
+        fare: Number(fare),
+        tip_amount: Number(tip_amount),
+      });
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_tip_observation_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 2. Flags clients — CRUD /api/trust/flags
+  app.get("/api/trust/flags", requireAuth, (_req, res) => {
+    try {
+      res.json(trustEngine.listClientFlags(trustEngine.DEFAULT_USER));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_flags_list_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.post("/api/trust/flags", requireAuth, (req, res) => {
+    try {
+      const { client_ref, type, tag, note, source } = req.body || {};
+      if (!client_ref || !type || !tag) {
+        return res.status(400).json({ error: "client_ref, type, tag requis" });
+      }
+      res.json(trustEngine.createClientFlag(trustEngine.DEFAULT_USER, { client_ref, type, tag, note, source }));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_flags_create_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.put("/api/trust/flags/:id", requireAuth, (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const result = trustEngine.updateClientFlag(trustEngine.DEFAULT_USER, id, req.body || {});
+      if (!result) return res.status(404).json({ error: "flag introuvable" });
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_flags_update_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.delete("/api/trust/flags/:id", requireAuth, (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      res.json(trustEngine.deleteClientFlag(trustEngine.DEFAULT_USER, id));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_flags_delete_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 3. Tags de lieu — CRUD /api/trust/locations
+  app.get("/api/trust/locations", requireAuth, (_req, res) => {
+    try {
+      res.json(trustEngine.listLocationFlags(trustEngine.DEFAULT_USER));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_locations_list_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.post("/api/trust/locations", requireAuth, (req, res) => {
+    try {
+      const { address, lat, lng, type, note, votes } = req.body || {};
+      if (!address || !type) {
+        return res.status(400).json({ error: "address, type requis" });
+      }
+      res.json(trustEngine.createLocationFlag(trustEngine.DEFAULT_USER, { address, lat, lng, type, note, votes }));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_locations_create_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.post("/api/trust/locations/:id/vote", requireAuth, (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const delta = req.body?.delta != null ? Number(req.body.delta) : 1;
+      res.json(trustEngine.voteLocationFlag(trustEngine.DEFAULT_USER, id, delta));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_locations_vote_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.delete("/api/trust/locations/:id", requireAuth, (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      res.json(trustEngine.deleteLocationFlag(trustEngine.DEFAULT_USER, id));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_locations_delete_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 4. Historique offres complet — GET /api/trust/all-offers
+  app.get("/api/trust/all-offers", requireAuth, (req, res) => {
+    try {
+      const status = req.query.status as string | undefined;
+      const limit = req.query.limit ? Number(req.query.limit) : 200;
+      res.json(trustEngine.getAllOffers(trustEngine.DEFAULT_USER, status, limit));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_all_offers_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.post("/api/trust/all-offers", requireAuth, (req, res) => {
+    try {
+      const { platform, zone_pickup, zone_dropoff, fare, distance_km, duration_min, status, reason } = req.body || {};
+      if (!platform || fare == null || !status) {
+        return res.status(400).json({ error: "platform, fare, status requis" });
+      }
+      res.json(
+        trustEngine.recordOffer(trustEngine.DEFAULT_USER, {
+          platform,
+          zone_pickup,
+          zone_dropoff,
+          fare: Number(fare),
+          distance_km: distance_km != null ? Number(distance_km) : undefined,
+          duration_min: duration_min != null ? Number(duration_min) : undefined,
+          status,
+          reason,
+        })
+      );
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_offer_create_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 5. Garantie audit fiscal — GET /api/trust/audit-shield
+  app.get("/api/trust/audit-shield", requireAuth, (_req, res) => {
+    try {
+      res.json(trustEngine.getAuditShield(trustEngine.DEFAULT_USER));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_audit_shield_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 6. Vérification passager instantanée — GET /api/trust/passenger-lookup?phone=
+  app.get("/api/trust/passenger-lookup", requireAuth, (req, res) => {
+    try {
+      const phone = req.query.phone as string | undefined;
+      if (!phone) return res.status(400).json({ error: "phone requis" });
+      res.json(trustEngine.lookupPassenger(trustEngine.DEFAULT_USER, phone));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_passenger_lookup_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 7. Comparateur transparent commissions plateformes — GET /api/trust/commission-comparator
+  app.get("/api/trust/commission-comparator", requireAuth, (req, res) => {
+    try {
+      const hour = req.query.hour != null ? Number(req.query.hour) : undefined;
+      res.json(trustEngine.getCommissionComparator(hour));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_commission_comparator_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 8. Journal d'incidents — CRUD /api/trust/incidents
+  app.get("/api/trust/incidents", requireAuth, (_req, res) => {
+    try {
+      res.json(trustEngine.listIncidents(trustEngine.DEFAULT_USER));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_incidents_list_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.post("/api/trust/incidents", requireAuth, (req, res) => {
+    try {
+      const { type, description, plateforme, montant, resolu } = req.body || {};
+      if (!type) return res.status(400).json({ error: "type requis" });
+      res.json(trustEngine.createIncident(trustEngine.DEFAULT_USER, { type, description, plateforme, montant, resolu }));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_incidents_create_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.put("/api/trust/incidents/:id", requireAuth, (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const result = trustEngine.updateIncident(trustEngine.DEFAULT_USER, id, req.body || {});
+      if (!result) return res.status(404).json({ error: "incident introuvable" });
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_incidents_update_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.delete("/api/trust/incidents/:id", requireAuth, (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      res.json(trustEngine.deleteIncident(trustEngine.DEFAULT_USER, id));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_incidents_delete_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 9. Preuve géolocalisée — POST /api/trust/geo-proof
+  app.post("/api/trust/geo-proof", requireAuth, (req, res) => {
+    try {
+      const { lat, lng, context } = req.body || {};
+      if (lat == null || lng == null) {
+        return res.status(400).json({ error: "lat, lng requis" });
+      }
+      res.json(trustEngine.createGeoProof(trustEngine.DEFAULT_USER, { lat: Number(lat), lng: Number(lng), context }));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_geo_proof_error", message: e?.message || "unknown" });
+    }
+  });
+
+  app.get("/api/trust/geo-proof", requireAuth, (req, res) => {
+    try {
+      const limit = req.query.limit ? Number(req.query.limit) : 50;
+      res.json(trustEngine.listGeoProofs(trustEngine.DEFAULT_USER, limit));
+    } catch (e: any) {
+      res.status(500).json({ error: "trust_geo_proof_list_error", message: e?.message || "unknown" });
+    }
+  });
+  // ─── /COUCHE TRUST & TRANSPARENCE ───
+
+  // ─── /COUCHE FINANCE PERSO ───
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ─── COUCHE ANALYTICS BI AVANCÉE (rapport.md §10, §20 + gaps benchmark) ───
+  // 15 endpoints — server/analyticsEngine.ts
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // 1. Cohorte de chauffeurs anonymisée — GET /api/analytics/cohort-comparison
+  app.get("/api/analytics/cohort-comparison", requireAuth, (req, res) => {
+    try {
+      res.json(analyticsEngine.computeCohortComparison());
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_cohort_comparison_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 2. Saisonnalité personnelle (heatmap 12 mois x 4 semaines) — GET /api/analytics/seasonality
+  app.get("/api/analytics/seasonality", requireAuth, (req, res) => {
+    try {
+      res.json(analyticsEngine.computeSeasonality());
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_seasonality_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 3. Analyse variance €/h — GET /api/analytics/variance-analysis
+  app.get("/api/analytics/variance-analysis", requireAuth, (req, res) => {
+    try {
+      res.json(analyticsEngine.computeVarianceAnalysis());
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_variance_analysis_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 4. Décomposition du CA — GET /api/analytics/revenue-decomposition
+  app.get("/api/analytics/revenue-decomposition", requireAuth, (req, res) => {
+    try {
+      res.json(analyticsEngine.computeRevenueDecomposition());
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_revenue_decomposition_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 5. Insight du jour — GET /api/analytics/daily-insight
+  app.get("/api/analytics/daily-insight", requireAuth, (req, res) => {
+    try {
+      res.json(analyticsEngine.computeDailyInsight());
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_daily_insight_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 6. Corrélations découvertes — GET /api/analytics/correlations-found
+  app.get("/api/analytics/correlations-found", requireAuth, (req, res) => {
+    try {
+      res.json(analyticsEngine.computeCorrelationsFound());
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_correlations_found_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 7. Alertes tendances baissières — GET /api/analytics/downtrend-alerts
+  app.get("/api/analytics/downtrend-alerts", requireAuth, (req, res) => {
+    try {
+      res.json(analyticsEngine.computeDowntrendAlerts());
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_downtrend_alerts_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 8. Simulateur "et si..." — POST /api/analytics/what-if-simulator
+  app.post("/api/analytics/what-if-simulator", requireAuth, (req, res) => {
+    try {
+      const { scenario, extra_hours_per_day, refuse_fare_threshold_eur, days } = req.body || {};
+      if (!scenario) {
+        return res.status(400).json({ error: "scenario requis (extra_hour_per_day | refuse_below_threshold)" });
+      }
+      res.json(
+        analyticsEngine.runWhatIfSimulator({
+          scenario,
+          extra_hours_per_day: extra_hours_per_day != null ? Number(extra_hours_per_day) : undefined,
+          refuse_fare_threshold_eur: refuse_fare_threshold_eur != null ? Number(refuse_fare_threshold_eur) : undefined,
+          days: days != null ? Number(days) : undefined,
+        })
+      );
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_what_if_simulator_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 9. Comparateur avant/après feature — GET /api/analytics/feature-impact
+  app.get("/api/analytics/feature-impact", requireAuth, (req, res) => {
+    try {
+      const featureKey = typeof req.query.feature_key === "string" ? req.query.feature_key : undefined;
+      res.json(analyticsEngine.computeFeatureImpact(featureKey));
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_feature_impact_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 10. Score de professionnalisation — GET /api/analytics/professionalization-score
+  app.get("/api/analytics/professionalization-score", requireAuth, (req, res) => {
+    try {
+      res.json(analyticsEngine.computeProfessionalizationScore());
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_professionalization_score_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 11. Rapport hebdomadaire complet (HTML imprimable) — GET /api/analytics/weekly-report
+  app.get("/api/analytics/weekly-report", requireAuth, (req, res) => {
+    try {
+      const { html } = analyticsEngine.buildWeeklyReportHtml();
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(html);
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_weekly_report_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 12. Rapport mensuel avec analyse écrite (HTML) — GET /api/analytics/monthly-report
+  app.get("/api/analytics/monthly-report", requireAuth, (req, res) => {
+    try {
+      const { html } = analyticsEngine.buildMonthlyReportHtml();
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(html);
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_monthly_report_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 13. Export vers Excel (CSV structuré) — GET /api/analytics/export-excel
+  app.get("/api/analytics/export-excel", requireAuth, (req, res) => {
+    try {
+      const csv = analyticsEngine.buildExcelExport();
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", 'attachment; filename="vtc_analytics_export.csv"');
+      res.send(csv);
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_export_excel_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 14. Prédiction CA fin de mois — GET /api/analytics/month-end-forecast
+  app.get("/api/analytics/month-end-forecast", requireAuth, (req, res) => {
+    try {
+      res.json(analyticsEngine.computeMonthEndForecast());
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_month_end_forecast_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 15. Baromètre qualité de vie chauffeur — GET /api/analytics/quality-of-life
+  app.get("/api/analytics/quality-of-life", requireAuth, (req, res) => {
+    try {
+      res.json(analyticsEngine.computeQualityOfLife());
+    } catch (e: any) {
+      res.status(500).json({ error: "analytics_quality_of_life_error", message: e?.message || "unknown" });
+    }
+  });
+  // ─── /COUCHE ANALYTICS BI AVANCÉE ───
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // ─── COUCHE ONBOARDING NOUVEAU CHAUFFEUR + JURIDIQUE (rapport.md §16, §18) ──
+  // Additif : simulateur d'installation, business plan, checklist admin,
+  // guide statut fiscal, parcours 30 jours, FAQ juridique, générateur de
+  // contrats/litiges, base réglementaire 2026, formation continue, CIPAV.
+  // ═════════════════════════════════════════════════════════════════════════
+  onboardingEngine.initOnboardingEngine();
+  legalEngine.initLegalEngine();
+
+  // 1. Simulateur d'installation — POST /api/onboarding/installation-simulator
+  app.post("/api/onboarding/installation-simulator", requireAuth, (req, res) => {
+    try {
+      const { vehicule_prix, apport, statut_fiscal, zone, experience } = req.body || {};
+      if (vehicule_prix == null || apport == null || !statut_fiscal || !zone || !experience) {
+        return res.status(400).json({ error: "vehicule_prix, apport, statut_fiscal, zone, experience requis" });
+      }
+      res.json(onboardingEngine.simulateInstallation({ vehicule_prix, apport, statut_fiscal, zone, experience }));
+    } catch (e: any) {
+      res.status(500).json({ error: "onboarding_installation_simulator_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 2. Business plan automatique PDF-ready — POST /api/onboarding/business-plan
+  app.post("/api/onboarding/business-plan", requireAuth, (req, res) => {
+    try {
+      const { vehicule_prix, apport, statut_fiscal, zone, experience, nom_chauffeur, ville } = req.body || {};
+      if (vehicule_prix == null || apport == null || !statut_fiscal || !zone || !experience) {
+        return res.status(400).json({ error: "vehicule_prix, apport, statut_fiscal, zone, experience requis" });
+      }
+      const result = onboardingEngine.generateBusinessPlan({ vehicule_prix, apport, statut_fiscal, zone, experience, nom_chauffeur, ville });
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ error: "onboarding_business_plan_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 3. Checklist administrative pré-activité — GET/PATCH /api/onboarding/checklist
+  app.get("/api/onboarding/checklist", requireAuth, (req, res) => {
+    try {
+      res.json(onboardingEngine.getChecklist());
+    } catch (e: any) {
+      res.status(500).json({ error: "onboarding_checklist_get_error", message: e?.message || "unknown" });
+    }
+  });
+  app.patch("/api/onboarding/checklist/:itemKey", requireAuth, (req, res) => {
+    try {
+      const { itemKey } = req.params;
+      const { completed } = req.body || {};
+      res.json(onboardingEngine.toggleChecklistItem(itemKey, !!completed));
+    } catch (e: any) {
+      res.status(500).json({ error: "onboarding_checklist_patch_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 4. Guide statut fiscal initial — POST /api/onboarding/status-guide
+  app.post("/api/onboarding/status-guide", requireAuth, (req, res) => {
+    try {
+      const { ca_previsionnel_annuel, situation_famille, conjoint_revenus, souhaite_associes, souhaite_deduire_charges_reelles } = req.body || {};
+      if (ca_previsionnel_annuel == null || !situation_famille) {
+        return res.status(400).json({ error: "ca_previsionnel_annuel et situation_famille requis" });
+      }
+      res.json(onboardingEngine.recommendFiscalStatus({ ca_previsionnel_annuel, situation_famille, conjoint_revenus, souhaite_associes, souhaite_deduire_charges_reelles }));
+    } catch (e: any) {
+      res.status(500).json({ error: "onboarding_status_guide_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 5. Parcours des 30 premiers jours — GET/PATCH /api/onboarding/journey
+  app.get("/api/onboarding/journey", requireAuth, (req, res) => {
+    try {
+      res.json(onboardingEngine.getJourney());
+    } catch (e: any) {
+      res.status(500).json({ error: "onboarding_journey_get_error", message: e?.message || "unknown" });
+    }
+  });
+  app.patch("/api/onboarding/journey/:day", requireAuth, (req, res) => {
+    try {
+      const day = Number(req.params.day);
+      const { completed, note } = req.body || {};
+      res.json(onboardingEngine.updateJourneyMilestone(day, { completed, note }));
+    } catch (e: any) {
+      res.status(500).json({ error: "onboarding_journey_patch_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 6. FAQ juridique VTC contextuelle — POST /api/legal/faq
+  app.post("/api/legal/faq", requireAuth, (req, res) => {
+    try {
+      const { question } = req.body || {};
+      res.json(legalEngine.answerLegalFaq(String(question || "")));
+    } catch (e: any) {
+      res.status(500).json({ error: "legal_faq_error", message: e?.message || "unknown" });
+    }
+  });
+  app.get("/api/legal/faq", requireAuth, (_req, res) => {
+    try {
+      res.json({ questions: legalEngine.FAQ_BASE.map(f => ({ key: f.key, question: f.question })) });
+    } catch (e: any) {
+      res.status(500).json({ error: "legal_faq_list_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 7. Générateur de contrats freelance — POST /api/legal/contract-template
+  app.post("/api/legal/contract-template", requireAuth, (req, res) => {
+    try {
+      const { template, nom_chauffeur, siret, nom_client, date_prestation, montant, details } = req.body || {};
+      if (!template || !nom_chauffeur || !nom_client) {
+        return res.status(400).json({ error: "template, nom_chauffeur, nom_client requis" });
+      }
+      res.json(legalEngine.generateContract({ template, nom_chauffeur, siret, nom_client, date_prestation, montant, details }));
+    } catch (e: any) {
+      res.status(500).json({ error: "legal_contract_template_error", message: e?.message || "unknown" });
+    }
+  });
+  app.get("/api/legal/contract-template", requireAuth, (_req, res) => {
+    try {
+      res.json({ templates: legalEngine.CONTRACT_TEMPLATES_META });
+    } catch (e: any) {
+      res.status(500).json({ error: "legal_contract_template_list_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 8. Base réglementaire à jour — GET /api/legal/rules
+  app.get("/api/legal/rules", requireAuth, (req, res) => {
+    try {
+      const category = req.query.category ? String(req.query.category) : undefined;
+      res.json(legalEngine.getLegalRules(category));
+    } catch (e: any) {
+      res.status(500).json({ error: "legal_rules_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 9. Litiges plateformes — templates — GET/POST /api/legal/dispute-templates
+  app.get("/api/legal/dispute-templates", requireAuth, (_req, res) => {
+    try {
+      res.json({ templates: legalEngine.DISPUTE_TEMPLATES_META });
+    } catch (e: any) {
+      res.status(500).json({ error: "legal_dispute_templates_list_error", message: e?.message || "unknown" });
+    }
+  });
+  app.post("/api/legal/dispute-templates", requireAuth, (req, res) => {
+    try {
+      const { template, plateforme, nom_chauffeur, details, montant, date_incident } = req.body || {};
+      if (!template || !plateforme || !nom_chauffeur) {
+        return res.status(400).json({ error: "template, plateforme, nom_chauffeur requis" });
+      }
+      res.json(legalEngine.generateDisputeTemplate({ template, plateforme, nom_chauffeur, details, montant, date_incident }));
+    } catch (e: any) {
+      res.status(500).json({ error: "legal_dispute_template_gen_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 10. Suivi des litiges — GET/POST/PATCH /api/legal/disputes
+  app.get("/api/legal/disputes", requireAuth, (req, res) => {
+    try {
+      const status = req.query.status ? String(req.query.status) : undefined;
+      res.json(legalEngine.listDisputes("default", status));
+    } catch (e: any) {
+      res.status(500).json({ error: "legal_disputes_list_error", message: e?.message || "unknown" });
+    }
+  });
+  app.post("/api/legal/disputes", requireAuth, (req, res) => {
+    try {
+      const { plateforme, type, montant, status, resolution, docs } = req.body || {};
+      if (!plateforme || !type) {
+        return res.status(400).json({ error: "plateforme et type requis" });
+      }
+      res.status(201).json(legalEngine.createDispute({ plateforme, type, montant, status, resolution, docs }));
+    } catch (e: any) {
+      res.status(500).json({ error: "legal_disputes_create_error", message: e?.message || "unknown" });
+    }
+  });
+  app.patch("/api/legal/disputes/:id", requireAuth, (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      res.json(legalEngine.updateDispute(id, req.body || {}));
+    } catch (e: any) {
+      res.status(500).json({ error: "legal_disputes_update_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 11. Formation continue 5 ans — GET /api/legal/formation-continue
+  app.get("/api/legal/formation-continue", requireAuth, (req, res) => {
+    try {
+      const dateObtentionCarte = req.query.date_obtention_carte ? String(req.query.date_obtention_carte) : undefined;
+      res.json(legalEngine.getFormationContinueStatus(dateObtentionCarte));
+    } catch (e: any) {
+      res.status(500).json({ error: "legal_formation_continue_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // 12. Simulateur retraite CIPAV — POST /api/legal/retirement-cipav-simulator
+  app.post("/api/legal/retirement-cipav-simulator", requireAuth, (req, res) => {
+    try {
+      const { ca_annuel_moyen, nombre_annees_cotisees, age_actuel, age_depart_souhaite, statut_fiscal } = req.body || {};
+      if (ca_annuel_moyen == null || nombre_annees_cotisees == null || age_actuel == null) {
+        return res.status(400).json({ error: "ca_annuel_moyen, nombre_annees_cotisees, age_actuel requis" });
+      }
+      res.json(legalEngine.simulateCipavRetirement({ ca_annuel_moyen, nombre_annees_cotisees, age_actuel, age_depart_souhaite, statut_fiscal }));
+    } catch (e: any) {
+      res.status(500).json({ error: "legal_retirement_cipav_error", message: e?.message || "unknown" });
+    }
+  });
+  // ─── /COUCHE ONBOARDING NOUVEAU CHAUFFEUR + JURIDIQUE ───
 }
