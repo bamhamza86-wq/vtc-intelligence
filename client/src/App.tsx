@@ -22,6 +22,10 @@ import TaxJournalPage from "./pages/TaxJournalPage";
 import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/not-found";
 import { registerServiceWorker } from "./lib/pwa";
+import { ToastProvider } from "./lib/toast";
+import FocusBubble from "./components/FocusBubble";
+import QuickActionBar from "./components/QuickActionBar";
+import AutoDriveToast from "./components/AutoDriveToast";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // AuthGuard — checks /api/auth/me on mount, shows LoginPage if not authenticated
@@ -109,6 +113,7 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
+        <ToastProvider>
         <AuthGuard>
           <RoutingOriginSync />
           <Router hook={useHashLocation}>
@@ -130,8 +135,12 @@ export default function App() {
               </Switch>
             </Layout>
           </Router>
+          <FocusBubble />
+          <QuickActionBar />
+          <AutoDriveToast />
         </AuthGuard>
         <Toaster />
+        </ToastProvider>
       </ThemeProvider>
     </QueryClientProvider>
   );

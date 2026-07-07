@@ -11,6 +11,9 @@ import { useLocation } from "wouter";
 import { ArrowRight, Pause, Home as HomeIcon, MapPin, Timer, Euro, ShieldCheck, Zap } from "lucide-react";
 import ShiftRhythm from "@/components/ShiftRhythm";
 import StationOverlay from "@/components/StationOverlay";
+import AirportWaitCard from "@/components/AirportWaitCard";
+import WeatherAlert from "@/components/WeatherAlert";
+import FocusCountdown from "@/components/FocusCountdown";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
 import { useSwipe } from "@/hooks/useSwipe";
 import { API_BASE, getAuthToken } from "@/lib/queryClient";
@@ -164,9 +167,12 @@ export default function FocusPage() {
         <div className="flex items-center gap-2 text-white/80 text-sm">
           <VerbIcon className="w-4 h-4" />
           <span className="uppercase tracking-widest text-xs">Recommandation</span>
-          <div className="ml-auto flex items-center gap-1 text-xs bg-white/15 rounded-full px-2 py-0.5">
-            <ShieldCheck className="w-3 h-3" />
-            {Math.round(reco.confidence * 100)}%
+          <div className="ml-auto flex items-center gap-2">
+            {reco.validUntil && <FocusCountdown validUntil={reco.validUntil} />}
+            <div className="flex items-center gap-1 text-xs bg-white/15 rounded-full px-2 py-0.5">
+              <ShieldCheck className="w-3 h-3" />
+              {Math.round(reco.confidence * 100)}%
+            </div>
           </div>
         </div>
 
@@ -251,6 +257,10 @@ export default function FocusPage() {
       )}
 
       {/* Overlay gare/aéroport auto */}
+      <div className="space-y-3">
+        <WeatherAlert />
+        <AirportWaitCard />
+      </div>
       <StationOverlay />
     </div>
   );
