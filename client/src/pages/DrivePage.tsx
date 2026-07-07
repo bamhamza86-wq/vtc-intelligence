@@ -235,6 +235,13 @@ export default function DrivePage() {
         <FatigueBanner />
       </div>
 
+      {/* --- Couche Aeroports/Evenements/Greves (Iteration 3) : timer priorite + fin evenement + queue aeroport --- */}
+      <div className="px-4 pt-2 space-y-2">
+        <PriorityTimer />
+        <EventEndingBanner />
+        <AirportQueueCard />
+      </div>
+
       {/* ─── Corps scrollable — flex-col (fini la grille rigide) ────────────────
            Chaque bloc prend sa hauteur naturelle. Le HERO XXL redondant est
            supprimé : la zone active est déjà en tête du bloc 1. Sur 375px on

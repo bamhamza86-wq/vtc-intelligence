@@ -394,6 +394,61 @@ sqlite.exec(`
 `);
 // ─── /Couche Radar aérien communautaire ────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Couche Aéroports + Événements + Grèves (additif — rapport.md §7).
+// Queue communautaire CDG/Orly/Le Bourget, timer priorité 10min post-dépose,
+// points de dépose/reprise optimisés par salle, perturbations RATP/SNCF.
+// Consommée par server/airportEngine.ts (import sqlite depuis ce module).
+// ─────────────────────────────────────────────────────────────────────────────
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS airport_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    airport TEXT NOT NULL,
+    joined_at TEXT NOT NULL,
+    left_at TEXT,
+    terminal TEXT,
+    position_estimated INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_airport_queue_active ON airport_queue(airport, left_at, joined_at);
+  CREATE INDEX IF NOT EXISTS idx_airport_queue_user ON airport_queue(user_id, left_at);
+
+  CREATE TABLE IF NOT EXISTS airport_dropoffs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    airport TEXT NOT NULL,
+    dropoff_at TEXT NOT NULL,
+    priority_until TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_airport_dropoffs_user ON airport_dropoffs(user_id, dropoff_at);
+
+  CREATE TABLE IF NOT EXISTS venue_dropoff_points (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    venue_key TEXT NOT NULL,
+    salle_name TEXT NOT NULL,
+    lat REAL NOT NULL,
+    lng REAL NOT NULL,
+    ideal_side TEXT NOT NULL,
+    notes_fr TEXT NOT NULL,
+    walking_distance_m INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_venue_dropoff_key ON venue_dropoff_points(venue_key);
+
+  CREATE TABLE IF NOT EXISTS transport_disruptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    line_or_service TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    impact_desc TEXT NOT NULL,
+    zone_id TEXT,
+    active_from TEXT NOT NULL,
+    active_until TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_transport_disruptions_active ON transport_disruptions(active_until);
+`);
+// ─── /Couche Aéroports + Événements + Grèves ───────────────────────────────
+
 // ─── Prepared statements globaux — compilés une seule fois à l'init ───────────────────
 // Bench: alerts/events étaient recompilés à chaque requête HTTP (−64-197% latence sous 50 req. simult.)
 // Pré-compiler élimine l'overhead parser SQLite sur les chemins chauds.

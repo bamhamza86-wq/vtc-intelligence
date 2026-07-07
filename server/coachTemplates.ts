@@ -177,6 +177,45 @@ export const COACH_TEMPLATES: CoachTemplate[] = [
       `sert uniquement à calculer votre coût réel au km à titre informatif, pas pour une déduction fiscale.`,
     sources: [{ label: "Barèmes internes VTC Intelligence", url_or_data_ref: "server/taxConstants.ts" }],
   },
+  {
+    id: "droit_travail_syntec_vtc",
+    question_pattern: [
+      "convention collective", "syntec", "droit du travail", "duree travail",
+      "temps de travail vtc", "repos obligatoire", "amplitude horaire",
+    ],
+    category: "droit_travail",
+    render: () =>
+      `Un chauffeur VTC micro-entrepreneur (LOTI ou carte VTC individuelle) n'est PAS salarié : il n'est donc pas ` +
+      `couvert par la convention collective Syntec (bureaux d'études techniques, ingénierie, conseil), qui ne s'applique ` +
+      `qu'aux salariés d'entreprises relevant de ce secteur. En tant qu'indépendant, vous n'avez pas de durée légale ` +
+      `du travail (35h) ni de convention collective de branche VTC à proprement parler, mais des obligations de sécurité ` +
+      `routière s'appliquent : le Code des transports impose un repos quotidien d'au moins 11h consécutives et une pause ` +
+      `d'au moins 30 min après 4h30 de conduite continue pour les VTC, par analogie avec les règles applicables aux ` +
+      `taxis/VTC professionnels. Certains donneurs d'ordres (plateformes) intègrent des clauses contractuelles inspirées ` +
+      `de ces standards dans leurs CGU. Si vous devenez salarié d'une société de VTC (SASU employant des chauffeurs), ` +
+      `c'est alors la convention collective des Transports routiers de voyageurs qui s'applique, pas Syntec. ` +
+      `Consultez le Timer légal de l'app (Sécurité) pour un suivi automatique de vos temps de conduite/repos.`,
+    sources: [
+      { label: "Code des transports — temps de conduite VTC", url_or_data_ref: "https://www.legifrance.gouv.fr/codes/id/LEGISCTA000031801530" },
+      { label: "Convention collective Transports routiers de voyageurs (IDCC 1424)", url_or_data_ref: "https://www.legifrance.gouv.fr/conv_coll/id/KALICONT000005635624" },
+    ],
+  },
+  {
+    id: "requalification_salariat",
+    question_pattern: [
+      "requalification", "salariat", "lien de subordination", "faux independant", "employe deguise",
+    ],
+    category: "droit_travail",
+    render: () =>
+      `La requalification d'un chauffeur VTC indépendant en salarié de la plateforme peut être prononcée par les ` +
+      `prud'hommes si un lien de subordination est prouvé (horaires imposés, sanctions disciplinaires type déconnexion, ` +
+      `impossibilité de refuser des courses sans pénalité, tarifs unilatéraux non négociables). La Cour de cassation ` +
+      `(arrêt Uber, 4 mars 2020) a déjà reconnu ce lien dans certains cas. Cette requalification, si elle intervient, ` +
+      `ouvre des droits salariés rétroactifs (congés payés, indemnités) mais reste une procédure judiciaire longue et ` +
+      `individuelle. Ce n'est pas un sujet que l'app peut trancher pour votre cas précis — consultez un avocat en droit ` +
+      `du travail ou un syndicat de chauffeurs (ex. CSRP, INV) si vous pensez être dans cette situation.`,
+    sources: [{ label: "Cour de cassation, arrêt Uber, 4 mars 2020 (n°19-13.316)", url_or_data_ref: "https://www.courdecassation.fr/decision/5fca9dcd8d4c9c0007bf9b31" }],
+  },
 ];
 
 /**
@@ -202,5 +241,6 @@ export function matchCoachTemplate(question: string): { template: CoachTemplate;
 export const COACH_FALLBACK_ANSWER =
   `Je n'ai pas de réponse préparée pour cette question précise. Voici les sujets que je maîtrise bien : ` +
   `URSSAF et cotisations, franchise TVA, barème IK, choix de statut (micro/EI/SASU), commissions des plateformes, ` +
-  `arrêt de travail, congés maladie, prime d'activité. Reformulez votre question en utilisant l'un de ces mots-clés, ` +
-  `ou consultez un expert-comptable pour les cas très spécifiques.`;
+  `arrêt de travail, congés maladie, prime d'activité, droit du travail (convention collective, requalification). ` +
+  `Reformulez votre question en utilisant l'un de ces mots-clés, ou consultez un expert-comptable ou un avocat ` +
+  `pour les cas très spécifiques.`;

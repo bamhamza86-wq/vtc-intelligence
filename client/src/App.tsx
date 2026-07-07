@@ -22,8 +22,10 @@ import FocusPage from "./pages/FocusPage";
 import TaxJournalPage from "./pages/TaxJournalPage";
 import PlatformsPage from "./pages/PlatformsPage";
 import RadarPage from "./pages/RadarPage";
+import AirportPage from "./pages/AirportPage";
 import MLInsightsPage from "./pages/MLInsightsPage";
 import FatiguePage from "./pages/FatiguePage";
+import DecisionPage from "./pages/DecisionPage";
 import LoginPage from "./pages/LoginPage";
 import NotFound from "./pages/not-found";
 import { registerServiceWorker } from "./lib/pwa";
@@ -42,6 +44,8 @@ import RecordAlertToast from "./components/RecordAlertToast";
 import FatiguePage from "./pages/FatiguePage";
 import FatigueCoach from "./components/FatigueCoach";
 import { useTelemetry } from "./hooks/useTelemetry";
+// ─── Couche UX Avancée (Itération 3) : onboarding progressif au premier login (§11.3) ───
+import OnboardingCoach from "./components/OnboardingCoach";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // FatigueTelemetryCollector — wrapper invisible autour de useTelemetry()
@@ -179,7 +183,10 @@ export default function App() {
                 <Route path="/ml-insights" component={MLInsightsPage} />
                 <Route path="/achievements" component={AchievementsPage} />
                 <Route path="/radar" component={RadarPage} />
+                <Route path="/airport" component={AirportPage} />
+                <Route path="/aeroports" component={AirportPage} />
                 <Route path="/fatigue" component={FatiguePage} />
+                <Route path="/decision" component={DecisionPage} />
                 <Route component={NotFound} />
               </Switch>
             </Layout>
@@ -197,6 +204,8 @@ export default function App() {
           {/* ─── Couche Fatigue Coach avancé : bulle discrète + capture télémétrie (rapport.md §5, §2) ─── */}
           <FatigueTelemetryCollector />
           <FatigueCoach />
+          {/* ─── Couche UX Avancée : coach d'onboarding progressif, affiché tant que les étapes ne sont pas terminées ─── */}
+          <OnboardingCoach />
         </AuthGuard>
         <Toaster />
         </ToastProvider>

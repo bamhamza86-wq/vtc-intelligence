@@ -39,6 +39,8 @@ import {
   Brain,
   Layers,
   Trophy,
+  Sparkles,
+  Plane,
 } from "lucide-react";
 import { DaySignalBadge } from "@/components/DaySignalBadge";
 import { StreakBadge } from "@/components/StreakBadge";
@@ -47,6 +49,10 @@ import { TomTomStatusPill } from "@/components/TomTomStatusPill";
 import { useLiveRefresh } from "@/hooks/useLiveRefresh";
 import { useSSE } from "@/hooks/useSSE";
 import { useGpsPosition } from "@/hooks/useGpsPosition";
+// ─── Couche Aéroports + Événements + Grèves (Itération 3, rapport.md §7) ───
+import { TransitDisruptionBadge } from "@/components/TransitDisruptionBadge";
+// ─── Couche UX Avancée (Itération 3) : pastille résumé glancable (§10.9) ───
+import { QuickSummaryPill } from "@/components/QuickSummaryPill";
 
 // ─── Onglets principaux (barre de navigation) ──────────────────────────────────
 // Refonte mobile : Focus prend la place de Carte (recommandation unique en zone du pouce)
@@ -68,6 +74,8 @@ const moreMenuItems = [
   { path: "/sources",     label: "Sources",   icon: Database   },
   { path: "/ml-insights", label: "Insights IA", icon: Brain    },
   { path: "/achievements", label: "Succès",    icon: Trophy     },
+  { path: "/decision",    label: "Décision",  icon: Sparkles   },
+  { path: "/airport",     label: "Aéroports", icon: Plane      },
   { path: "/profile",     label: "Profil",    icon: User       },
 ];
 
@@ -224,6 +232,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </div>
             {/* Couche Wow Factor : série quotidienne (streak) compacte dans le header */}
             <StreakBadge compact />
+            {/* ─── Couche UX Avancée : pastille résumé glancable « 148€ · 8 courses » ─── */}
+            <div className="hidden sm:flex">
+              <QuickSummaryPill />
+            </div>
+            <div className="flex sm:hidden">
+              <QuickSummaryPill compact />
+            </div>
             {/* Indicateur LIVE/STALE fraîcheur GPS */}
             <div className="hidden sm:flex">
               <LiveIndicator />
@@ -232,6 +247,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <div className="hidden sm:flex">
               <TomTomStatusPill />
             </div>
+            {/* --- Couche Aeroports/Evenements/Greves (Iteration 3) : badge greve RATP/SNCF, visible partout, masque si aucune perturbation active --- */}
+            <TransitDisruptionBadge compact />
             {/* Bouton thème — desktop seulement (mobile : dans menu Plus) */}
             <button
               onClick={toggle}
@@ -241,6 +258,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             >
               {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
             </button>
+            {/* Accès rapide Coach VTC / Décision Avancée (Itération 3) — visible header desktop + mobile */}
+            <Link
+              href="/decision"
+              data-testid="header-link-decision"
+              className="tap-target flex p-2 rounded-md hover:bg-accent transition-colors text-muted-foreground hover:text-primary"
+              aria-label="Coach VTC et décision avancée"
+              title="Coach VTC"
+              style={{ minWidth: 36, minHeight: 36 }}
+            >
+              <Sparkles size={16} />
+            </Link>
             {/* Bouton logout — desktop seulement (mobile : dans menu Plus) */}
             <button
               onClick={handleLogout}

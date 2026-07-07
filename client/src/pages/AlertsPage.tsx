@@ -17,6 +17,10 @@ import { RouteSourceBadge } from "@/components/RouteSourceBadge";
 import { PullToRefresh } from "@/components/PullToRefresh";
 import { EmptyState } from "@/components/EmptyState";
 import { queryClient as qc } from "@/lib/queryClient";
+// --- Couche Aeroports/Evenements/Greves (Iteration 3, rapport.md §7) ---
+import PostEventDemandCard from "@/components/PostEventDemandCard";
+import DropoffPointHint from "@/components/DropoffPointHint";
+import TransitDisruptionBadge from "@/components/TransitDisruptionBadge";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -191,6 +195,21 @@ function LiveCountdown({ iso, color }: { iso: string; color: string }) {
 
 // ─── Détail alerte sélectionnée ───────────────────────────────────────────────
 
+// Mapping zone_id -> venue_key pour le hint de depose optimale (aligne avec EventEndingBanner.tsx)
+const ALERT_ZONE_TO_VENUE: Record<string, string> = {
+  z_stade_france: "stade_de_france",
+  z_montreuil: "bercy",
+  z_epinay_gennevilliers: "la_defense_arena",
+};
+
+// Mapping zone_id -> cle d'evenement recurrent (server/idfVenues.ts) pour /api/events/post-demand.
+// Fallback best-effort : la zone la plus impactee est associee a l'evenement recurrent le plus probable.
+const ALERT_ZONE_TO_EVENT_KEY: Record<string, string> = {
+  z_montreuil: "bercy_spectacle",
+  z_stade_france: "psg_parc_des_princes",
+  z_epinay_gennevilliers: "la_defense_arena_event",
+};
+
 function AlertDetail({ alert, onMarkRead, isPending }: {
   alert: Alert; onMarkRead: () => void; isPending: boolean;
 }) {
@@ -222,6 +241,23 @@ function AlertDetail({ alert, onMarkRead, isPending }: {
           <p className="text-xs text-muted-foreground leading-relaxed">{alert.message}</p>
         </div>
       </div>
+
+      {/* --- Couche Aeroports/Evenements/Greves (Iteration 3) : contexte enrichi selon le type d'alerte --- */}
+      {alert.type === "event_ending" && (
+        <div className="mb-3 space-y-2">
+          <PostEventDemandCard eventId={alert.zone_id ? (ALERT_ZONE_TO_EVENT_KEY[alert.zone_id] ?? null) : null} />
+          {alert.zone_id && ALERT_ZONE_TO_VENUE[alert.zone_id] && (
+            <DropoffPointHint venueKey={ALERT_ZONE_TO_VENUE[alert.zone_id]} />
+          )}
+        </div>
+      )}
+      {alert.type === "transit_disruption" && (
+        <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
+          <span>Detail des perturbations :</span>
+          <TransitDisruptionBadge />
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-wrap">
           {alert.estimated_revenue && (

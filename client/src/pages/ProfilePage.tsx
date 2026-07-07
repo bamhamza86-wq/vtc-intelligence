@@ -26,6 +26,9 @@ import { BrainCircuit } from "lucide-react";
 import { StreakBadge } from "@/components/StreakBadge";
 import { QuestsCard } from "@/components/QuestsCard";
 import { Gamepad2 } from "lucide-react";
+// ─── Couche UX Avancée (Itération 3) : prompt notifications intelligent (§10.9) ───
+import { NotifPermissionPrompt } from "@/components/NotifPermissionPrompt";
+import { useSessionCount } from "@/hooks/useSessionCount";
 
 const ZONES_93 = [
   { id: "z_cdg", name: "CDG" }, { id: "z_orly", name: "Orly" },
@@ -52,6 +55,9 @@ function scoreColor(s: number): string {
 
 export default function ProfilePage() {
   const { toast } = useToast();
+  // ─── Couche UX Avancée : prompt notifications affiché seulement à partir de la 3e session (§10.9) ───
+  const { sessionCount } = useSessionCount();
+  const showNotifPrompt = sessionCount >= 3;
   // Vague 2 - Feature 3 : édition de l'objectif journalier + affichage streak
   const { streakDays } = useDailyStreak();
   const [goalTargetInput, setGoalTargetInput] = useState<string>(() => String(getDailyGoalTarget()));
@@ -146,6 +152,9 @@ export default function ProfilePage() {
         {/* ─── Couche Communautaire : badge Karma + niveau (Novice/Confirmé/Vétéran) ─── */}
         <ReputationBadge />
       </div>
+
+      {/* ─── Couche UX Avancée : prompt notifications intelligent — jamais au premier chargement (§10.9) ─── */}
+      {showNotifPrompt && <NotifPermissionPrompt />}
       {stats && stats.totalRides > 0 && (
         <Card className="border-primary/20 bg-primary/5">
           <CardContent className="py-3 px-4">

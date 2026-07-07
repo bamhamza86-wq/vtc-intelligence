@@ -29,6 +29,9 @@ import { ZoneChat } from "@/components/ZoneChat";
 import { AvoidZonesCard } from "@/components/AvoidZonesCard";
 import { Flame } from "lucide-react";
 import StationOverlay from "@/components/StationOverlay";
+// ─── Couche UX Avancée (Itération 3) : calque bornes de recharge électrique (§6.4) ───
+import { ChargingStationsMap } from "@/components/ChargingStationsMap";
+import { BatteryCharging } from "lucide-react";
 
 const COLORS = { ultraHigh: "#22c55e", high: "#86efac", medium: "#fbbf24", low: "#f97316", veryLow: "#ef4444" };
 
@@ -264,6 +267,8 @@ export default function MapPage() {
   const [eventsPanelOpen, setEventsPanelOpen] = useState(true);
   // ─── Couche Communautaire : toggle heatmap H3-like + calque Leaflet dédié ───
   const [showCommunityHeat, setShowCommunityHeat] = useState(false);
+  // ─── Couche UX Avancée : toggle calque « Bornes ⚡ » (§6.4) ───
+  const [showChargingStations, setShowChargingStations] = useState(false);
   const communityHeatLayersRef = useRef<any[]>([]);
   const { boostByZone: phqBoostByZone } = usePredictHQ();
   // Résumé PredictHQ par zone (refetch 30s) — heatmap, panel événements, anticipation.
@@ -761,6 +766,10 @@ export default function MapPage() {
       <DataFreshnessBadge ts={topZonesData?._ts} position="bottom-left" />
       {/* ─── Bandeau alerte événement rare (Lot C) — premier enfant, au-dessus de la carte ───── */}
       <RareEventBanner />
+      {/* --- Couche Aeroports/Evenements/Greves (Iteration 3) : fin evenement imminente --- */}
+      <div className="px-3 pt-2">
+        <EventEndingBanner />
+      </div>
       {/* ─── Bandeau TomTom non connecté — visible si ETA sans trafic temps réel ─────────── */}
       <RoutingSourceBanner />
       <MapLoader />
@@ -908,6 +917,27 @@ export default function MapPage() {
             <Flame size={14} />
             <span className="text-[10px] font-semibold">Chaleur communauté</span>
           </button>
+
+          {/* ─── Couche UX Avancée : toggle « Bornes ⚡ » — bornes de recharge électrique à proximité (§6.4) ─── */}
+          <button
+            type="button"
+            onClick={() => setShowChargingStations((v) => !v)}
+            data-testid="button-toggle-charging-stations"
+            aria-pressed={showChargingStations}
+            className={`absolute top-[6.5rem] left-3 sm:left-auto sm:right-3 sm:top-24 z-[1000] flex items-center gap-1.5 rounded-lg backdrop-blur px-2.5 py-2 border transition-colors ${showChargingStations ? "bg-emerald-500/90 border-emerald-300/50 text-white" : "bg-black/75 border-white/10 text-white/70"}`}
+            style={{ minHeight: 44 }}
+          >
+            <BatteryCharging size={14} />
+            <span className="text-[10px] font-semibold">Bornes ⚡</span>
+          </button>
+
+          {/* Calque Leaflet des bornes de recharge (rendu invisible — gère ses propres markers) */}
+          <ChargingStationsMap
+            mapInstance={mapInstance}
+            enabled={showChargingStations}
+            lat={position?.lat ?? 48.8566}
+            lng={position?.lng ?? 2.3522}
+          />
 
           {/* ─── Couche Communautaire : carte "À éviter" (coin supérieur gauche, desktop) ─── */}
           <div className="hidden sm:block absolute top-14 left-3 z-[1000] w-64">
@@ -1149,6 +1179,10 @@ export default function MapPage() {
               )}
             </div>
           )}
+          {/* --- Couche Aeroports/Evenements/Greves (Iteration 3) : file aeroport si a proximite --- */}
+          <div className="p-3 border-b border-border">
+            <AirportQueueCard />
+          </div>
           <div className="p-3 border-b border-border"><p className="text-[11px] font-semibold flex items-center gap-1.5"><TrendingUp size={12} className="text-primary" />Top 3 zones · {fmtH(selectedHour)}</p></div>
           <div className="divide-y divide-border">
             {/* Panneau condensé : Top 3 zones, une seule ligne compacte par zone */}
@@ -1193,6 +1227,11 @@ export default function MapPage() {
               </div>
             </>
           )}
+
+          {/* --- Couche Aeroports/Evenements/Greves (Iteration 3) : calendrier IDF centralise --- */}
+          <div className="p-3 border-t border-border">
+            <IDFCalendar />
+          </div>
         </div>
       </div>
     </div>

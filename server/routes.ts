@@ -8,6 +8,12 @@ import { requireAuth, getCurrentUsername } from "./auth";
 import * as mlPersonal from "./mlPersonal";
 // ─── Couche RL (bandit Thompson) + Federated Learning-lite (Itération 3) ───
 import { mlAdvancedRouter } from "./mlAdvanced";
+// ─── Couche UX Avancée & Benchmark (Itération 3) : peer benchmark k-anon, onboarding progressif,
+// bornes de recharge (OpenChargeMap + fallback), résumé glancable ───
+import * as uxEngine from "./uxEngine";
+import { getNearbyStations, getNearbyStationsFallback } from "./chargingStationsIDF";
+import { handleVoiceCommand } from "./voiceCommands";
+import { decisionRouter } from "./decision";
 // ─── Couche Fatigue Coach avancé + détection micro-sommeil sans caméra (rapport.md §5, §2) ───
 import * as fatigueCoach from "./fatigueCoach";
 // ← H2 : fusion adaptative multi-sources (TomTom + PHQ + vols + seeds)
@@ -37,6 +43,8 @@ import { getSncfSignals, getZoneSncfBoost, GARE_ZONE_MAPPING, getSncfSignalsSync
 import { getCurrentWeather, getCachedWeather } from "./weatherService";
 // ─── Radar aérien communautaire (additif — rapport.md §5 signal surge + §13 wow#9) ───
 import * as radarLive from "./radarLive";
+// ─── Couche Aéroports + Événements + Grèves (additif — rapport.md §7) ───
+import * as airportEngine from "./airportEngine";
 import {
   testTomTomConnection,
   testGigDataConnection,
@@ -4281,9 +4289,304 @@ export function registerRoutes(httpServer: Server, app: Express): void {
   });
   // ─── /COUCHE FATIGUE COACH AVANCÉ ───
 
+  // ─── COUCHE UX AVANCÉE & BENCHMARK (Itération 3) — rapport.md §10.3, §10.9, §11.3, wow#13, §6.4 ───
+
+  // GET /api/benchmark/peer-stats — comparatif anonymisé "chauffeurs comme vous" (k-anonymat ≥5)
+  app.get("/api/benchmark/peer-stats", requireAuth, (_req, res) => {
+    try {
+      res.json(uxEngine.computePeerBenchmark());
+    } catch (e: any) {
+      console.error("[benchmark/peer-stats] error:", e);
+      res.status(500).json({ error: "peer_benchmark_error", message: e?.message || "unknown" });
+    }
+  });
+  // Alias historique consommé par PeerBenchmarkCard.tsx (même payload)
+  app.get("/api/ux/peer-benchmark", requireAuth, (_req, res) => {
+    try {
+      res.json(uxEngine.computePeerBenchmark());
+    } catch (e: any) {
+      console.error("[ux/peer-benchmark] error:", e);
+      res.status(500).json({ error: "peer_benchmark_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // GET /api/charging/stations-nearby?lat=&lng=&radius_km= — bornes proches (OpenChargeMap ou fallback local)
+  app.get("/api/charging/stations-nearby", requireAuth, async (req, res) => {
+    try {
+      const lat = Number(req.query.lat);
+      const lng = Number(req.query.lng);
+      const radiusKm = Number(req.query.radius_km ?? 8);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return res.status(400).json({ error: "lat/lng requis (number)" });
+      }
+      const result = await getNearbyStations(lat, lng, Math.min(Math.max(radiusKm, 1), 30));
+      res.json(result);
+    } catch (e: any) {
+      console.error("[charging/stations-nearby] error:", e);
+      // Dégradation ultime : fallback local synchrone même si tout le reste échoue
+      try {
+        const lat = Number(req.query.lat) || 48.8566;
+        const lng = Number(req.query.lng) || 2.3522;
+        res.json({ source: "fallback_local", stations: getNearbyStationsFallback(lat, lng, 8) });
+      } catch {
+        res.status(500).json({ error: "charging_stations_error", message: e?.message || "unknown" });
+      }
+    }
+  });
+  // Alias historique consommé par ChargingStationsMap.tsx (même payload)
+  app.get("/api/ux/charging-stations", requireAuth, async (req, res) => {
+    try {
+      const lat = Number(req.query.lat);
+      const lng = Number(req.query.lng);
+      const radiusKm = Number(req.query.radius_km ?? 8);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return res.status(400).json({ error: "lat/lng requis (number)" });
+      }
+      const result = await getNearbyStations(lat, lng, Math.min(Math.max(radiusKm, 1), 30));
+      res.json(result);
+    } catch (e: any) {
+      console.error("[ux/charging-stations] error:", e);
+      try {
+        const lat = Number(req.query.lat) || 48.8566;
+        const lng = Number(req.query.lng) || 2.3522;
+        res.json({ source: "fallback_local", stations: getNearbyStationsFallback(lat, lng, 8) });
+      } catch {
+        res.status(500).json({ error: "charging_stations_error", message: e?.message || "unknown" });
+      }
+    }
+  });
+
+  // POST /api/voice/command — parse et exécute une commande vocale transcrite (webkitSpeechRecognition côté client)
+  app.post("/api/voice/command", requireAuth, (req, res) => {
+    try {
+      const { transcript } = req.body ?? {};
+      if (typeof transcript !== "string" || !transcript.trim()) {
+        return res.status(400).json({ error: "transcript requis (string non vide)" });
+      }
+      const userId = getCurrentUsername(req);
+      const result = handleVoiceCommand(transcript, userId);
+      res.json(result);
+    } catch (e: any) {
+      console.error("[voice/command] error:", e);
+      res.status(500).json({ error: "voice_command_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // GET /api/onboarding/progress — état des étapes d'onboarding progressif (§11.3)
+  app.get("/api/onboarding/progress", requireAuth, (_req, res) => {
+    try {
+      res.json(uxEngine.getOnboardingProgress());
+    } catch (e: any) {
+      console.error("[onboarding/progress] error:", e);
+      res.status(500).json({ error: "onboarding_progress_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // POST /api/onboarding/step-done — marque une étape comme complétée { step_key }
+  app.post("/api/onboarding/step-done", requireAuth, (req, res) => {
+    try {
+      const { step_key } = req.body ?? {};
+      if (typeof step_key !== "string" || !step_key) {
+        return res.status(400).json({ error: "step_key requis (string)" });
+      }
+      res.json(uxEngine.markOnboardingStepDone(step_key));
+    } catch (e: any) {
+      console.error("[onboarding/step-done] error:", e);
+      res.status(400).json({ error: "onboarding_step_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // GET /api/ux/quick-summary — pastille glancable header (net du jour, courses, série)
+  app.get("/api/ux/quick-summary", requireAuth, (_req, res) => {
+    try {
+      res.json(uxEngine.computeQuickSummary());
+    } catch (e: any) {
+      console.error("[ux/quick-summary] error:", e);
+      res.status(500).json({ error: "quick_summary_error", message: e?.message || "unknown" });
+    }
+  });
+
+  // GET /api/push/subscribe-info — infos VAPID/push (placeholder tant que l'infra d'envoi n'est pas branchée)
+  app.get("/api/push/subscribe-info", requireAuth, (_req, res) => {
+    try {
+      res.json(uxEngine.getPushSubscribeInfo());
+    } catch (e: any) {
+      console.error("[push/subscribe-info] error:", e);
+      res.status(500).json({ error: "push_subscribe_info_error", message: e?.message || "unknown" });
+    }
+  });
+  // ─── /COUCHE UX AVANCÉE & BENCHMARK ───
+
+
   // ─── COUCHE RL (bandit Thompson) + FEDERATED LEARNING-LITE (Itération 3) ───
   // Toutes les routes du router sont préfixées /api/ml/* (requireAuth appliqué par route
   // à l'intérieur du router lui-même — voir server/mlAdvanced.ts).
   app.use("/api/ml", mlAdvancedRouter);
   // ─── /COUCHE RL + FEDERATED LEARNING-LITE ───
+
+  // ─── COUCHE DÉCISION AVANCÉE (Itération 3) : trip-chaining, What-If, contre-intuition, coach VTC ───
+  // Router auto-préfixé (chaque route déclare son chemin complet /api/decision/* ou /api/coach/*)
+  // requireAuth appliqué par route à l'intérieur du router — voir server/decision.ts.
+  app.use(decisionRouter);
+  // ─── /COUCHE DÉCISION AVANCÉE ───
+
+  // ─── COUCHE AÉROPORTS + ÉVÉNEMENTS + GRÈVES (Itération 3, rapport.md §7) ───
+  // Queue communautaire CDG/Orly/Le Bourget, timer priorité 10min post-dépose,
+  // calendrier IDF centralisé, perturbations RATP/SNCF, dépose optimisée par salle,
+  // prévision demande post-événement. Logique dans server/airportEngine.ts.
+
+  // POST /api/airport/queue/join { airport, terminal? }
+  app.post("/api/airport/queue/join", requireAuth, async (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const { airport, terminal } = req.body || {};
+      if (!airport || !["CDG", "ORY", "LBG"].includes(String(airport))) {
+        return res.status(400).json({ error: "airport requis (CDG|ORY|LBG)" });
+      }
+      const result = await airportEngine.joinAirportQueue(userId, airport, terminal || null);
+      res.json(result);
+    } catch (err: any) {
+      console.error("[airport/queue/join] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur rejoindre la file" });
+    }
+  });
+
+  // POST /api/airport/queue/leave
+  app.post("/api/airport/queue/leave", requireAuth, (req, res) => {
+    try {
+      const userId = getCurrentUsername(req);
+      res.json(airportEngine.leaveAirportQueue(userId));
+    } catch (err: any) {
+      console.error("[airport/queue/leave] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur quitter la file" });
+    }
+  });
+
+  // GET /api/airport/queue/status — alias GET /api/airport/queue-status (compat rapport.md §7)
+  const handleQueueStatus = async (req: any, res: any) => {
+    try {
+      const userId = getCurrentUsername(req);
+      res.json(await airportEngine.getQueueStatus(userId));
+    } catch (err: any) {
+      console.error("[airport/queue/status] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur statut file" });
+    }
+  };
+  app.get("/api/airport/queue/status", requireAuth, handleQueueStatus);
+  app.get("/api/airport/queue-status", requireAuth, handleQueueStatus);
+
+  // POST /api/airport/dropoff { airport } — enregistre une dépose, démarre le timer priorité 10min
+  // Alias POST /api/airport/arrival-ping (libellé rapport.md §7 — chauffeur signale son arrivée/dépose)
+  const handleDropoff = (req: any, res: any) => {
+    try {
+      const userId = getCurrentUsername(req);
+      const { airport } = req.body || {};
+      if (!airport || !["CDG", "ORY", "LBG"].includes(String(airport))) {
+        return res.status(400).json({ error: "airport requis (CDG|ORY|LBG)" });
+      }
+      res.json(airportEngine.registerDropoff(userId, airport));
+    } catch (err: any) {
+      console.error("[airport/dropoff] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur enregistrement dépose" });
+    }
+  };
+  app.post("/api/airport/dropoff", requireAuth, handleDropoff);
+  app.post("/api/airport/arrival-ping", requireAuth, handleDropoff);
+
+  // GET /api/airport/my-priority — alias GET /api/airport/priority-timer (libellé rapport.md §7)
+  const handlePriority = (req: any, res: any) => {
+    try {
+      const userId = getCurrentUsername(req);
+      res.json(airportEngine.getMyPriority(userId));
+    } catch (err: any) {
+      console.error("[airport/my-priority] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur statut priorité" });
+    }
+  };
+  app.get("/api/airport/my-priority", requireAuth, handlePriority);
+  app.get("/api/airport/priority-timer", requireAuth, handlePriority);
+
+  // GET /api/events/idf-calendar?days=7 — calendrier IDF centralisé (PredictHQ + récurrents)
+  app.get("/api/events/idf-calendar", requireAuth, (req, res) => {
+    try {
+      const days = req.query.days ? parseInt(String(req.query.days), 10) : 7;
+      const events = airportEngine.getIdfCalendar(isFinite(days) && days > 0 ? days : 7);
+      res.json({ events, count: events.length });
+    } catch (err: any) {
+      console.error("[events/idf-calendar] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur calendrier IDF" });
+    }
+  });
+
+  // GET /api/events/ending-soon — événements se terminant dans les 30 prochaines minutes
+  app.get("/api/events/ending-soon", requireAuth, (req, res) => {
+    try {
+      const events = airportEngine.getIdfCalendar(1);
+      const nowMs = Date.now();
+      const endingSoon = events.filter((ev) => {
+        const endMs = new Date(ev.end_time).getTime();
+        const minutesUntilEnd = (endMs - nowMs) / 60000;
+        return minutesUntilEnd >= 0 && minutesUntilEnd <= 30;
+      });
+      res.json({ events: endingSoon, count: endingSoon.length });
+    } catch (err: any) {
+      console.error("[events/ending-soon] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur événements se terminant bientôt" });
+    }
+  });
+
+  // GET /api/events/dropoff-point?venue_key=&salle= — point de dépose optimisé par salle
+  // Alias GET /api/venues/dropoff-points (libellé rapport.md §7)
+  const handleDropoffPoint = (req: any, res: any) => {
+    try {
+      const venueKey = String(req.query.venue_key || "");
+      const salle = req.query.salle ? String(req.query.salle) : undefined;
+      if (!venueKey) return res.status(400).json({ error: "venue_key requis" });
+      const point = airportEngine.getDropoffPoint(venueKey, salle);
+      if (!point) return res.status(404).json({ error: "Aucun point de dépose trouvé pour ce lieu" });
+      res.json(point);
+    } catch (err: any) {
+      console.error("[events/dropoff-point] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur point de dépose" });
+    }
+  };
+  app.get("/api/events/dropoff-point", requireAuth, handleDropoffPoint);
+  app.get("/api/venues/dropoff-points", requireAuth, handleDropoffPoint);
+
+  // GET /api/events/post-demand?event_id= — prévision de demande post-événement
+  app.get("/api/events/post-demand", requireAuth, (req, res) => {
+    try {
+      const eventId = String(req.query.event_id || "");
+      if (!eventId) return res.status(400).json({ error: "event_id requis" });
+      const demand = airportEngine.getPostEventDemand(eventId);
+      if (!demand) return res.status(404).json({ error: "Événement introuvable" });
+      res.json(demand);
+    } catch (err: any) {
+      console.error("[events/post-demand] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur prévision post-événement" });
+    }
+  });
+
+  // GET /api/transport/disruptions?zone_id= — perturbations RATP/SNCF actives
+  // Alias GET /api/transit/disruptions (libellé rapport.md §7)
+  const handleDisruptions = async (req: any, res: any) => {
+    try {
+      const zoneId = req.query.zone_id ? String(req.query.zone_id) : undefined;
+      const disruptions = await airportEngine.getTransportDisruptions(zoneId);
+      res.json({ disruptions, count: disruptions.length });
+    } catch (err: any) {
+      console.error("[transport/disruptions] error:", err);
+      res.status(500).json({ error: err?.message || "Erreur perturbations transport" });
+    }
+  };
+  app.get("/api/transport/disruptions", requireAuth, handleDisruptions);
+  app.get("/api/transit/disruptions", requireAuth, handleDisruptions);
+
+  // ── Cron interne aligné 3 min (event_ending + détection heuristique grève) ──
+  setInterval(() => {
+    airportEngine.runAirportEventsCron();
+  }, 3 * 60 * 1000);
+  // Premier passage immédiat au démarrage (non bloquant)
+  setTimeout(() => airportEngine.runAirportEventsCron(), 5000);
+  // ─── /COUCHE AÉROPORTS + ÉVÉNEMENTS + GRÈVES ───
 }

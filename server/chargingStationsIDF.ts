@@ -70,3 +70,113 @@ export function getNearbyStationsFallback(lat: number, lng: number, radiusKm: nu
     .filter((s) => s.distanceKm <= radiusKm)
     .sort((a, b) => a.distanceKm - b.distanceKm);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Appel réseau direct OpenChargeMap (fetch natif, ZÉRO SDK/dépendance npm).
+// Timeout court + fallback automatique vers le jeu de données statique en cas
+// d'échec (pas de clé API configurée, quota atteint, réseau coupé, timeout).
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface OcmPoi {
+  ID: number;
+  AddressInfo?: { Title?: string; Latitude?: number; Longitude?: number; AddressLine1?: string; Distance?: number };
+  OperatorInfo?: { Title?: string };
+  Connections?: Array<{ PowerKW?: number; ConnectionType?: { Title?: string } }>;
+  StatusType?: { IsOperational?: boolean };
+}
+
+const OCM_TIMEOUT_MS = 3500;
+const OCM_BASE_URL = "https://api.openchargemap.io/v3/poi/";
+
+function mapOcmToStation(poi: OcmPoi, refLat: number, refLng: number): (ChargingStation & { distanceKm: number }) | null {
+  const lat = poi.AddressInfo?.Latitude;
+  const lng = poi.AddressInfo?.Longitude;
+  if (typeof lat !== "number" || typeof lng !== "number") return null;
+
+  const maxPower = (poi.Connections ?? []).reduce((max, c) => Math.max(max, c.PowerKW ?? 0), 0);
+  const connectorTypes = Array.from(
+    new Set((poi.Connections ?? []).map((c) => c.ConnectionType?.Title).filter(Boolean))
+  ).join("/") || "Inconnu";
+
+  return {
+    id: `ocm-${poi.ID}`,
+    name: poi.AddressInfo?.Title || "Borne de recharge",
+    lat,
+    lng,
+    network: poi.OperatorInfo?.Title || "Réseau inconnu",
+    powerKw: maxPower || 22,
+    connectorType: connectorTypes,
+    available: poi.StatusType?.IsOperational !== false,
+    estimatedPriceEurPerKwh: 0.45, // OpenChargeMap ne fournit pas systématiquement le prix — estimation moyenne IDF
+    address: poi.AddressInfo?.AddressLine1 || "",
+    distanceKm: Math.round(haversineKm(refLat, refLng, lat, lng) * 100) / 100,
+  };
+}
+
+/**
+ * Tente un appel direct à l'API publique OpenChargeMap (fetch natif Node ≥18,
+ * clé API optionnelle via OPENCHARGEMAP_API_KEY — fonctionne aussi sans clé
+ * avec un quota réduit). Retourne `null` en cas d'échec (réseau, timeout,
+ * réponse invalide) pour laisser l'appelant basculer sur le fallback local.
+ */
+async function tryFetchOpenChargeMap(
+  lat: number,
+  lng: number,
+  radiusKm: number
+): Promise<(ChargingStation & { distanceKm: number })[] | null> {
+  try {
+    const params = new URLSearchParams({
+      output: "json",
+      countrycode: "FR",
+      latitude: String(lat),
+      longitude: String(lng),
+      distance: String(radiusKm),
+      distanceunit: "KM",
+      maxresults: "40",
+      compact: "true",
+      verbose: "false",
+    });
+    const apiKey = process.env.OPENCHARGEMAP_API_KEY;
+    if (apiKey) params.set("key", apiKey);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), OCM_TIMEOUT_MS);
+
+    const resp = await fetch(`${OCM_BASE_URL}?${params.toString()}`, {
+      signal: controller.signal,
+      headers: { "User-Agent": "VTC-Intelligence/1.0" },
+    });
+    clearTimeout(timeout);
+
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as OcmPoi[];
+    if (!Array.isArray(data)) return null;
+
+    const stations = data
+      .map((poi) => mapOcmToStation(poi, lat, lng))
+      .filter((s): s is ChargingStation & { distanceKm: number } => s !== null)
+      .sort((a, b) => a.distanceKm - b.distanceKm);
+
+    return stations;
+  } catch {
+    // Réseau indisponible, timeout, quota API, JSON invalide... → fallback silencieux
+    return null;
+  }
+}
+
+export interface NearbyStationsResult {
+  source: "openchargemap" | "fallback_local";
+  stations: (ChargingStation & { distanceKm: number })[];
+}
+
+/**
+ * Point d'entrée unique : tente OpenChargeMap en direct, retombe sur le jeu de
+ * données statique IDF si l'appel échoue ou ne renvoie aucun résultat.
+ */
+export async function getNearbyStations(lat: number, lng: number, radiusKm: number): Promise<NearbyStationsResult> {
+  const live = await tryFetchOpenChargeMap(lat, lng, radiusKm);
+  if (live && live.length > 0) {
+    return { source: "openchargemap", stations: live };
+  }
+  return { source: "fallback_local", stations: getNearbyStationsFallback(lat, lng, radiusKm) };
+}

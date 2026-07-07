@@ -24,6 +24,11 @@ import {
 } from "lucide-react";
 import { DailyGoalBar } from "@/components/DailyGoalBar";
 import { WhatIfYesterday } from "@/components/WhatIfYesterday";
+// ─── Couche UX Avancée (Itération 3) : benchmark k-anonymat « chauffeurs comme vous » (wow#13, §10.3) ───
+import { PeerBenchmarkCard } from "@/components/PeerBenchmarkCard";
+import { ProactiveTipsCard } from "@/components/ProactiveTipsCard";
+import { TripChainWidget } from "@/components/TripChainWidget";
+import { CounterIntuitionCard } from "@/components/CounterIntuitionCard";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Types — l'API SQLite renvoie majoritairement du snake_case.
@@ -883,6 +888,9 @@ export default function EconomicsDashboard() {
       {/* ─── Couche Wow Factor : simulation rétrospective "et si vous aviez suivi l'IA" ─── */}
       <WhatIfYesterday />
 
+      {/* ─── Couche UX Avancée : comparatif anonymisé "chauffeurs comme vous" (k-anonymat ≥5) ─── */}
+      <PeerBenchmarkCard />
+
       {/* Header — mobile : stack vertical */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div>
@@ -915,6 +923,12 @@ export default function EconomicsDashboard() {
       <div className="rounded-xl border border-border bg-card px-4 py-1">
         <DailyGoalBar variant="compact" />
       </div>
+
+      {/* ─── Couche Décision Avancée (Itération 3) : tip proactif + trip-chaining + contre-intuition ─── */}
+      {/* Section complète (simulateur What-If + coach VTC) disponible sur /decision (menu Plus). */}
+      <ProactiveTipsCard />
+      <TripChainWidget />
+      <CounterIntuitionCard />
 
       {/* SECTION 0 — Performance temps réel (€/h, €/km, km à vide, vs objectif) */}
       <PerfRealtimeSection eco={eco} loading={ecoQ.isLoading} />
