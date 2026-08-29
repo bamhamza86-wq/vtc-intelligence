@@ -80,7 +80,7 @@ def build_active_window():
     # côté backend (server/predictHQService.ts applique déjà cette fenêtre).
     # On transmet malgré tout les bornes dans le body pour expliciter le contrat
     # de filtrage et permettre au backend de les honorer si besoin.
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     next_week = today + timedelta(days=7)
     return {
         "active.gte": today.isoformat(),
